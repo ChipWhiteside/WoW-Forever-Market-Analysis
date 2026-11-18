@@ -21,7 +21,8 @@ async function main() {
 
   if (!noServer && !once) await startServer({ db, engine, client, port: cfg.port, dataDir: cfg.dataDir, log });
 
-  await retry(() => engine.init(), 'house sync', log);
+  if (once) await engine.init();
+  else await retry(() => engine.init(), 'house sync', log);
 
   const daily = async () => {
     if (!engine.dailyDue()) return;
