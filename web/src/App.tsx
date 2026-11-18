@@ -8,7 +8,7 @@ import { LookupPage, SettingsPage, HealthPage, ChangelogPage } from './pages/mis
 import { CraftingPage, DropsPage, FarmingPage, PositionsPage, WatchlistPage, MarketPage } from './pages/more';
 import { api } from './lib/api';
 
-const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.Element; count?: string[] }> = [
+const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.Element | null; count?: string[] }> = [
   { id: 'now', label: 'Now', group: 'Plays', el: NowPage },
   { id: 'vendor', label: 'Vendor plays', group: 'Plays', el: VendorPage, count: ['vendor_dump', 'vendor_supply'] },
   { id: 'resale', label: 'Resale', group: 'Plays', el: ResalePage, count: ['underpriced', 'cross_house'] },

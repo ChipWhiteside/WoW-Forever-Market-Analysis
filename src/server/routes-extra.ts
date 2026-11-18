@@ -5,6 +5,7 @@ import { craftBoard, Crafter } from '../craft/makeOrBuy.ts';
 import { sourceBoard } from '../drops/value.ts';
 import { marketReport } from '../market/report.ts';
 import { itemValue } from '../drops/value.ts';
+import { calibration } from '../analysis/calibration.ts';
 
 const professionsSetting = (deps: ServerDeps): Record<string, number> | null => {
   const r = deps.db.prepare(`SELECT value FROM settings WHERE key = 'professions'`).get() as { value: string } | undefined;
@@ -36,6 +37,7 @@ export function registerExtraRoutes(app: FastifyInstance, deps: ServerDeps): voi
   });
 
   app.get('/api/market', async () => marketReport(db));
+  app.get('/api/calibration', async () => calibration(db));
 
   // Positions
   app.get('/api/positions', async () => {

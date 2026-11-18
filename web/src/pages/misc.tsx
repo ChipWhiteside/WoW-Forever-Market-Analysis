@@ -72,6 +72,7 @@ export function SettingsPage() {
 export function HealthPage() {
   const { data } = useQuery({ queryKey: ['health'], queryFn: () => api<Health>('/api/health'), refetchInterval: 30_000 });
   const { data: ov } = useQuery({ queryKey: ['overview'], queryFn: () => api<any>('/api/overview') });
+  const { data: cal } = useQuery({ queryKey: ['calibration'], queryFn: () => api<any[]>('/api/calibration') });
   if (!data) return null;
   return (
     <>
@@ -93,6 +94,15 @@ export function HealthPage() {
           {(ov.datasets ?? []).map((d: any) => <p key={d.name} className="mt-1 text-muted">{d.name}: {d.version}, {d.records} records, refreshed {ago(d.fetched_at)}. {d.note}</p>)}
           {ov.learning?.map((l: any) => <p key={l.house} className="mt-1">House {l.house}: {Math.min(l.readings, 24)} of 24 hourly readings for typical floors{l.readings >= 24 ? ', learned' : ''}.</p>)}
         </Card>
+      )}
+      <h2 className="mb-2 mt-8 font-display text-lg font-bold">How plays behave, last 14 days</h2>
+      {!cal?.length ? <p className="text-sm text-muted">Fills in as plays open and close. After a week this says how long each kind of play usually lasts on your houses.</p> : (
+        <div className="grid gap-3 md:grid-cols-2">{cal.map((c: any) => (
+          <Card key={c.detector} className="p-4 text-sm">
+            <p className="font-semibold">{c.detector.replace('_', ' ')}</p>
+            <p className="text-muted">{c.plays} plays · usually last {c.medianLifeMin != null ? `${c.medianLifeMin} min` : '?'} · a quarter close within {c.p25LifeMin != null ? `${c.p25LifeMin} min` : '?'}</p>
+            <p className="text-muted">you acted on {c.done}, skipped {c.skipped}, found {c.alreadyGone} already gone</p>
+          </Card>))}</div>
       )}
     </>
   );

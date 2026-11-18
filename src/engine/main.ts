@@ -8,6 +8,7 @@ import { dailyMaintenance } from './daily.ts';
 import { startServer } from '../server/server.ts';
 
 const POLL_MS = 2 * 60_000;
+let lastDailyFailure = 0;
 
 async function main() {
   const cfg = loadConfig();
@@ -24,28 +25,28 @@ async function main() {
   if (once) await engine.init();
   else await retry(() => engine.init(), 'house sync', log);
 
+  // Each daily step stands alone, so one failing source never blocks the others or the backup.
   const daily = async () => {
     if (!engine.dailyDue()) return;
-    try {
-      const eg = await syncEgLink(db, cfg.dataDir, () => {});
-      log(`eglink: ${eg.vendors} vendor rows, ${eg.loot} loot rows, ${eg.names} names from ${eg.builds} builds`);
-      const rc = await syncRecipes(client, db, cfg.dataDir, log);
-      log(`recipes: ${rc.recipes} recipes, ${rc.withThresholds} with skill thresholds`);
-      const changes = await engine.refreshCatalog();
-      if (changes.length) log(`vendor sell price changed on ${changes.length} items`);
-      log(`maintenance: ${JSON.stringify(dailyMaintenance(db, cfg.dataDir))}`);
-      engine.markDaily();
-    } catch (e) {
-      log(`daily job failed, will retry next round: ${(e as Error).message}`);
-    }
+    const step = async (name: string, fn: () => Promise<string>) => {
+      try { log(`${name}: ${await fn()}`); return true; } catch (e) { log(`${name} failed, will retry next round: ${(e as Error).message}`); return false; }
+    };
+    const results = [
+      await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names from ${r.builds} builds`; }),
+      await step('recipes', async () => { const r = await syncRecipes(client, db, cfg.dataDir, log); return `${r.recipes} recipes, ${r.withThresholds} with skill thresholds`; }),
+      await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
+      await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
+    ];
+    // Mark done only when every step worked, otherwise the next round retries the whole set.
+    if (results.every(Boolean)) engine.markDaily();
+    else lastDailyFailure = Date.now();
   };
-
   await daily();
   for (;;) {
     const started = Date.now();
     try { await engine.round(); } catch (e) { log(`round failed: ${(e as Error).message}`); }
     if (once) break;
-    await daily();
+    if (Date.now() - lastDailyFailure > 30 * 60_000) await daily();
     await sleep(Math.max(5_000, POLL_MS - (Date.now() - started)));
   }
   db.close();
