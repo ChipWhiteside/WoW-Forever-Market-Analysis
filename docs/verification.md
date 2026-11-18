@@ -32,3 +32,13 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 O1 vendor dump, O2 Bright Baubles at 4s 80c, O7 Wool Cloth Alliance to Blackwater, O3 Copper Ore 40 percent under typical,
 Copper Bar make or buy, value per kill for a two item source, 20 Copper Ore in 10 minutes reads 120 an hour,
 Blackwater break even 17.6 percent. See `tests/unit/`.
+
+## Overnight loop drills, November 18
+| Drill | Result |
+| --- | --- |
+| Loop started at 9pm | `loop-guard window` exits 3 and the master stops before doing anything |
+| Change touching `src/rules`, `src/alerts`, `src/store/db.ts` | `loop-guard protected` exits 4, the change becomes a proposal |
+| Planted bug merged (vendor dump profit ignores quantity) | Watchdog: tests passed before and failed after, merge reverted, changelog says "Needs Chip" |
+| Harmless change merged during a Blizzard outage | Watchdog: contract fails before and after, not blamed on the change, kept |
+
+Not yet drilled: a full agent run of `/nightly` on Chip's PC (needs his Claude desktop scheduled task and real run reports). First two nights are the drill; caps get tuned from the changelog.
