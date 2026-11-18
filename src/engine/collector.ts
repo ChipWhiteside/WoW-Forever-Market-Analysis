@@ -7,6 +7,8 @@ import { RULESET, type HouseRow } from './houses.ts';
 import { existsSync } from 'node:fs';
 
 export type Kind = 'auctions' | 'commodities';
+/** Longest gap between publishes that still counts as one differencing step. Blizzard publishes about hourly. */
+export const MAX_DIFF_HOURS = 1.6;
 export const KINDS: Kind[] = ['auctions', 'commodities'];
 
 export interface SnapshotEvent {
@@ -74,21 +76,28 @@ export class Collector {
     }
 
     const publishedAt = Date.parse(lastModified) || Date.now();
-    const stats = aggregate(listings, cur.listings);
+    // Difference only against the publish right before this one. After a gap (PC off, a skipped publish)
+    // vanished listings span many hours and would read as one hour of huge demand (review finding 1).
+    const prevAt = cur.lastModified ? Date.parse(cur.lastModified) : NaN;
+    const diffHours = Number.isFinite(prevAt) ? (publishedAt - prevAt) / 3600_000 : null;
+    const diffable = cur.listings && diffHours != null && diffHours > 0 && diffHours <= MAX_DIFF_HOURS;
+    const stats = aggregate(listings, diffable ? cur.listings : null);
     const raw = rawPath(this.dataDir, house.id, kind, publishedAt);
     const bytes = writeRaw(raw, listings);
 
     const snapshotId = tx(this.db, () => {
-      const ins = this.db.prepare(`INSERT OR IGNORE INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(house.id, kind, lastModified, publishedAt, Date.now(), listings.length,
-        stats.filter(s => s.listings > 0).length, bytes, raw);
+      const existing = this.db.prepare('SELECT id FROM snapshots WHERE house_id = ? AND kind = ? AND last_modified = ?').get(house.id, kind, lastModified) as { id: number } | undefined;
+      if (existing) return existing.id; // same publish already stored, e.g. Last-Modified went backwards
+      const ins = this.db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path, diff_hours)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(house.id, kind, lastModified, publishedAt, Date.now(), listings.length,
+        stats.filter(s => s.listings > 0).length, bytes, raw, diffable ? diffHours : null);
       const id = Number(ins.lastInsertRowid);
       const st = this.db.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5,
-        total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (const s of stats) {
         st.run(id, house.id, s.itemId, publishedAt, s.floor, s.unitsAtFloor, s.unitsWithin5, s.totalUnits, s.listings,
-          JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits);
+          JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits, s.goneUnitsExpiringNearFloor);
       }
       return id;
     });

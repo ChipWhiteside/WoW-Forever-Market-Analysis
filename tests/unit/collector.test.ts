@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { Collector } from '../../src/engine/collector.ts';
+import { demandByItem } from '../../src/analysis/history.ts';
 import { fakeBlizzard, tempDir } from '../helpers.ts';
 
 const house = { id: 110, name: 'Alliance Auction House', faction: 'alliance' as const, cut: 0.05, tracked: 1, pinned: 0 };
@@ -40,8 +41,20 @@ describe('collector', () => {
     rows = [{ id: 3, item: { id: 2770 }, quantity: 7, unit_price: 149, time_left: 'VERY_LONG' }];
     const third = await c2.poll(house, 'commodities');
     expect(third?.stats[0]?.goneUnits).toBe(20);
+    // Two differenced hours. Near floor sales: 20 at 150 in hour 2 (the 5 SHORT units at 160 expired in hour 1, not sold).
+    const d = demandByItem(db, 110, { now: Date.parse('Wed, 18 Nov 2026 06:30:00 GMT') }).get(2770)!;
+    expect(d.hours).toBe(2);
+    expect(d.unitsPerDay).toBeCloseTo(240, -1);
     const n = db.prepare('SELECT COUNT(*) n FROM snapshots').get() as { n: number };
     expect(n.n).toBe(3);
+
+    // The engine was off for two days: never difference across the gap, it would fake two days of sales as one hour.
+    lm = 'Fri, 20 Nov 2026 06:25:00 GMT';
+    rows = [];
+    const afterGap = await c2.poll(house, 'commodities');
+    expect(afterGap?.stats).toHaveLength(0); // with differencing, item 2770 would show 7 gone units
+    const hours = db.prepare('SELECT diff_hours h FROM snapshots ORDER BY published_at').all() as Array<{ h: number | null }>;
+    expect(hours.map(r => r.h === null ? null : Math.round(r.h * 100) / 100)).toEqual([null, 1, 1, null]);
   });
 
   it('flags an empty house as a suspected bug instead of a market fact', async () => {

@@ -152,6 +152,11 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX play_history_detector ON play_history (detector, first_seen);
   `,
+  // 6. Sell through precision (review findings 1 and 2), vendor standing gate (finding 4)
+  `
+  ALTER TABLE item_stats ADD COLUMN gone_units_expiring_near_floor INTEGER;
+  ALTER TABLE snapshots ADD COLUMN diff_hours REAL;
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

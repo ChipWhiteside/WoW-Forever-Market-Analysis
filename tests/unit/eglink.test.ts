@@ -25,6 +25,7 @@ describe('mergeVendors', () => {
     ]);
     expect(v).toHaveLength(1);
     expect(v[0]!.costs).toEqual({ '5': 250 });
+    expect(v[0]!.minStanding).toBe(5);
     expect(v[0]!.faction).toBe('alliance');
   });
 });
@@ -45,5 +46,16 @@ describe('mergeLoot', () => {
     expect(l[0]!.chance).toBe(0.4);
     expect(l[0]!.perKill).toBeCloseTo(0.8);
     expect(l[0]!.kills).toBe(20);
+  });
+});
+
+describe('mergeVendors drops items the newest build no longer lists', () => {
+  it('a hotfixed away item does not linger', () => {
+    const v = mergeVendors([
+      { build: '1.0.0.1', vendors: { '1': { entries: { a: { itemId: 10, costs: { '5': 100 } }, b: { itemId: 11, costs: { '5': 100 } } } } }, npcs: {}, creatures: {} },
+      { build: '1.0.0.2', vendors: { '1': { entries: { a: { itemId: 10, costs: { '5': 120 } } } } }, npcs: {}, creatures: {} },
+    ]);
+    expect(v.map(x => x.itemId)).toEqual([10]);
+    expect(v[0]!.costs['5']).toBe(120);
   });
 });

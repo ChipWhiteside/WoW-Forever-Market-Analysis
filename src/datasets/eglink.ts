@@ -50,6 +50,8 @@ export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 
 export interface MergedVendorItem {
   npcId: number; npcName: string; faction: VendorFaction; zone: string | null; x: number | null; y: number | null; uiMap: number | null;
   itemId: number; stack: number; costs: Record<string, number>; limited: boolean; lastSeen: string;
+  /** lowest standing a price was recorded at, 4 Neutral to 8 Exalted */
+  minStanding: number;
 }
 
 export function mergeVendors(
@@ -74,8 +76,12 @@ export function mergeVendors(
       sides.set(id, s);
     }
   }
+  // Newest build that lists an NPC with entries defines that NPC's whole inventory, so an item removed or
+  // repriced by a hotfix does not linger from an older build (review finding 5).
+  const newest = new Map<string, EgVendor>();
+  for (const b of sorted) for (const [npcId, v] of Object.entries(b.vendors)) if (v.entries && Object.keys(v.entries).length) newest.set(npcId, v);
   const out = new Map<string, MergedVendorItem>();
-  for (const b of sorted) {
+  for (const b of [{ vendors: Object.fromEntries(newest) }]) {
     for (const [npcId, v] of Object.entries(b.vendors)) {
       const pos = v.positions?.[0];
       for (const e of Object.values(v.entries ?? {})) {
@@ -95,6 +101,7 @@ export function mergeVendors(
           costs: e.costs,
           limited: !!e.limited,
           lastSeen: v.lastSeen ?? '',
+          minStanding: Math.min(...Object.keys(e.costs).map(Number).filter(Number.isFinite)),
         });
       }
     }
@@ -238,9 +245,9 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
   const loot = mergeLoot(lootBuilds);
   tx(db, () => {
     db.exec('DELETE FROM vendor_items');
-    const iv = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, zone, x, y, map_id, item_id, price, price_by_standing, units_per_purchase, limited)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    for (const v of vendors) iv.run(v.npcId, v.npcName, v.faction, v.zone, v.x, v.y, v.uiMap, v.itemId, vendorUnitPrice(v.costs, v.stack), JSON.stringify(v.costs), v.stack, v.limited ? 1 : 0);
+    const iv = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, zone, x, y, map_id, item_id, price, price_by_standing, units_per_purchase, limited, standing_required)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const v of vendors) iv.run(v.npcId, v.npcName, v.faction, v.zone, v.x, v.y, v.uiMap, v.itemId, vendorUnitPrice(v.costs, v.stack), JSON.stringify(v.costs), v.stack, v.limited ? 1 : 0, String(v.minStanding));
     db.exec(`DELETE FROM loot WHERE origin = 'forever'`);
     const il = db.prepare(`INSERT OR REPLACE INTO loot (source_kind, source_id, source_name, zone, min_level, max_level, classification, item_id, chance, avg_count, kills, origin)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'forever')`);

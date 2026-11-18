@@ -39,6 +39,15 @@ describe('aggregate', () => {
     expect(b.goneUnits).toBe(1);
   });
 
+  it('counts a partial buy of a stack as gone units, and subtracts only near floor expiries', () => {
+    const prev = [L(1, 7, 20, 100), L(2, 7, 5, 500, 'SHORT')];
+    const cur = [L(1, 7, 12, 100)];
+    const a = aggregate(cur, prev)[0]!;
+    expect(a.goneUnits).toBe(13);              // 8 bought from listing 1, 5 expired at 500
+    expect(a.goneUnitsNearFloor).toBe(8);
+    expect(a.goneUnitsExpiringNearFloor).toBe(0); // the 500 expiry is nowhere near the floor
+  });
+
   it('same row count but different ids is churn, not stability (ledger failure 3)', () => {
     const prev = [L(1, 7, 1, 10), L(2, 7, 1, 10)];
     const cur = [L(3, 7, 1, 10), L(4, 7, 1, 10)];

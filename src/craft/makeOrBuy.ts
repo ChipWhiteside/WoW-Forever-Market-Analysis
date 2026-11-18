@@ -51,10 +51,13 @@ export class Crafter {
     if (ah) options.push({ unit: ah.floor, source: 'auction', detail: `${this.book.houseName} floor` });
     const v = this.book.vendor.get(itemId);
     if (v) options.push({ unit: v.price, source: 'vendor', detail: `${v.npc}${v.zone ? `, ${v.zone}` : ''}` });
+    // Only cache an answer that did not depend on where we were in the tree (review finding 9).
+    let pathDependent = depth >= 4 || stack.has(itemId);
     if (depth < 4 && !stack.has(itemId)) {
       stack.add(itemId);
       for (const r of this.recipesByProduct.get(itemId) ?? []) {
         if (!this.canCraft(r)) continue;
+        if (this.reagentsOf(r.id).some(g => stack.has(g.item_id))) pathDependent = true;
         const c = this.craftCost(r, depth + 1, stack);
         if (c != null) options.push({ unit: Math.ceil(c / Math.max(1, avgQty(r))), source: 'craft', detail: r.name, recipe: r });
       }
@@ -62,7 +65,7 @@ export class Crafter {
     }
     const best = options.sort((a, b) => a.unit - b.unit)[0];
     const res = best ?? { unit: null, source: 'none' as const, detail: 'no source, path blocked' };
-    if (depth > 0) this.memo.set(itemId, res);
+    if (depth > 0 && !pathDependent) this.memo.set(itemId, res);
     return res;
   }
 

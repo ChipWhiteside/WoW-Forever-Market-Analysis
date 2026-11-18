@@ -31,6 +31,8 @@ export interface ItemStat {
   goneUnits: number | null;
   goneUnitsExpiring: number | null;
   goneUnitsNearFloor: number | null;
+  /** of goneUnitsNearFloor, ones that were SHORT last time and most likely expired rather than sold */
+  goneUnitsExpiringNearFloor: number | null;
   newUnits: number | null;
 }
 
@@ -72,17 +74,22 @@ export function aggregate(current: Listing[], previous: Listing[] | null): ItemS
     }
   }
 
-  const gone = new Map<number, { listings: number; units: number; expiring: number; nearFloor: number }>();
+  const gone = new Map<number, { listings: number; units: number; expiring: number; nearFloor: number; expiringNear: number }>();
+  const curById = new Map(current.map(l => [l.id, l]));
   if (prevById) {
     for (const [id, l] of prevById) {
-      if (curIds.has(id)) continue;
+      // A listing that vanished, or a stack that shrank (a partial buy of a commodity listing), lost units.
+      const still = curIds.has(id) ? curById.get(id)! : null;
+      const lost = still ? Math.max(0, l.quantity - still.quantity) : l.quantity;
+      if (lost === 0) continue;
       let g = gone.get(l.itemId);
-      if (!g) gone.set(l.itemId, (g = { listings: 0, units: 0, expiring: 0, nearFloor: 0 }));
-      g.listings++;
-      g.units += l.quantity;
-      if (l.timeLeft === 'SHORT') g.expiring += l.quantity;
+      if (!g) gone.set(l.itemId, (g = { listings: 0, units: 0, expiring: 0, nearFloor: 0, expiringNear: 0 }));
+      if (!still) g.listings++;
+      g.units += lost;
+      const expiring = !still && l.timeLeft === 'SHORT';
+      if (expiring) g.expiring += lost;
       const pf = prevFloor!.get(l.itemId);
-      if (pf != null && l.unitPrice != null && l.unitPrice <= pf * 1.1) g.nearFloor += l.quantity;
+      if (pf != null && l.unitPrice != null && l.unitPrice <= pf * 1.1) { g.nearFloor += lost; if (expiring) g.expiringNear += lost; }
     }
   }
 
@@ -120,6 +127,7 @@ export function aggregate(current: Listing[], previous: Listing[] | null): ItemS
       goneUnits: prevById ? g?.units ?? 0 : null,
       goneUnitsExpiring: prevById ? g?.expiring ?? 0 : null,
       goneUnitsNearFloor: prevById ? g?.nearFloor ?? 0 : null,
+      goneUnitsExpiringNearFloor: prevById ? g?.expiringNear ?? 0 : null,
       newUnits,
     });
   }

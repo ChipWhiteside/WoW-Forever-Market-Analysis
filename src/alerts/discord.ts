@@ -3,7 +3,7 @@ import type { DB } from '../store/db.ts';
 import { ALERTS } from '../rules/thresholds.ts';
 import type { Play } from '../detectors/types.ts';
 
-const ALERTING = new Set(['vendor_dump', 'vendor_supply', 'underpriced', 'cross_house']);
+const ALERTING = new Set(['vendor_dump', 'vendor_supply', 'underpriced', 'cross_house', 'sell_now']);
 const LABEL: Record<string, string> = {
   vendor_dump: 'Vendor dump', vendor_supply: 'Vendor supply', underpriced: 'Underpriced', cross_house: 'Cross house',
   craft: 'Craft', sell_now: 'Sell now', world_drop: 'World drop',
@@ -34,7 +34,8 @@ export function isQuiet(now: number, s: Pick<AlertSettings, 'quietStart' | 'quie
 export function selectForAlert(db: DB, candidates: Play[], pinned: Set<number>, s: AlertSettings, now = Date.now()): Play[] {
   const prev = db.prepare('SELECT alerted_profit FROM plays WHERE key = ?');
   return candidates
-    .filter(p => s.enabled.has(p.detector) && pinned.has(p.houseId) && p.profit >= s.profitBar && now - p.dataAt < 90 * 60_000)
+    // Cross house needs two houses fresh at once; one late house should not silence it (review finding 8).
+    .filter(p => s.enabled.has(p.detector) && pinned.has(p.houseId) && p.profit >= s.profitBar && now - p.dataAt < (p.detector === 'cross_house' ? 150 : 90) * 60_000)
     .filter(p => {
       const r = prev.get(p.key) as { alerted_profit: number | null } | undefined;
       return r?.alerted_profit == null || p.profit >= r.alerted_profit * (1 + ALERTS.regrowth);

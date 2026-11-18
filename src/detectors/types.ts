@@ -22,7 +22,7 @@ export interface HouseCtx { id: number; name: string; faction: Faction; cut: num
 
 export interface ItemCtx { id: number; name: string; sellPrice: number | null; binding: string | null; quality: string | null }
 
-export interface VendorOffer { npcId: number; npcName: string; faction: string; zone: string | null; x: number | null; y: number | null; unitPrice: number; limited: boolean }
+export interface VendorOffer { npcId: number; npcName: string; faction: string; zone: string | null; x: number | null; y: number | null; unitPrice: number; limited: boolean; minStanding: number }
 
 export interface Demand { unitsPerDay: number; hours: number; snapshots: number }
 

@@ -37,7 +37,7 @@ describe('O1 vendor dump', () => {
 
 describe('O2 vendor supply', () => {
   const items = new Map([[6532, { id: 6532, name: 'Bright Baubles', sellPrice: 62, binding: null, quality: 'COMMON' }]]);
-  const vendors = new Map([[6532, [{ npcId: 2663, npcName: 'Old Man Heming', faction: 'neutral', zone: 'Stranglethorn Vale', x: 27.5, y: 77.1, unitPrice: 250, limited: false }]]]);
+  const vendors = new Map([[6532, [{ npcId: 2663, npcName: 'Old Man Heming', faction: 'neutral', zone: 'Stranglethorn Vale', x: 27.5, y: 77.1, unitPrice: 250, limited: false, minStanding: 4 }]]]);
   it('Bright Baubles at 4s 80c on the Alliance house nets about 2s 6c each before demand is known', () => {
     const p = vendorSupply(ctx({ houses: [A], listings: new Map([[110, [L(6532, 480, 5)]]]), items, vendors }));
     expect(p).toHaveLength(1);
@@ -51,6 +51,19 @@ describe('O2 vendor supply', () => {
     const p = vendorSupply(ctx({ houses: [A], listings: new Map([[110, [L(6532, 480, 5)]]]), items, vendors, demand }));
     expect(p[0]!.profit).toBe(197 * 40);
     expect(p[0]!.confidence).toBe('medium');
+  });
+  it('a limited stock vendor counts one purchase and drops to low confidence', () => {
+    const lim = new Map([[6532, [{ ...vendors.get(6532)![0]!, limited: true }]]]);
+    const demand = new Map([[110, new Map([[6532, { unitsPerDay: 40, hours: 12, snapshots: 12 }]])]]);
+    const p = vendorSupply(ctx({ houses: [A], listings: new Map([[110, [L(6532, 480, 5)]]]), items, vendors: lim, demand }));
+    expect(p[0]!.profit).toBe(197);
+    expect(p[0]!.confidence).toBe('low');
+  });
+  it('a price only seen at Honored is flagged as possibly reputation gated', () => {
+    const gated = new Map([[6532, [{ ...vendors.get(6532)![0]!, minStanding: 6 }]]]);
+    const p = vendorSupply(ctx({ houses: [A], listings: new Map([[110, [L(6532, 480, 5)]]]), items, vendors: gated }));
+    expect(p[0]!.detail.reputationGated).toBe(true);
+    expect(p[0]!.summary).toMatch(/reputation/);
   });
   it('ignores a thin gain', () => {
     expect(vendorSupply(ctx({ houses: [A], listings: new Map([[110, [L(6532, 280, 5)]]]), items, vendors }))).toHaveLength(0);

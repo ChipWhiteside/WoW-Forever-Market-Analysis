@@ -42,7 +42,7 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
 /** Open positions plus the watchlist, merged per item. */
 export function heldItems(db: import('../store/db.ts').DB): Held[] {
   const m = new Map<number, Held>();
-  for (const p of db.prepare(`SELECT item_id, SUM(quantity - COALESCE(sold_qty, 0)) units, CAST(SUM(unit_cost * quantity) / MAX(1, SUM(quantity)) AS INTEGER) cost
+  for (const p of db.prepare(`SELECT item_id, SUM(quantity - COALESCE(sold_qty, 0)) units, CAST(SUM(unit_cost * (quantity - COALESCE(sold_qty, 0))) / MAX(1, SUM(quantity - COALESCE(sold_qty, 0))) AS INTEGER) cost
       FROM positions WHERE closed_at IS NULL GROUP BY item_id`).all() as Array<{ item_id: number; units: number; cost: number }>) {
     m.set(p.item_id, { itemId: p.item_id, units: p.units, unitCost: p.cost, alertAbove: null });
   }
