@@ -1,0 +1,181 @@
+// node:sqlite is built into Node 22.13+. Silence its experimental warning once, before load.
+const origEmit = process.emitWarning;
+process.emitWarning = ((w: unknown, ...rest: unknown[]) => {
+  if (String((w as Error)?.message ?? w).includes('SQLite')) return;
+  return (origEmit as (...a: unknown[]) => void).call(process, w, ...rest);
+}) as typeof process.emitWarning;
+const { DatabaseSync } = await import('node:sqlite');
+import { join } from 'node:path';
+
+export type DB = InstanceType<typeof DatabaseSync>;
+
+const MIGRATIONS: string[] = [
+  // 1. Core market history
+  `
+  CREATE TABLE houses (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    faction TEXT NOT NULL,            -- alliance | horde | blackwater
+    cut REAL NOT NULL,                -- 0.05 or 0.15, see src/rules
+    tracked INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0 -- Chip's own house for this faction
+  );
+  CREATE TABLE snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    house_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,               -- auctions | commodities
+    last_modified TEXT NOT NULL,      -- Blizzard header, the publish identity
+    published_at INTEGER NOT NULL,    -- epoch ms parsed from last_modified
+    fetched_at INTEGER NOT NULL,
+    rows INTEGER NOT NULL,
+    distinct_items INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    raw_path TEXT,
+    UNIQUE (house_id, kind, last_modified)
+  );
+  CREATE INDEX snapshots_house_time ON snapshots (house_id, published_at);
+  -- One row per item per snapshot. Prices in copper per unit.
+  CREATE TABLE item_stats (
+    snapshot_id INTEGER NOT NULL,
+    house_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    published_at INTEGER NOT NULL,
+    floor INTEGER,                    -- lowest buyout per unit, null if bid only
+    units_at_floor INTEGER NOT NULL,
+    units_within5 INTEGER NOT NULL,   -- units priced at or under floor * 1.05
+    total_units INTEGER NOT NULL,
+    listings INTEGER NOT NULL,
+    ladder TEXT NOT NULL,             -- JSON [[unitPrice, units], ...] cheapest 12 price points
+    gone_listings INTEGER,            -- listings present last snapshot, absent now (null on first snapshot)
+    gone_units INTEGER,
+    gone_units_expiring INTEGER,      -- of gone_units, ones that were SHORT last time (likely expired)
+    gone_units_near_floor INTEGER,    -- gone units priced within 10% of the previous floor
+    new_units INTEGER,
+    PRIMARY KEY (snapshot_id, item_id)
+  );
+  CREATE INDEX item_stats_lookup ON item_stats (house_id, item_id, published_at);
+  CREATE TABLE poll_log (
+    at INTEGER NOT NULL, house_id INTEGER NOT NULL, kind TEXT NOT NULL,
+    status INTEGER NOT NULL, ms INTEGER NOT NULL, note TEXT
+  );
+  CREATE INDEX poll_log_at ON poll_log (at);
+  CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `,
+  // 2. Catalog and plays
+  `
+  CREATE TABLE items (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    name_source TEXT,                 -- blizzard | eglink | wago | none
+    quality TEXT,
+    item_class TEXT, item_subclass TEXT,
+    item_level INTEGER, required_level INTEGER,
+    binding TEXT,
+    sell_price INTEGER, purchase_price INTEGER, purchase_quantity INTEGER,
+    max_count INTEGER, stackable INTEGER,
+    media_id INTEGER, icon_url TEXT,
+    status INTEGER NOT NULL,          -- last HTTP status from Blizzard
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE TABLE plays (
+    key TEXT PRIMARY KEY,             -- detector:house:item[:extra], stable across snapshots
+    detector TEXT NOT NULL,
+    house_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    state TEXT NOT NULL,              -- new | live | fading | gone
+    profit INTEGER NOT NULL,          -- profit available, copper
+    peak_profit INTEGER NOT NULL,
+    confidence TEXT NOT NULL,         -- high | medium | low
+    summary TEXT NOT NULL,
+    detail TEXT NOT NULL,             -- JSON, detector specific
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    data_at INTEGER NOT NULL,         -- publish time of the snapshot it came from
+    snapshots_seen INTEGER NOT NULL,
+    gone_at INTEGER,
+    alerted_profit INTEGER,           -- profit at last alert, for the 25% growth rule
+    user_status TEXT                  -- done | skipped | already_gone
+  );
+  CREATE INDEX plays_state ON plays (state, profit);
+  CREATE TABLE alerts_sent (at INTEGER NOT NULL, channel TEXT NOT NULL, plays INTEGER NOT NULL, body TEXT NOT NULL, ok INTEGER NOT NULL);
+  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `,
+  // 3. Reference datasets (vendors, recipes, loot), refreshed daily
+  `
+  CREATE TABLE vendor_items (
+    npc_id INTEGER NOT NULL, npc_name TEXT, faction TEXT, zone TEXT, x REAL, y REAL, map_id INTEGER,
+    item_id INTEGER NOT NULL, price INTEGER, price_by_standing TEXT, units_per_purchase INTEGER,
+    limited INTEGER, standing_required TEXT,
+    PRIMARY KEY (npc_id, item_id)
+  );
+  CREATE INDEX vendor_items_item ON vendor_items (item_id);
+  CREATE TABLE recipes (
+    id INTEGER PRIMARY KEY, name TEXT, profession_id INTEGER, profession TEXT, category TEXT,
+    crafted_item_id INTEGER, qty_min REAL, qty_max REAL,
+    learn_skill INTEGER, yellow INTEGER, green INTEGER, grey INTEGER, threshold_source TEXT
+  );
+  CREATE INDEX recipes_product ON recipes (crafted_item_id);
+  CREATE TABLE recipe_reagents (recipe_id INTEGER NOT NULL, item_id INTEGER NOT NULL, quantity INTEGER NOT NULL, PRIMARY KEY (recipe_id, item_id));
+  CREATE INDEX recipe_reagents_item ON recipe_reagents (item_id);
+  CREATE TABLE loot (
+    source_kind TEXT NOT NULL, source_id INTEGER NOT NULL, source_name TEXT, zone TEXT,
+    min_level INTEGER, max_level INTEGER, classification TEXT,
+    item_id INTEGER NOT NULL, chance REAL NOT NULL, avg_count REAL, kills INTEGER, origin TEXT NOT NULL,
+    PRIMARY KEY (source_kind, source_id, item_id)
+  );
+  CREATE INDEX loot_item ON loot (item_id);
+  CREATE TABLE datasets (name TEXT PRIMARY KEY, version TEXT, fetched_at INTEGER, records INTEGER, note TEXT);
+  `,
+  // 4. Chip's own state
+  `
+  CREATE TABLE positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, play_key TEXT, item_id INTEGER NOT NULL, house_id INTEGER,
+    quantity INTEGER NOT NULL, unit_cost INTEGER NOT NULL, opened_at INTEGER NOT NULL,
+    closed_at INTEGER, sold_qty INTEGER, unit_sale INTEGER, note TEXT
+  );
+  CREATE TABLE watchlist (item_id INTEGER PRIMARY KEY, alert_above INTEGER, alert_below INTEGER, added_at INTEGER NOT NULL);
+  CREATE TABLE farm_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, activity TEXT NOT NULL, source_id INTEGER,
+    started_at INTEGER NOT NULL, ended_at INTEGER, kills INTEGER, items TEXT, note TEXT
+  );
+  `,
+];
+
+export function openDb(dataDir: string, file = 'wowf.db'): DB {
+  const db = new DatabaseSync(file === ':memory:' ? ':memory:' : join(dataDir, file));
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  migrate(db);
+  return db;
+}
+
+function migrate(db: DB): void {
+  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+  let v = row?.version ?? 0;
+  if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
+  while (v < MIGRATIONS.length) {
+    db.exec('BEGIN');
+    try {
+      db.exec(MIGRATIONS[v]!);
+      v++;
+      db.prepare('UPDATE schema_version SET version = ?').run(v);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+}
+
+export function tx<T>(db: DB, fn: () => T): T {
+  db.exec('BEGIN');
+  try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+export function getKv(db: DB, key: string): string | null {
+  const r = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as { value: string } | undefined;
+  return r?.value ?? null;
+}
+export function setKv(db: DB, key: string, value: string): void {
+  db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+}
