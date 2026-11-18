@@ -28,8 +28,12 @@ npm run setup
 
 Setup asks for your Blizzard client secret and your Discord webhook, proves both work, builds the app, and registers the engine to start every time you log in. Then open http://localhost:4242. In Chrome or Edge use the menu, Install app, to get it as its own desktop window.
 
-### Discord webhook, three minutes
-Make a private Discord server, then Channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL. Paste it when setup asks. Get the Discord app on your phone and you will get alerts anywhere.
+### Discord, five minutes
+In your server, make a **Gold Finder** category with two channels:
+- `#gold-plays` for market opportunities. Set notifications to All messages so your phone buzzes.
+- `#gold-dev` for overnight loop summaries, changelog entries and health problems. Mute it and read it when you sit down.
+
+For each channel: Edit Channel, Integrations, Webhooks, New Webhook, Copy Webhook URL. Setup asks for both.
 
 ### Then, once
 1. **Settings, House finder.** In game, check the lowest price per unit for Copper Ore and Linen Cloth at a capital and at Booty Bay. Click the two houses that match. Alerts start after this.

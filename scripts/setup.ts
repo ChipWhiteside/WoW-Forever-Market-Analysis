@@ -34,9 +34,10 @@ async function main() {
   };
   const id = await ask('BLIZZARD_CLIENT_ID', 'Blizzard client ID', '2a952e578c7a4c8daf3e6736d08932da');
   const secret = await ask('BLIZZARD_CLIENT_SECRET', 'Blizzard client secret (from develop.battle.net, never paste it anywhere else)');
-  const hook = await ask('DISCORD_WEBHOOK_URL', 'Discord webhook URL for alerts (Enter to skip for now)');
+  const hook = await ask('DISCORD_WEBHOOK_URL', 'Discord webhook for #gold-plays, market alerts (Enter to skip for now)');
+  const devHook = await ask('DISCORD_DEV_WEBHOOK_URL', 'Discord webhook for #gold-dev, logs and health (Enter to skip for now)');
   rl.close();
-  const lines = [`BLIZZARD_CLIENT_ID=${id}`, `BLIZZARD_CLIENT_SECRET=${secret}`, `DISCORD_WEBHOOK_URL=${hook}`];
+  const lines = [`BLIZZARD_CLIENT_ID=${id}`, `BLIZZARD_CLIENT_SECRET=${secret}`, `DISCORD_WEBHOOK_URL=${hook}`, `DISCORD_DEV_WEBHOOK_URL=${devHook}`];
   if (process.env.DATA_DIR) lines.push(`DATA_DIR=${process.env.DATA_DIR}`);
   if (process.env.PORT) lines.push(`PORT=${process.env.PORT}`);
   writeFileSync(envPath, lines.join('\n') + '\n', { mode: 0o600 });
@@ -53,6 +54,7 @@ async function main() {
   if (hook) {
     (await sendDiscord(hook, 'Gold Finder is connected. Plays will land here, only when there is something worth your time.')) ? ok('Discord test message sent') : warn('Discord did not accept the webhook. Fix DISCORD_WEBHOOK_URL in .env later, alerts are skipped until then.');
   } else warn('No Discord webhook yet. The app still works, alerts start once you add one to .env.');
+  if (devHook) (await sendDiscord(devHook, 'Gold Finder dev channel connected. Loop summaries and health problems land here.')) ? ok('Discord dev channel test sent') : warn('Discord did not accept the dev webhook.');
 
   execSync('npm run build:web', { cwd: PROJECT_ROOT, stdio: 'inherit' });
   ok('app built');

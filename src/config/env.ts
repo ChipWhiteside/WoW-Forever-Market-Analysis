@@ -24,6 +24,8 @@ export interface AppConfig {
   clientId: string;
   clientSecret: string;
   discordWebhookUrl: string | null;
+  /** second channel for dev logs, loop summaries and health problems; falls back to nothing, never to the plays channel */
+  discordDevWebhookUrl: string | null;
   dataDir: string;
   port: number;
 }
@@ -37,6 +39,7 @@ export function loadConfig(): AppConfig {
     clientId: process.env.BLIZZARD_CLIENT_ID ?? '',
     clientSecret: process.env.BLIZZARD_CLIENT_SECRET ?? '',
     discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || null,
+    discordDevWebhookUrl: process.env.DISCORD_DEV_WEBHOOK_URL || null,
     dataDir,
     port: Number(process.env.PORT || 4242),
   };

@@ -13,7 +13,7 @@ import { sellNow, heldItems } from '../detectors/sellNow.ts';
 import { applyLifecycle } from '../detectors/lifecycle.ts';
 import { typicalFloors } from '../analysis/history.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { alertCycle } from '../alerts/discord.ts';
+import { alertCycle, sendDiscord } from '../alerts/discord.ts';
 import { computeHealth, writeRunReport } from '../health/report.ts';
 import { pool } from '../catalog/items.ts';
 import type { DetectorId, Play } from '../detectors/types.ts';
@@ -21,6 +21,7 @@ import type { DetectorId, Play } from '../detectors/types.ts';
 export interface EngineOptions {
   dataDir: string;
   webhookUrl: string | null;
+  devWebhookUrl?: string | null;
   appUrl?: string | null;
   log?: (msg: string) => void;
   fetchFn?: typeof fetch;
@@ -72,6 +73,7 @@ export class Engine {
         ({ plays, alerted } = await this.detect());
       }
       const health = computeHealth(this.db, Date.now(), suspects);
+      await this.reportHealthChange(health);
       this.lastHealth = health;
       if (events.length || errors.length || suspects.length) {
         writeRunReport(this.opts.dataDir, { at: Date.now(), ms: Date.now() - started, publishes: events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt })),
@@ -81,6 +83,27 @@ export class Engine {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Dev channel, never the plays channel. Suspected bugs post once each (they belong to one publish).
+   * House outages post as a state change: once when a house is over two hours late or failing, once when all recover.
+   */
+  private async reportHealthChange(h: ReturnType<typeof computeHealth>): Promise<void> {
+    const hook = this.opts.devWebhookUrl;
+    const post = async (text: string) => { if (hook) await sendDiscord(hook, text, this.opts.fetchFn); };
+    for (const sus of h.suspects) {
+      const k = `health:suspect:${sus}`;
+      if (getKv(this.db, k)) continue;
+      setKv(this.db, k, String(Date.now()));
+      await post(`**Suspected bug**\n${sus}. Treated as a bug until proven to be a market fact.`);
+    }
+    const down = h.houses.filter(x => x.lastError || (x.ageMin ?? 0) > 120).map(x => `${x.name.replace(' Auction House', '')} ${x.id}${x.lastError ? ` failing: ${x.lastError.slice(0, 120)}` : ` ${x.ageMin} min since last publish`}`);
+    const state = down.length ? down.map(d => d.split(' ').slice(0, 2).join(' ')).join(', ') : 'ok';
+    const prev = getKv(this.db, 'health:houses') ?? 'ok';
+    if (state === prev) return;
+    setKv(this.db, 'health:houses', state);
+    await post(state === 'ok' ? '**Health recovered.** Every house is publishing again.' : `**Health problem**\n${down.join('\n')}`);
   }
 
   /** Detection over the latest data of every house. Cheap, a few hundred milliseconds. */

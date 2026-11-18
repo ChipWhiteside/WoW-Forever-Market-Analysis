@@ -17,7 +17,7 @@ async function main() {
   const log = (m: string) => console.log(`[${new Date().toISOString()}] ${m}`);
   const db = openDb(cfg.dataDir);
   const client = new BlizzardClient(cfg.clientId, cfg.clientSecret, cfg.region);
-  const engine = new Engine(client, db, { dataDir: cfg.dataDir, webhookUrl: cfg.discordWebhookUrl, appUrl: `http://localhost:${cfg.port}`, log });
+  const engine = new Engine(client, db, { dataDir: cfg.dataDir, webhookUrl: cfg.discordWebhookUrl, devWebhookUrl: cfg.discordDevWebhookUrl, appUrl: `http://localhost:${cfg.port}`, log });
   log(`data in ${cfg.dataDir}`);
 
   if (!noServer && !once) await startServer({ db, engine, client, port: cfg.port, dataDir: cfg.dataDir, log });

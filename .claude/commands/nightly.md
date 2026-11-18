@@ -15,4 +15,4 @@ You are the master of the Gold Finder overnight loop. You never write code yours
    e. On a double PASS: `npx tsx scripts/loop-guard.ts protected main` must exit 0. Then merge to main with `git merge --no-ff loop/I-<n>`, note the merge commit, and run `npx tsx scripts/watchdog.ts <merge-commit>`. The engine picks up the new code on its next restart; the watchdog reverts automatically if anything that passed before now fails. Mark the issue `status: live`.
 6. Append tonight's entry to `docs/CHANGELOG.md`: date, each issue with how it was found, what changed in plain words, files touched, tests added, reviewer notes, status (live, reverted, needs Chip, proposal), and how to undo it (`git revert <commit>`). Add the number of agent runs and rounds used.
 7. If any limit is hit, stop for the night. Never wait for a limit to reset.
-8. Commit the docs changes on main. If `DISCORD_WEBHOOK_URL` is set in `.env`, send a short summary there with `npx tsx scripts/notify.ts "<summary>"`.
+8. Commit the docs changes on main. If `DISCORD_DEV_WEBHOOK_URL` is set in `.env`, send a short summary to the dev channel with `npx tsx scripts/notify.ts "<summary>"`.

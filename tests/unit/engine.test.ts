@@ -56,3 +56,25 @@ describe('engine end to end', () => {
     expect(houses.find((h: { id: number }) => h.id === 113)).toBeUndefined(); // Horde never tracked
   });
 });
+
+describe('dev channel health reports', () => {
+  it('a suspected bug posts once to dev, never to plays, and does not flap', async () => {
+    const dir = tempDir();
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 110, name: 'Alliance Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/110': () => ({ body: { id: 110 }, lastModified: new Date(Date.now() - 60_000).toUTCString() }),
+    });
+    const db = openDb(dir, ':memory:');
+    const posts: string[] = [];
+    const fetchFn = (async (u: string, init: RequestInit) => { posts.push(`${u} ${String(init.body)}`); return new Response(null, { status: 204 }); }) as unknown as typeof fetch;
+    const engine = new Engine(client, db, { dataDir: dir, webhookUrl: 'https://plays', devWebhookUrl: 'https://dev', log: () => {}, fetchFn });
+    await engine.init();
+    await engine.round(); // empty house 110 auctions: suspected bug
+    await engine.round(); // 304, nothing new
+    await engine.round();
+    expect(posts.filter(p => p.startsWith('https://plays'))).toHaveLength(0);
+    const dev = posts.filter(p => p.startsWith('https://dev'));
+    expect(dev).toHaveLength(1);
+    expect(dev[0]).toMatch(/Suspected bug/);
+  });
+});
