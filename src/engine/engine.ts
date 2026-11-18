@@ -9,6 +9,7 @@ import { vendorDump } from '../detectors/vendorDump.ts';
 import { vendorSupply } from '../detectors/vendorSupply.ts';
 import { crossHouse } from '../detectors/crossHouse.ts';
 import { underpriced } from '../detectors/underpriced.ts';
+import { sellNow, heldItems } from '../detectors/sellNow.ts';
 import { applyLifecycle } from '../detectors/lifecycle.ts';
 import { typicalFloors } from '../analysis/history.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
@@ -87,8 +88,8 @@ export class Engine {
     const now = Date.now();
     const ctx = buildContext(this.db, this.collector, now);
     const typical = new Map(ctx.houses.map(h => [h.id, typicalFloors(this.db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours })]));
-    const plays = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical)];
-    const detectors: DetectorId[] = ['vendor_dump', 'vendor_supply', 'cross_house', 'underpriced'];
+    const plays = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical), ...sellNow(ctx, typical, heldItems(this.db))];
+    const detectors: DetectorId[] = ['vendor_dump', 'vendor_supply', 'cross_house', 'underpriced', 'sell_now'];
     const life = applyLifecycle(this.db, plays, { detectors, houses: ctx.houses.map(h => h.id) }, now);
     const pinned = new Set(ctx.houses.filter(h => h.pinned).map(h => h.id));
     const fresh = [...life.created, ...life.updated];

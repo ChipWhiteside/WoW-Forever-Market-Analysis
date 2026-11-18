@@ -32,7 +32,8 @@ describe('mergeVendors', () => {
 describe('mergeLoot', () => {
   it('parses keys and drops group windows', () => {
     expect(parseLootKey('npc:3258|quest|group')).toMatchObject({ base: 'npc:3258', group: true, quest: true });
-    expect(parseLootKey('object:1731|spell:2575')).toMatchObject({ base: 'object:1731|spell:2575', spell: 2575 });
+    expect(parseLootKey('object:1731|spell:2575')).toMatchObject({ base: 'object:1731' });
+    expect(parseLootKey('npc:3|spell:8613')).toMatchObject({ base: 'npc:3|spell:8613', spell: 8613 });
   });
   it('adds counts across builds and weights by the share of corpses with loot', () => {
     const l = mergeLoot([

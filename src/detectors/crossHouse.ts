@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
-import { byItem, type DetectorContext, type Play, type HouseCtx } from './types.ts';
+import { byItem, houseLabel, plural, type DetectorContext, type Play, type HouseCtx } from './types.ts';
 
 /**
  * O7 Cross house flip. Buy on one of Chip's houses, carry it, list on the other.
@@ -44,7 +44,7 @@ function pair(ctx: DetectorContext, buy: HouseCtx, sell: HouseCtx): Play[] {
       key: `cross_house:${buy.id}>${sell.id}:${itemId}`,
       detector: 'cross_house', houseId: buy.id, itemId, profit,
       confidence: known ? 'medium' : 'low',
-      summary: `${name} is ${money(buys[0]!.unitPrice)} on ${buy.name} and ${money(sellFloor)} on ${sell.name}. About ${money(gainFirst)} each after the ${Math.round(sell.cut * 100)}% cut, ${units} units clear it.`,
+      summary: `${name} is ${money(buys[0]!.unitPrice)} on ${houseLabel(buy)} and ${money(sellFloor)} on ${houseLabel(sell)}. About ${money(gainFirst)} each after the ${Math.round(sell.cut * 100)}% cut, ${plural(units, 'unit')} clear it.`,
       detail: { buyHouse: buy.id, sellHouse: sell.id, buyFloor: buys[0]!.unitPrice, sellFloor, netPerUnit: net, units, demandPerDay: known ? d!.unitsPerDay : null },
       dataAt: Math.min(buy.publishedAt, sell.publishedAt),
     });

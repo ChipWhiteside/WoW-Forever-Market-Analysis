@@ -49,3 +49,7 @@ export function byItem(listings: Listing[]): Map<number, Listing[]> {
   for (const a of m.values()) a.sort((x, y) => x.unitPrice! - y.unitPrice!);
   return m;
 }
+
+/** "Alliance" or "Blackwater", plus the house id when it is not one of Chip's pinned houses. */
+export const houseLabel = (h: HouseCtx) => `${h.faction === 'alliance' ? 'Alliance' : h.faction === 'blackwater' ? 'Blackwater' : 'Horde'}${h.pinned ? '' : ` ${h.id}`}`;
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;

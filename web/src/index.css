@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --page: 247 243 234; --card: 255 253 248; --ink: 31 36 48; --muted: 107 111 122; --line: 230 223 207;
+  --gold: 176 125 32; --good: 46 125 70; --warn: 196 128 22; --bad: 180 52 52; --alliance: 47 93 168; --blackwater: 46 125 91;
+}
+.dark {
+  --page: 22 24 30; --card: 31 34 42; --ink: 236 232 222; --muted: 150 152 160; --line: 52 56 66;
+  --gold: 226 177 60; --good: 92 180 120; --warn: 230 170 70; --bad: 230 100 100; --alliance: 110 150 230; --blackwater: 90 180 140;
+}
+html, body, #root { height: 100%; }
+body { @apply bg-page text-ink font-sans antialiased; font-feature-settings: 'tnum' 1, 'cv11' 1; }
+.num { font-variant-numeric: tabular-nums; }
+.q-POOR { --q: 157 157 157; } .q-COMMON { --q: 120 120 120; } .q-UNCOMMON { --q: 30 160 30; } .q-RARE { --q: 0 112 221; }
+.q-EPIC { --q: 163 53 238; } .q-LEGENDARY { --q: 255 128 0; } .q-none { --q: 200 190 170; }
+.qrim { box-shadow: 0 0 0 2px rgb(var(--q)); }
+.qtext { color: rgb(var(--q)); }
+.dark .q-COMMON { --q: 220 220 220; }

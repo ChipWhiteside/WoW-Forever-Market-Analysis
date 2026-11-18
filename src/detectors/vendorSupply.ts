@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
-import { byItem, type DetectorContext, type Play } from './types.ts';
+import { byItem, houseLabel, plural, type DetectorContext, type Play } from './types.ts';
 
 /**
  * O2 Vendor supply. A vendor item listed well above what an Alliance usable vendor charges.
@@ -30,7 +30,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
         key: `vendor_supply:${h.id}:${itemId}`,
         detector: 'vendor_supply', houseId: h.id, itemId, profit,
         confidence: known ? 'medium' : 'low',
-        summary: `${name} sells for ${money(floor)} on ${h.name} and ${best.npcName} sells it for ${money(best.unitPrice)}. About ${money(gain)} each after the cut` +
+        summary: `${name} sells for ${money(floor)} on ${houseLabel(h)} and ${best.npcName} sells it for ${money(best.unitPrice)}. About ${money(gain)} each after the cut` +
           (known ? `, roughly ${units} sell a day.` : `. Demand not known yet.`),
         detail: { floor, vendorPrice: best.unitPrice, gainPerUnit: gain, demandPerDay: known ? d!.unitsPerDay : null, demandHours: d?.hours ?? 0,
           vendor: best, otherVendors: offers.filter(o => o !== best).slice(0, 5), where, unitsAtFloor: ls.filter(l => l.unitPrice === floor).reduce((s, l) => s + l.quantity, 0) },

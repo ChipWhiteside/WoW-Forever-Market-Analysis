@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { byItem, type DetectorContext, type Play } from './types.ts';
+import { byItem, houseLabel, plural, type DetectorContext, type Play } from './types.ts';
 import type { Typical } from '../analysis/history.ts';
 
 /**
@@ -39,7 +39,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
         key: `underpriced:${h.id}:${itemId}`,
         detector: 'underpriced', houseId: h.id, itemId, profit,
         confidence: 'medium',
-        summary: `${name} is listed at ${money(ls[0]!.unitPrice)} on ${h.name}, ${pct}% under its typical ${money(t.typicalFloor)}. Buy the cheap units and relist near ${money(t.typicalFloor)}, about ${money(profit)} after the cut.`,
+        summary: `${name} is listed at ${money(ls[0]!.unitPrice)} on ${houseLabel(h)}, ${pct}% under its typical ${money(t.typicalFloor)}. Buy the cheap units and relist near ${money(t.typicalFloor)}, about ${money(profit)} after the cut.`,
         detail: { floor: ls[0]!.unitPrice, typicalFloor: t.typicalFloor, readings: t.readings, units, demandPerDay: d!.unitsPerDay, oneOff: ls.filter(l => l.unitPrice! <= line).length === 1 },
         dataAt: h.publishedAt,
       });

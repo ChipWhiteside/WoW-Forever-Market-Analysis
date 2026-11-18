@@ -17,6 +17,7 @@ type Pos = { uiMap?: number; mapX?: number; mapY?: number };
 export interface EgVendorEntry { itemId?: number; name?: string; stack?: number; limited?: boolean; stockMax?: number; costs?: Record<string, number>; costItems?: unknown[] }
 export interface EgVendor { name?: string; lastSeen?: string; positions?: Pos[]; entries?: Record<string, EgVendorEntry> }
 export interface EgNpc { name?: string; side?: string }
+interface EgNpcFile { npcs?: Record<string, EgNpc>; objects?: Record<string, { name?: string }>; approached?: Record<string, { name?: string; positions?: Pos[] }> }
 export interface EgCreature { name?: string; levels?: Record<string, number>; classifications?: string[]; reactions?: Record<string, number[]> }
 export interface EgLootItem { drops?: number; quantity?: number; quest?: unknown }
 export interface EgLootSource { windows?: number; items?: Record<string, EgLootItem>; positions?: Pos[] }
@@ -130,6 +131,8 @@ export function parseLootKey(key: string): { base: string; kind: string; id: num
     else if (p === 'group') group = true;
     else if (p === 'quest') quest = true;
   }
+  // Nodes and chests opened with different ranks of the same spell (Mining 2575, 2576, 3564...) are one source.
+  if (kind === 'object') return { base: `object:${idStr}`, kind, id: Number(idStr), spell: null, group, quest };
   return { base: spell != null ? `${kind}:${idStr}|spell:${spell}` : `${kind}:${idStr}`, kind, id: Number(idStr), spell, group, quest };
 }
 
@@ -208,16 +211,18 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
   const lootBuilds: Parameters<typeof mergeLoot>[0] = [];
   const creatureInfo = new Map<number, { name: string; minL: number; maxL: number; cls: string; zone: string | null }>();
   const names = new Map<number, string>();
+  const objectNames = new Map<number, string>();
   for (const b of builds) {
     log(`eglink ${b}`);
     const [v, n, c, l, h] = await Promise.all([
       get<{ vendors: Record<string, EgVendor> }>(b, 'vendors'),
-      get<{ npcs: Record<string, EgNpc> }>(b, 'npcs'),
+      get<EgNpcFile>(b, 'npcs'),
       get<{ creatures: Record<string, EgCreature & { positions?: Pos[] }> }>(b, 'creatures'),
       get<{ sources: Record<string, EgLootSource>; kills: Record<string, EgKills> }>(b, 'loot'),
       get<{ items: Record<string, { name?: string; status?: string }> }>(b, 'item_hotfixes.enUS'),
     ]);
     vendorBuilds.push({ build: b, vendors: v?.vendors ?? {}, npcs: n?.npcs ?? {}, creatures: c?.creatures ?? {} });
+    for (const [id, o] of [...Object.entries(n?.objects ?? {}), ...Object.entries(n?.approached ?? {})]) if (o.name) objectNames.set(Number(id), o.name);
     if (l) lootBuilds.push({ sources: l.sources ?? {}, kills: l.kills ?? {} });
     for (const [id, cr] of Object.entries(c?.creatures ?? {})) {
       const lv = Object.keys(cr.levels ?? {}).map(Number).filter(Number.isFinite);
@@ -242,7 +247,7 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     for (const l of loot) {
       const kind = l.spell != null ? `${l.kind}:spell${l.spell}` : l.kind;
       const ci = l.kind === 'npc' ? creatureInfo.get(l.sourceId) : undefined;
-      const name = ci?.name ?? (l.kind === 'item' ? null : l.kind === 'fishing' ? `Fishing, ${zoneName(l.sourceId) ?? l.sourceId}` : null);
+      const name = ci?.name ?? (l.kind === 'item' ? null : l.kind === 'fishing' ? `Fishing, ${zoneName(l.sourceId) ?? l.sourceId}` : l.kind === 'object' ? objectNames.get(l.sourceId) ?? `Object ${l.sourceId}` : null);
       il.run(kind, l.sourceId, name, ci?.zone ?? (l.kind === 'fishing' ? zoneName(l.sourceId) : null), ci?.minL ?? null, ci?.maxL ?? null, ci?.cls ?? null,
         l.itemId, l.chance, l.perKill, l.kills, );
     }

@@ -1,5 +1,5 @@
 import { money } from '../format/money.ts';
-import { byItem, type DetectorContext, type Play } from './types.ts';
+import { byItem, houseLabel, plural, type DetectorContext, type Play } from './types.ts';
 
 /**
  * O1 Vendor dump. A listing priced below what any vendor pays for the item.
@@ -25,7 +25,7 @@ export function vendorDump(ctx: DetectorContext): Play[] {
         key: `vendor_dump:${h.id}:${itemId}`,
         detector: 'vendor_dump', houseId: h.id, itemId, profit,
         confidence: 'high',
-        summary: `${units} ${name} listed under the ${money(sell)} vendor price on ${h.name}. Buy them and sell to any vendor for about ${money(profit)}.`,
+        summary: `${units} ${name} listed under the ${money(sell)} vendor price on ${houseLabel(h)}. Buy them and sell to any vendor for about ${money(profit)}.`,
         detail: { vendorSell: sell, units, listings, cheapest: ls[0]!.unitPrice, oneOff: listings === 1, ladder: ladderOf(ls) },
         dataAt: h.publishedAt,
       });
