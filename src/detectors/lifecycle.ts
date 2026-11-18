@@ -38,7 +38,11 @@ export function applyLifecycle(db: DB, plays: Play[], evaluated: { detectors: De
       const mark = db.prepare(`UPDATE plays SET state = 'gone', gone_at = ? WHERE key = ?`);
       for (const r of q) if (!seen.has(r.key)) { mark.run(now, r.key); gone.push(r.key); }
     }
-    db.prepare(`DELETE FROM plays WHERE state = 'gone' AND gone_at < ? AND user_status IS NULL`).run(now - 24 * 3600_000);
+    // Keep a permanent record of every finished play for the calibration report, then clear it from view.
+    const old = now - 24 * 3600_000;
+    db.prepare(`INSERT INTO play_history (key, detector, house_id, item_id, first_seen, gone_at, peak_profit, snapshots_seen, user_status)
+      SELECT key, detector, house_id, item_id, first_seen, gone_at, peak_profit, snapshots_seen, user_status FROM plays WHERE state = 'gone' AND gone_at < ?`).run(old);
+    db.prepare(`DELETE FROM plays WHERE state = 'gone' AND gone_at < ?`).run(old);
   });
   return { created, updated, gone };
 }

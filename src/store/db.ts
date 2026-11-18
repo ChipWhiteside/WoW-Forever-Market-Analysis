@@ -139,6 +139,19 @@ const MIGRATIONS: string[] = [
     started_at INTEGER NOT NULL, ended_at INTEGER, kills INTEGER, items TEXT, note TEXT
   );
   `,
+  // 5. Long term history and calibration
+  `
+  CREATE TABLE item_daily (
+    house_id INTEGER NOT NULL, item_id INTEGER NOT NULL, day TEXT NOT NULL,
+    floor_min INTEGER, floor_median INTEGER, floor_max INTEGER, units_avg REAL, sold_est INTEGER, readings INTEGER NOT NULL,
+    PRIMARY KEY (house_id, item_id, day)
+  );
+  CREATE TABLE play_history (
+    key TEXT NOT NULL, detector TEXT NOT NULL, house_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+    first_seen INTEGER NOT NULL, gone_at INTEGER, peak_profit INTEGER NOT NULL, snapshots_seen INTEGER NOT NULL, user_status TEXT
+  );
+  CREATE INDEX play_history_detector ON play_history (detector, first_seen);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {
