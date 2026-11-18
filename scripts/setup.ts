@@ -74,14 +74,22 @@ function registerAutostart() {
   mkdirSync(logDir, { recursive: true });
   const os = platform();
   if (os === 'win32') {
-    // A restart loop in a .cmd, launched hidden by a .vbs, registered to run at logon.
+    // A restart loop in a .cmd, launched hidden by a .vbs.
     const cmd = join(PROJECT_ROOT, 'scripts', 'run-engine.cmd');
     writeFileSync(cmd, `@echo off\r\ncd /d "${PROJECT_ROOT}"\r\n:loop\r\n"${node}" "${cli}" "${main}" >> "${join(logDir, 'engine.log')}" 2>&1\r\ntimeout /t 15 /nobreak > nul\r\ngoto loop\r\n`);
     const vbs = join(PROJECT_ROOT, 'scripts', 'run-engine-hidden.vbs');
     writeFileSync(vbs, `CreateObject("Wscript.Shell").Run """${cmd}""", 0, False\r\n`);
-    execSync(`schtasks /Create /F /SC ONLOGON /RL LIMITED /TN "WoWF Gold Finder" /TR "wscript.exe \\"${vbs}\\""`, { stdio: 'inherit' });
-    execSync(`schtasks /Run /TN "WoWF Gold Finder"`, { stdio: 'inherit' });
-    ok('registered in Task Scheduler as "WoWF Gold Finder" (runs at logon, restarts on crash)');
+    // The Startup folder runs at every logon and needs no admin rights. Task Scheduler logon tasks do.
+    const startup = join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+    mkdirSync(startup, { recursive: true });
+    writeFileSync(join(startup, 'WoWF Gold Finder.vbs'), `CreateObject("Wscript.Shell").Run """${cmd}""", 0, False\r\n`);
+    try { execSync('schtasks /Delete /F /TN "WoWF Gold Finder"', { stdio: 'ignore' }); } catch { /* never registered */ }
+    // Stop a copy that may already be running, then start it now in the background.
+    // Stop any copy already running (its restart loop and its node process), so running setup twice never doubles it.
+    const ps = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-engine.cmd*' -or $_.CommandLine -like '*engine\\main.ts*' } | ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }";
+    try { execSync(`powershell -NoProfile -Command "${ps}"`, { stdio: 'ignore' }); } catch { /* none running */ }
+    spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore' }).unref();
+    ok(`starts at every login from your Startup folder, restarts itself if it stops. Logs: ${join(logDir, 'engine.log')}`);
   } else if (os === 'darwin') {
     const plist = join(homedir(), 'Library', 'LaunchAgents', 'com.wowf.goldfinder.plist');
     writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>

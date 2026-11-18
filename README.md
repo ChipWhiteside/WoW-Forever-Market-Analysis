@@ -26,7 +26,7 @@ npm install
 npm run setup
 ```
 
-Setup asks for your Blizzard client secret and your Discord webhook, proves both work, builds the app, and registers the engine to start every time you log in. Then open http://localhost:4242. In Chrome or Edge use the menu, Install app, to get it as its own desktop window.
+Setup asks for your Blizzard client secret and your Discord webhook, proves both work, builds the app, and starts the engine in the background and adds it to your Windows Startup folder so it runs at every login. No admin rights needed. To stop it for good, delete `WoWF Gold Finder.vbs` from the Startup folder (Win+R, `shell:startup`). Then open http://localhost:4242. In Chrome or Edge use the menu, Install app, to get it as its own desktop window.
 
 ### Discord, five minutes
 In your server, make a **Gold Finder** category with two channels:
