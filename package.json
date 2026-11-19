@@ -20,7 +20,8 @@
     "build:web": "vite build --config web/vite.config.ts",
     "match-house": "tsx scripts/match-house.ts",
     "publish-times": "tsx scripts/publish-times.ts",
-    "ladder": "tsx scripts/ladder.ts"
+    "ladder": "tsx scripts/ladder.ts",
+    "compare-houses": "tsx scripts/compare-houses.ts"
   },
   "dependencies": {
     "@fastify/static": "^8.3.0",
