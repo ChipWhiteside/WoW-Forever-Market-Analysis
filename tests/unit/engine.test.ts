@@ -100,3 +100,27 @@ describe('restart', () => {
     expect(r.plays.find(p => p.detector === 'vendor_dump')?.detail.perItem).toBe(3);
   });
 });
+
+describe('only your houses', () => {
+  it('once a house is picked, plays on unpicked houses stop and old ones close', async () => {
+    const dir = tempDir();
+    const lm = new Date(Date.now() - 5 * 60_000).toUTCString();
+    const C = (id: number) => ({ body: { auctions: [{ id, item: { id: 2589 }, quantity: 50, unit_price: 10, time_left: 'LONG' }] }, lastModified: lm });
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 111, name: 'Alliance Auction House' }, { id: 116, name: 'Blackwater Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/111': () => ({ body: { id: 111, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/116': () => ({ body: { id: 116, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/111/commodities': () => C(1),
+      '/data/wow/ruleset/2/auctions/116/commodities': () => C(2),
+      '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
+    });
+    const db = openDb(dir, ':memory:');
+    const engine = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await engine.init();
+    await engine.round();
+    expect(new Set((db.prepare(`SELECT house_id FROM plays WHERE state != 'gone'`).all() as Array<{ house_id: number }>).map(r => r.house_id))).toEqual(new Set([111, 116]));
+    db.prepare('UPDATE houses SET pinned = 1 WHERE id = 111').run();
+    await engine.detect();
+    expect((db.prepare(`SELECT house_id FROM plays WHERE state != 'gone'`).all() as Array<{ house_id: number }>).map(r => r.house_id)).toEqual([111]);
+  });
+});

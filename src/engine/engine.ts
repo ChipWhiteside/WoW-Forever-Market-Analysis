@@ -114,6 +114,10 @@ export class Engine {
     const plays = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical), ...sellNow(ctx, typical, heldItems(this.db))];
     const detectors: DetectorId[] = ['vendor_dump', 'vendor_supply', 'cross_house', 'underpriced', 'sell_now'];
     const life = applyLifecycle(this.db, plays, { detectors, houses: ctx.houses.map(h => h.id) }, now);
+    // Plays left on houses that are no longer evaluated (Chip picked his houses) are closed out.
+    if (ctx.houses.length) {
+      this.db.prepare(`UPDATE plays SET state = 'gone', gone_at = ? WHERE state != 'gone' AND house_id NOT IN (${ctx.houses.map(() => '?').join(',')})`).run(now, ...ctx.houses.map(h => h.id));
+    }
     const pinned = new Set(ctx.houses.filter(h => h.pinned).map(h => h.id));
     const fresh = [...life.created, ...life.updated];
     const a = await alertCycle(this.db, this.opts.webhookUrl, fresh, pinned, { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null });

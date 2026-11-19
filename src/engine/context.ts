@@ -39,7 +39,11 @@ export function buildContext(db: DB, collector: Collector, now = Date.now()): De
   const houses: HouseCtx[] = [];
   const listings = new Map<number, Listing[]>();
   const ids = new Set<number>();
-  for (const h of trackedHouses(db)) {
+  // Once Chip has picked a house, only his houses produce plays. An unpicked house may be someone else's realm.
+  const tracked = trackedHouses(db);
+  const anyPinned = tracked.some(h => h.pinned);
+  for (const h of tracked) {
+    if (anyPinned && !h.pinned) continue;
     const ls = [...collector.listings(h.id, 'auctions'), ...collector.listings(h.id, 'commodities')];
     if (ls.length === 0) continue;
     houses.push({ id: h.id, name: h.name, faction: h.faction, cut: h.cut, pinned: !!h.pinned, publishedAt: pubs.get(h.id) ?? now });
