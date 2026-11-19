@@ -23,7 +23,8 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
     mutationFn: (b: { status: string; quantity?: number; unitCost?: number }) => post(`/api/plays/${encodeURIComponent(p.key)}/status`, b),
     onSuccess: () => qc.invalidateQueries(),
   });
-  const d = p.detail as { buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; salesHours?: number; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
+  const d = p.detail as { price?: { levels: Array<[number, number, number]>; thinTop: boolean; recentSoldPrice: number | null; recentSales: number; soldPrice: number | null; used: string; note: string };
+    buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; salesHours?: number; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
   const gone = p.state === 'gone';
   if (!d.buy || !d.sell) return null; // a play from before the new layout; it refreshes on the next publish
   return (
@@ -45,6 +46,19 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
           <ul className="mt-3 space-y-1.5 text-sm">
             <LegRow label="Buy" leg={d.buy} />
             <LegRow label="Sell" leg={d.sell} />
+            {d.price && (
+              <li className="flex gap-2">
+                <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Price</span>
+                <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className="text-xs text-muted">listed now</span>
+                  {d.price.levels.slice(0, 4).map(([pr, u], i) => (
+                    <span key={i} className={i === 0 ? 'font-semibold' : 'text-muted'}><Money c={pr} size="sm" dim={i > 0} /> ×{u.toLocaleString()}</span>
+                  ))}
+                  {d.price.recentSoldPrice != null && <span><span className="text-xs text-muted">sold last 24h ~</span><Money c={d.price.recentSoldPrice} size="sm" /> <span className="text-xs text-muted">({d.price.recentSales})</span></span>}
+                  {d.price.note && <span className="w-full text-xs text-warn">{d.price.note}</span>}
+                </span>
+              </li>
+            )}
             <li className="flex gap-2">
               <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Volume</span>
               <span>

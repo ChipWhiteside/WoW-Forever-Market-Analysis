@@ -27,7 +27,9 @@ export interface ItemCtx { id: number; name: string; sellPrice: number | null; b
 export interface VendorOffer { npcId: number; npcName: string; faction: string; zone: string | null; x: number | null; y: number | null; uiMap?: number | null; unitPrice: number; limited: boolean; minStanding: number }
 
 /** Estimated sales, and the average price they happened at (null before any sale was seen). */
-export interface Demand { unitsPerDay: number; hours: number; snapshots: number; soldPrice?: number | null }
+export interface Demand { unitsPerDay: number; hours: number; snapshots: number; soldPrice?: number | null;
+  /** average sold price over the last 24 hours only, so a market that moved is read at today's level */
+  recentSoldPrice?: number | null; recentSales?: number }
 
 /** One side of a play: where you buy, or where you sell. */
 export interface Leg {
@@ -97,6 +99,9 @@ export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' :
 
 export const DEFAULT_SELL_SHARE = 0.2;
 
+/** What the card shows about price: cheapest levels [price, units, listings], recent sales, the price used and why. */
+export interface PricePicture { levels: Array<[number, number, number]>; thinTop: boolean; recentSoldPrice: number | null; recentSales: number; soldPrice: number | null; used: 'listed' | 'sold' | 'market'; note: string }
+
 /** Units worth doing in a day: Chip's share of daily sales, at least 1, never more than what is available. */
 export function realisticUnits(available: number, salesPerDay: number | null, share = DEFAULT_SELL_SHARE): number {
   if (salesPerDay == null) return Math.min(available, 1);
@@ -115,7 +120,7 @@ import { marketPrice, priceGates, confidenceScore, confidenceLabel, sellPrice as
  * Every detector that resells on the auction house goes through this, so one troll listing can never set a price.
  */
 export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number, ladder: Listing[]): {
-  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean; why: string;
+  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean; why: string; picture: PricePicture;
 } {
   const floor = ladder[0]!.unitPrice!;
   const m = marketPrice(ladder);
@@ -123,7 +128,10 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
   const item = ctx.items.get(itemId);
   const offers = ctx.vendors.get(itemId);
   const provenSales = d ? Math.round((d.unitsPerDay * d.hours) / 24) : 0;
-  const price = safeSellPrice(floor, m?.price ?? null, provenSales > 0 ? d?.soldPrice ?? null : null);
+  // Prefer the last 24 hours of sales when there are enough of them: prices move fast in a young economy.
+  const recentOk = (d?.recentSales ?? 0) >= 3 && d?.recentSoldPrice != null;
+  const soldRef = recentOk ? d!.recentSoldPrice! : provenSales > 0 ? d?.soldPrice ?? null : null;
+  const price = safeSellPrice(floor, m?.price ?? null, soldRef);
   const evidence: Evidence = {
     hours: d?.hours ?? 0, listings: m?.listings ?? ladder.length, provenSales, soldPrice: d?.soldPrice ?? null, askPrice: price,
     quality: item?.quality ?? null, vendorSell: item?.sellPrice ?? null, vendorBuy: offers?.length ? Math.min(...offers.map(o => o.unitPrice)) : null,
@@ -135,5 +143,18 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
   if (evidence.listings < 3) short.push(`only ${evidence.listings} listing${evidence.listings === 1 ? '' : 's'} up`);
   if (evidence.hours < 6) short.push(`${evidence.hours} hours of sales history`);
   const why = gates.length ? gates[0]! : `confidence ${score}/100: ${short.join(', ') || 'thin evidence'}`;
-  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why };
+  // The price picture shown on the card: the cheapest levels with their depth, recent sales, and which price was used and why.
+  const levels: Array<[number, number, number]> = [];
+  for (const l of ladder) {
+    const last = levels[levels.length - 1];
+    if (last && last[0] === l.unitPrice) { last[1] += l.quantity; last[2]++; } else if (levels.length < 5) levels.push([l.unitPrice!, l.quantity, 1]); else break;
+  }
+  const thinTop = levels.length > 1 && levels[0]![1] < 5 && levels[1]![0] > levels[0]![0] * 1.25;
+  const used = price < floor ? (soldRef != null && price === soldRef ? 'sold' : 'market') : 'listed';
+  const picture: PricePicture = {
+    levels, thinTop, recentSoldPrice: d?.recentSoldPrice ?? null, recentSales: d?.recentSales ?? 0, soldPrice: d?.soldPrice ?? null, used,
+    note: used === 'sold' ? `using what it actually sold for${recentOk ? ' in the last 24 hours' : ''}: the cheapest listing now is higher, but nothing has sold up there yet`
+      : thinTop ? `only ${levels[0]![1]} at the cheapest price, then ${Math.round((levels[1]![0] / levels[0]![0] - 1) * 100)}% higher` : '',
+  };
+  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why, picture };
 }

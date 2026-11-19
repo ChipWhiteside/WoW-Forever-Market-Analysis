@@ -115,3 +115,24 @@ describe('junk prices never become plays (the 76g Blacksmith Hammer)', () => {
     expect(vendorSupply(ctx({ houses: [A], listings: new Map([[111, [L(5956, 900000)]]]), items, vendors }))).toHaveLength(0);
   });
 });
+
+describe('the price picture', () => {
+  const items = new Map([[2596, { id: 2596, name: 'Junglevine Wine', sellPrice: 50, binding: null, quality: 'COMMON' }]]);
+  const vendors = new Map([[2596, [{ npcId: 1, npcName: 'Innkeeper', faction: 'neutral', zone: 'Stranglethorn Vale', x: 27, y: 77, uiMap: 1434, unitPrice: 300, limited: false, minStanding: 4 }]]]);
+  it('cheap wine sold out at 17s and the cheapest listing is now 40s: the card uses 17s and says why', () => {
+    const demand = new Map([[111, new Map([[2596, { unitsPerDay: 30, hours: 24, snapshots: 24, soldPrice: 1700, recentSoldPrice: 1700, recentSales: 30 }]])]]);
+    const ladder = [...deep(2596, 3999, 6, 10), ...deep(2596, 4500, 2, 6)];
+    const p = vendorSupply(ctx({ houses: [A], listings: new Map([[111, ladder]]), items, vendors, demand }))[0]!;
+    const pic = p.detail.price as { levels: Array<[number, number, number]>; used: string; note: string };
+    expect(pic.levels[0]).toEqual([3999, 60, 6]);
+    expect(pic.levels[1]).toEqual([4500, 12, 2]);
+    expect(pic.used).toBe('sold');
+    expect(pic.note).toMatch(/actually sold/);
+    expect(p.detail.sell.price).toBe(Math.floor(1700 * 0.95));
+  });
+  it('a thin top is called out: 2 at the cheapest price, then far higher', () => {
+    const demand = new Map([[111, new Map([[2596, { unitsPerDay: 30, hours: 24, snapshots: 24, soldPrice: 1000, recentSoldPrice: 1000, recentSales: 30 }]])]]);
+    const p = vendorSupply(ctx({ houses: [A], listings: new Map([[111, [L(2596, 1000, 2), ...deep(2596, 2000, 6, 10)]]]), items, vendors, demand }))[0]!;
+    expect((p.detail.price as { thinTop: boolean }).thinTop).toBe(true);
+  });
+});

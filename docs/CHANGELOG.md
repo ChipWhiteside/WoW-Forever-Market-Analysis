@@ -38,3 +38,9 @@ What changed, newest last. The overnight loop appends here every night it runs.
 
 - On start, the engine re-counts every stored raw snapshot with the current sale rules, so sales history goes back to the day the engine started instead of restarting. It runs once each time the sale rules change.
 - Sales a day now shows from the first hour of watching, labelled with how many hours or days it is based on.
+
+## 2026-11-19, the price picture
+
+- Each play shows a Price line: the cheapest listings now with how many at each price, what it sold for in the last 24 hours, and which price the play used and why.
+- Recent sales (last 24 hours) set the sell price when there are at least 3, so a market that moved is read at today's level.
+- A thin top is called out: only a few units at the cheapest price and the next level far higher.
