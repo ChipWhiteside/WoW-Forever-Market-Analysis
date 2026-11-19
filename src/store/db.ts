@@ -165,6 +165,14 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE item_stats ADD COLUMN sold_value INTEGER;
   `,
+  // 9. Why people buy things: quests that require an item (EG Link quest descriptions)
+  `
+  CREATE TABLE quest_items (
+    quest_id INTEGER NOT NULL, item_id INTEGER NOT NULL, amount INTEGER NOT NULL, title TEXT, level INTEGER, min_level INTEGER, zone_area INTEGER,
+    PRIMARY KEY (quest_id, item_id)
+  );
+  CREATE INDEX quest_items_item ON quest_items (item_id);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

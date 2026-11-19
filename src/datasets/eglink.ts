@@ -21,6 +21,7 @@ interface EgNpcFile { npcs?: Record<string, EgNpc>; objects?: Record<string, { n
 export interface EgCreature { name?: string; levels?: Record<string, number>; classifications?: string[]; reactions?: Record<string, number[]> }
 export interface EgLootItem { drops?: number; quantity?: number; quest?: unknown }
 export interface EgLootSource { windows?: number; items?: Record<string, EgLootItem>; positions?: Pos[] }
+export interface EgQuest { title?: string; level?: number; minLevel?: number; zoneAreaId?: number; startItemId?: number; objectives?: Array<{ type?: string; objectId?: number; amount?: number }> }
 export interface EgKills { deaths?: number; empty?: number; unknown?: number; levels?: Record<string, number> }
 
 export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unknown';
@@ -204,7 +205,7 @@ export function cmpBuild(a: string, b: string): number {
 interface EgIndex { products: Record<string, Record<string, Record<string, { records: number }>>> }
 
 /** Download (cached by ETag) and merge every live build, then write vendors, loot and names into the database. */
-export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number }> {
+export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number; questItems: number }> {
   const dir = join(dataDir, 'datasets', 'eglink');
   const { data: index } = await fetchCached<EgIndex>(`${EG_BASE}/index.json`, join(dir, 'index.json'));
   const builds = Object.keys(index.products[EG_PRODUCT] ?? {}).sort(cmpBuild);
@@ -241,6 +242,19 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     }
     for (const [id, it] of Object.entries(h?.items ?? {})) if (it.status === 'valid' && it.name) names.set(Number(id), it.name);
   }
+  // Quests that require items, from every build's quest descriptions (newest wins per quest).
+  const questItems = new Map<string, { questId: number; itemId: number; amount: number; title: string; level: number | null; minLevel: number | null; zone: number | null }>();
+  for (const b of builds) {
+    const q = await get<{ quests: Record<string, EgQuest> }>(b, 'quests.enUS');
+    for (const [qid, v] of Object.entries(q?.quests ?? {})) {
+      if (/test|\(\d+\)/i.test(v.title ?? '')) continue; // developer test quests
+      for (const o of v.objectives ?? []) {
+        if (o.type !== 'item' || !o.objectId || !o.amount) continue;
+        if (v.startItemId === o.objectId && o.amount === 1) continue; // the quest's own starting item
+        questItems.set(`${qid}:${o.objectId}`, { questId: Number(qid), itemId: o.objectId, amount: o.amount, title: v.title ?? `Quest ${qid}`, level: v.level ?? null, minLevel: v.minLevel ?? null, zone: v.zoneAreaId ?? null });
+      }
+    }
+  }
   const vendors = mergeVendors(vendorBuilds);
   const loot = mergeLoot(lootBuilds);
   tx(db, () => {
@@ -261,8 +275,11 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     const un = db.prepare(`INSERT INTO items (id, name, name_source, status, fetched_at) VALUES (?, ?, 'eglink', 0, 0)
       ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_source = 'eglink' WHERE items.name IS NULL`);
     for (const [id, name] of names) un.run(id, name);
+    db.exec('DELETE FROM quest_items');
+    const iq = db.prepare('INSERT OR REPLACE INTO quest_items (quest_id, item_id, amount, title, level, min_level, zone_area) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const q of questItems.values()) iq.run(q.questId, q.itemId, q.amount, q.title, q.level, q.minLevel, q.zone);
     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('eglink', ?, ?, ?, ?)`)
       .run(builds[builds.length - 1]!, Date.now(), vendors.length + loot.length, EG_ATTRIBUTION);
   });
-  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length };
+  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size };
 }

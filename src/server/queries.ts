@@ -45,7 +45,8 @@ export function itemDetail(db: DB, id: number) {
     FROM recipes r WHERE r.crafted_item_id = ?`).all(id);
   const usedIn = db.prepare(`SELECT r.id, r.name, r.profession, r.crafted_item_id, g.quantity FROM recipe_reagents g JOIN recipes r ON r.id = g.recipe_id WHERE g.item_id = ? ORDER BY r.profession, r.yellow LIMIT 60`).all(id);
   const drops = db.prepare(`SELECT * FROM loot WHERE item_id = ? ORDER BY kills >= 10 DESC, chance DESC LIMIT 40`).all(id);
-  return { item, houses: houses.map(h => ({ ...h, ladder: JSON.parse(h.ladder) })), history, vendors, madeBy, usedIn, drops };
+  const quests = db.prepare(`SELECT MIN(quest_id) quest_id, title, MAX(amount) amount, MIN(level) level, MIN(min_level) min_level FROM quest_items WHERE item_id = ? GROUP BY title ORDER BY level`).all(id);
+  return { item, houses: houses.map(h => ({ ...h, ladder: JSON.parse(h.ladder) })), history, vendors, madeBy, usedIn, drops, quests };
 }
 
 export function searchItems(db: DB, q: string, limit = 20) {

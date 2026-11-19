@@ -23,7 +23,9 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
     mutationFn: (b: { status: string; quantity?: number; unitCost?: number }) => post(`/api/plays/${encodeURIComponent(p.key)}/status`, b),
     onSuccess: () => qc.invalidateQueries(),
   });
-  const d = p.detail as { price?: { levels: Array<[number, number, number]>; thinTop: boolean; recentSoldPrice: number | null; recentSales: number; soldPrice: number | null; used: string; note: string };
+  const d = p.detail as { why?: { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] } | null;
+    strength?: Array<{ label: string; points: number; max: number }>; score?: number;
+    price?: { levels: Array<[number, number, number]>; thinTop: boolean; recentSoldPrice: number | null; recentSales: number; soldPrice: number | null; used: string; note: string };
     buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; salesHours?: number; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
   const gone = p.state === 'gone';
   if (!d.buy || !d.sell) return null; // a play from before the new layout; it refreshes on the next publish
@@ -46,6 +48,12 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
           <ul className="mt-3 space-y-1.5 text-sm">
             <LegRow label="Buy" leg={d.buy} />
             <LegRow label="Sell" leg={d.sell} />
+            <li className="flex gap-2">
+              <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Why</span>
+              <span>{d.why?.quests ? <><b className="text-good">Quest item.</b> {d.why.questTitle} needs {d.why.questAmount}{d.why.questLevel ? ` (level ${d.why.questLevel})` : ''}{d.why.quests > 1 ? `, plus ${d.why.quests - 1} more quest${d.why.quests > 2 ? 's' : ''}` : ''}.{d.why.recipes ? ` Also used in ${d.why.recipes} recipes.` : ''}</>
+                : d.why?.recipes ? <><b>Crafting reagent.</b> Used in {d.why.recipes} recipe{d.why.recipes > 1 ? 's' : ''} ({d.why.professions.join(', ')}){d.why.recipeNames.length ? `, like ${d.why.recipeNames.slice(0, 2).join(' and ')}` : ''}.</>
+                : <span className="text-muted">No quest or recipe needs it. People buy it to use it.</span>}</span>
+            </li>
             {d.price && (
               <li className="flex gap-2">
                 <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Price</span>
@@ -84,7 +92,10 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
 
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5">
             <span className="text-xs text-muted">data {ago(p.data_at)}</span>
-            <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{p.confidence === 'low' ? 'watch only' : `${p.confidence} confidence`}{typeof (p.detail as { score?: number }).score === 'number' ? ` · ${(p.detail as { score: number }).score}/100` : ''}</Chip>
+            <span title={d.strength ? d.strength.map(x => `${x.label}: ${x.points} of ${x.max}`).join('\n') : undefined} className="cursor-help">
+              <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{typeof d.score === 'number' ? `strength ${d.score}/100` : `${p.confidence} confidence`}{p.confidence === 'low' ? ', watch only' : ''}</Chip>
+            </span>
+            {d.strength && <span className="hidden text-[11px] text-muted md:inline">{d.strength.filter(x => x.points < x.max).slice(0, 3).map(x => `weak: ${x.label}`).join(' · ')}</span>}
             {d.oneOff && <Chip tone="warn">one cheap listing, may be a one off</Chip>}
             <span className="ml-auto flex gap-1">
               {!gone && !p.user_status && !askDone && <>

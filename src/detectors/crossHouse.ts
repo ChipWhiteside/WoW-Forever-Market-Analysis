@@ -58,7 +58,7 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
       key: `cross_house:${buyH.id}>${sellH.id}:${itemId}`, detector: 'cross_house', houseId: buyH.id, itemId, profit: perItem * units,
       confidence: judged.confidence,
       summary: playLine(name, perItem, buy, sell, salesPerDay),
-      detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, price: judged.picture, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor, score: judged.score,
+      detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, price: judged.picture, strength: judged.parts, why: judged.driver, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor, score: judged.score,
         listing: listingPlan(sellH.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
       dataAt: Math.min(buyH.publishedAt, sellH.publishedAt),
     });

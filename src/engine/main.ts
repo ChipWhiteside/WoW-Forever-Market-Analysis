@@ -40,7 +40,7 @@ async function main() {
       try { log(`${name}: ${await fn()}`); return true; } catch (e) { log(`${name} failed, will retry next round: ${(e as Error).message}`); return false; }
     };
     const results = [
-      await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names from ${r.builds} builds`; }),
+      await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names, ${r.questItems} quest items from ${r.builds} builds`; }),
       await step('recipes', async () => { const r = await syncRecipes(client, db, cfg.dataDir, log); return `${r.recipes} recipes, ${r.withThresholds} with skill thresholds`; }),
       await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
       await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),

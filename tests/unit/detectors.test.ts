@@ -11,7 +11,7 @@ const B: HouseCtx = { id: 116, name: 'Blackwater Auction House', faction: 'black
 let nid = 1;
 const L = (itemId: number, unitPrice: number, quantity = 1): Listing => ({ id: nid++, itemId, quantity, unitPrice, timeLeft: 'LONG' });
 const ctx = (over: Partial<DetectorContext>): DetectorContext => ({ houses: [A, B], listings: new Map(), items: new Map(), vendors: new Map(), demand: new Map(), now: 1, ...over });
-const demandOf = (house: number, item: number, unitsPerDay: number, soldPrice: number | null = null) => new Map([[house, new Map([[item, { unitsPerDay, hours: 24, snapshots: 24, soldPrice }]])]]);
+const demandOf = (house: number, item: number, unitsPerDay: number, soldPrice: number | null = null) => new Map([[house, new Map([[item, { unitsPerDay, hours: 24, snapshots: 24, soldPrice, floorCv: 0.05 }]])]]);
 /** A healthy ladder: n listings at the same price, so the market price is that price. */
 const deep = (item: number, price: number, n = 6, qty = 1) => Array.from({ length: n }, () => L(item, price, qty));
 
@@ -134,5 +134,17 @@ describe('the price picture', () => {
     const demand = new Map([[111, new Map([[2596, { unitsPerDay: 30, hours: 24, snapshots: 24, soldPrice: 1000, recentSoldPrice: 1000, recentSales: 30 }]])]]);
     const p = vendorSupply(ctx({ houses: [A], listings: new Map([[111, [L(2596, 1000, 2), ...deep(2596, 2000, 6, 10)]]]), items, vendors, demand }))[0]!;
     expect((p.detail.price as { thinTop: boolean }).thinTop).toBe(true);
+  });
+});
+
+describe('strength: why people buy it', () => {
+  it('a quest item scores higher than the same market with no demand reason, and says why', () => {
+    const items = new Map([[4595, { id: 4595, name: 'Junglevine Wine', sellPrice: 25, binding: null, quality: 'COMMON' }]]);
+    const vendors = new Map([[4595, [{ npcId: 1, npcName: 'Innkeeper', faction: 'neutral', zone: 'Stranglethorn Vale', x: 27, y: 77, uiMap: 1434, unitPrice: 100, limited: false, minStanding: 4 }]]]);
+    const base = { houses: [A], listings: new Map([[111, deep(4595, 1700, 6, 5)]]), items, vendors, demand: demandOf(111, 4595, 30, 1700) };
+    const plain = vendorSupply(ctx(base))[0]!;
+    const quest = vendorSupply(ctx({ ...base, drivers: new Map([[4595, { quests: 1, questTitle: 'Enticing Negolash', questAmount: 5, questLevel: 52, recipes: 0, recipeNames: [], professions: [] }]]) }))[0]!;
+    expect((quest.detail.score as number) - (plain.detail.score as number)).toBe(12);
+    expect((quest.detail.why as { questTitle: string }).questTitle).toBe('Enticing Negolash');
   });
 });

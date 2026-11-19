@@ -45,7 +45,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
         key: `vendor_supply:${h.id}:${itemId}`, detector: 'vendor_supply', houseId: h.id, itemId, profit: perItem * units,
         confidence: gated || best.limited ? 'low' : judged.confidence,
         summary: playLine(name, perItem, buy, sell, salesPerDay),
-        detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, price: judged.picture, available: Infinity, realisticUnits: units, floor, vendorPrice: best.unitPrice, score: judged.score, soldPrice: judged.evidence.soldPrice, limited: best.limited, reputationGated: gated,
+        detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, price: judged.picture, strength: judged.parts, why: judged.driver, available: Infinity, realisticUnits: units, floor, vendorPrice: best.unitPrice, score: judged.score, soldPrice: judged.evidence.soldPrice, limited: best.limited, reputationGated: gated,
           otherVendors: offers.filter(o => o !== best).slice(0, 5),
           listing: listingPlan(h.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
         dataAt: h.publishedAt,

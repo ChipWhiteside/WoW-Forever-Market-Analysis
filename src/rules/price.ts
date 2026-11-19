@@ -59,7 +59,16 @@ export interface Evidence {
   vendorSell: number | null;
   /** what the cheapest Alliance usable vendor charges for it, if any sells it */
   vendorBuy: number | null;
+  /** how much the hourly floor wandered over 3 days: standard deviation over mean (null with too few readings) */
+  floorCv?: number | null;
+  /** listings within 10 percent of the cheapest price: how many sellers hold the price up */
+  listingsNear?: number;
+  /** why people buy it */
+  driver?: 'quest' | 'recipe' | null;
 }
+
+/** One line per factor, so the card can say why a play is strong or weak. */
+export interface StrengthPart { label: string; points: number; max: number }
 
 /** Reasons a price should not be believed yet. Empty means it passes. */
 export function priceGates(e: Evidence): string[] {
@@ -72,15 +81,26 @@ export function priceGates(e: Evidence): string[] {
   return out;
 }
 
-/** Confidence 0 to 100, from the research agent's table (TSM style factors). */
-export function confidenceScore(e: Evidence, gates: string[]): number {
-  let s = Math.min(e.hours / 24, 7) * 4;
-  s += e.listings >= 5 ? 15 : e.listings >= 3 ? 8 : 0;
-  s += e.provenSales >= 10 ? 25 : e.provenSales >= 3 ? 15 : e.provenSales >= 1 ? 5 : 0;
-  if (e.soldPrice != null && Math.abs(e.soldPrice - e.askPrice) <= e.askPrice * 0.3) s += 20;
-  if (!gates.length) s += 12;
-  return Math.round(Math.max(0, Math.min(100, s)));
+/**
+ * Strength 0 to 100: how much to trust that this price is real and will hold. TSM style evidence (history, sales,
+ * price agreement) plus what Chip asked for: how many listings back the price, how steady it has been, and why
+ * people buy the item (a quest turn in is the strongest demand, a crafting reagent next).
+ */
+export function strength(e: Evidence, gates: string[]): { score: number; parts: StrengthPart[] } {
+  const parts: StrengthPart[] = [
+    { label: 'days of history', points: Math.round(Math.min(e.hours / 24, 7) * 3), max: 21 },
+    { label: 'listings holding the price', points: (e.listingsNear ?? e.listings) >= 5 ? 12 : (e.listingsNear ?? e.listings) >= 3 ? 6 : 0, max: 12 },
+    { label: 'sales seen', points: e.provenSales >= 10 ? 20 : e.provenSales >= 3 ? 12 : e.provenSales >= 1 ? 4 : 0, max: 20 },
+    { label: 'sold near this price', points: e.soldPrice != null && Math.abs(e.soldPrice - e.askPrice) <= e.askPrice * 0.3 ? 15 : 0, max: 15 },
+    { label: 'steady price', points: e.floorCv == null ? 0 : e.floorCv < 0.1 ? 12 : e.floorCv < 0.25 ? 6 : 0, max: 12 },
+    { label: e.driver === 'quest' ? 'quest item' : e.driver === 'recipe' ? 'crafting reagent' : 'demand reason', points: e.driver === 'quest' ? 12 : e.driver === 'recipe' ? 6 : 0, max: 12 },
+    { label: 'passes junk checks', points: gates.length ? 0 : 8, max: 8 },
+  ];
+  return { score: Math.min(100, parts.reduce((a, p) => a + p.points, 0)), parts };
 }
+
+/** Kept for callers that only need the number. */
+export function confidenceScore(e: Evidence, gates: string[]): number { return strength(e, gates).score; }
 
 export const confidenceLabel = (score: number): 'high' | 'medium' | 'low' => score >= 75 ? 'high' : score >= PRICE.opportunityAt ? 'medium' : 'low';
 

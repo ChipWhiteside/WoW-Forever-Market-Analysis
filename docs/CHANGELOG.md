@@ -44,3 +44,9 @@ What changed, newest last. The overnight loop appends here every night it runs.
 - Each play shows a Price line: the cheapest listings now with how many at each price, what it sold for in the last 24 hours, and which price the play used and why.
 - Recent sales (last 24 hours) set the sell price when there are at least 3, so a market that moved is read at today's level.
 - A thin top is called out: only a few units at the cheapest price and the next level far higher.
+
+## 2026-11-19, strength and why people buy it
+
+- Every play says why people buy the item: a quest that needs it (name, amount, level), recipes that use it, or neither. Quest data comes from EG Link's recorded quest descriptions, refreshed daily.
+- Confidence became Strength, 0 to 100, now including how many listings hold the price, how steady it has been for 3 days, and the demand reason (quest strongest, recipe next). Hover the chip for the breakdown.
+- Item lookup shows the quests that need an item.

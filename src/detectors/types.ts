@@ -29,7 +29,12 @@ export interface VendorOffer { npcId: number; npcName: string; faction: string; 
 /** Estimated sales, and the average price they happened at (null before any sale was seen). */
 export interface Demand { unitsPerDay: number; hours: number; snapshots: number; soldPrice?: number | null;
   /** average sold price over the last 24 hours only, so a market that moved is read at today's level */
-  recentSoldPrice?: number | null; recentSales?: number }
+  recentSoldPrice?: number | null; recentSales?: number;
+  /** hourly floor's standard deviation over its mean, 3 days */
+  floorCv?: number | null }
+
+/** Why people buy an item: quests that require it and recipes that use it. */
+export interface Driver { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] }
 
 /** One side of a play: where you buy, or where you sell. */
 export interface Leg {
@@ -76,6 +81,7 @@ export interface DetectorContext {
   sellShare?: number;
   /** when present, detectors record candidates they held back and why ("closest calls") */
   rejects?: Reject[];
+  drivers?: Map<number, Driver>;
 }
 
 export interface Reject { detector: DetectorId; houseId: number; itemId: number; perItem: number | null; reason: string; score?: number }
@@ -113,14 +119,14 @@ export function auctionLeg(h: HouseCtx, price: number, places: Place[]): Leg {
   return { kind: 'auction', price, who: `${houseLabel(h)} auction house`, places, houseId: h.id };
 }
 
-import { marketPrice, priceGates, confidenceScore, confidenceLabel, sellPrice as safeSellPrice, PRICE, type Evidence } from '../rules/price.ts';
+import { marketPrice, priceGates, strength, confidenceLabel, sellPrice as safeSellPrice, PRICE, type Evidence, type StrengthPart } from '../rules/price.ts';
 
 /**
  * Judge a sell side: the price a play may claim, why it might be junk, and a 0 to 100 confidence.
  * Every detector that resells on the auction house goes through this, so one troll listing can never set a price.
  */
 export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number, ladder: Listing[]): {
-  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean; why: string; picture: PricePicture;
+  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; parts: StrengthPart[]; driver: Driver | null; confidence: Confidence; show: boolean; why: string; picture: PricePicture;
 } {
   const floor = ladder[0]!.unitPrice!;
   const m = marketPrice(ladder);
@@ -135,9 +141,12 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
   const evidence: Evidence = {
     hours: d?.hours ?? 0, listings: m?.listings ?? ladder.length, provenSales, soldPrice: d?.soldPrice ?? null, askPrice: price,
     quality: item?.quality ?? null, vendorSell: item?.sellPrice ?? null, vendorBuy: offers?.length ? Math.min(...offers.map(o => o.unitPrice)) : null,
+    floorCv: d?.floorCv ?? null,
+    listingsNear: ladder.filter(l => l.unitPrice! <= floor * 1.1).length,
+    driver: ctx.drivers?.get(itemId)?.quests ? 'quest' : ctx.drivers?.get(itemId)?.recipes ? 'recipe' : null,
   };
   const gates = priceGates(evidence);
-  const score = confidenceScore(evidence, gates);
+  const { score, parts } = strength(evidence, gates);
   const short: string[] = [];
   if (evidence.provenSales < 3) short.push(evidence.provenSales ? `only ${evidence.provenSales} sales seen so far` : 'no sales seen yet');
   if (evidence.listings < 3) short.push(`only ${evidence.listings} listing${evidence.listings === 1 ? '' : 's'} up`);
@@ -156,5 +165,5 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
     note: used === 'sold' ? `using what it actually sold for${recentOk ? ' in the last 24 hours' : ''}: the cheapest listing now is higher, but nothing has sold up there yet`
       : thinTop ? `only ${levels[0]![1]} at the cheapest price, then ${Math.round((levels[1]![0] / levels[0]![0] - 1) * 100)}% higher` : '',
   };
-  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why, picture };
+  return { price, market: m?.price ?? null, evidence, gates, score, parts, driver: ctx.drivers?.get(itemId) ?? null, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why, picture };
 }

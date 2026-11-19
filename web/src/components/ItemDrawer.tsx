@@ -26,6 +26,12 @@ export function ItemDrawer({ id, onClose, onOpenItem }: { id: number; onClose: (
               <Stat label="Blizzard list price" hint="Populated on every item, never proof a vendor sells it"><Money c={it.purchase_price} dim /></Stat>
             </div>
 
+            <Section title="Why people buy it">
+              {data.quests?.length ? data.quests.map((q: any) => <p key={q.quest_id} className="text-sm"><b>{q.title}</b> needs {q.amount}<span className="text-muted">{q.level ? ` · level ${q.level} quest` : ''}</span></p>)
+                : data.usedIn.length ? <p className="text-sm">Crafting reagent, used in {data.usedIn.length} recipes (below).</p>
+                : <p className="text-sm text-muted">No quest or recipe needs it. People buy it to use it.</p>}
+            </Section>
+
             <Section title="On the auction houses">
               {data.houses.length === 0 && <p className="text-sm text-muted">Not listed on any tracked house right now.</p>}
               {data.houses.map((h: any) => (
