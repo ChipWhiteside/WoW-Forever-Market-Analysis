@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, type Health } from '../lib/api';
 import { PageHeader, Card, Money, ItemIcon, ItemName } from '../components/ui';
 import { PLAY_LABEL } from '../lib/format';
+import { isHidden, useHidden } from '../lib/categories';
 import { PlayList } from './plays';
 import { ago } from '../lib/format';
 import { useNav } from '../nav';
@@ -69,7 +70,8 @@ function ClosestCalls() {
   const { data: live } = useQuery({ queryKey: ['plays', undefined, false], queryFn: () => api<Array<{ item_id: number }>>('/api/plays') });
   const liveIds = new Set((live ?? []).map(p => p.item_id));
   const cc = data?.closest;
-  const calls = (cc?.calls ?? []).filter((c: any) => !liveIds.has(c.itemId));
+  const [hidden] = useHidden();
+  const calls = (cc?.calls ?? []).filter((c: any) => !liveIds.has(c.itemId) && !isHidden(c, hidden));
   if (!calls.length) return null;
   return (
     <div className="mt-8">

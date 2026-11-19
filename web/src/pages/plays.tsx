@@ -4,12 +4,15 @@ import { api, type Play } from '../lib/api';
 import { PlayCard } from '../components/PlayCard';
 import { PageHeader, Empty } from '../components/ui';
 import { PLAY_LABEL } from '../lib/format';
+import { CategoryFilter } from '../components/CategoryFilter';
+import { isHidden, useHidden } from '../lib/categories';
 import { useNav } from '../nav';
 
 export function PlayList({ detectors, filters = false, emptyTitle, emptyText }: { detectors?: string[]; filters?: boolean; emptyTitle: string; emptyText: React.ReactNode }) {
   const { openItem } = useNav();
   const [showGone, setShowGone] = useState(false);
   const [only, setOnly] = useState<string | null>(null);
+  const [hidden] = useHidden();
   const { data, isLoading } = useQuery({
     queryKey: ['plays', detectors?.join(','), showGone],
     queryFn: () => api<Play[]>(`/api/plays?${detectors ? `detector=${detectors.join(',')}&` : ''}${showGone ? 'gone=1' : ''}`),
@@ -19,7 +22,9 @@ export function PlayList({ detectors, filters = false, emptyTitle, emptyText }: 
   const all = (data ?? []).filter(p => (p.detail as { buy?: unknown }).buy);
   const counts = new Map<string, number>();
   for (const p of all) if (p.state !== 'gone') counts.set(p.detector, (counts.get(p.detector) ?? 0) + 1);
-  const plays = only ? all.filter(p => p.detector === only) : all;
+  const byType = only ? all.filter(p => p.detector === only) : all;
+  const plays = byType.filter(p => !isHidden(p, hidden));
+  const hiddenCount = byType.length - plays.length;
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -31,6 +36,8 @@ export function PlayList({ detectors, filters = false, emptyTitle, emptyText }: 
         </>}
         <label className="ml-auto flex items-center gap-2 text-xs text-muted"><input type="checkbox" checked={showGone} onChange={e => setShowGone(e.target.checked)} /> show gone</label>
       </div>
+      <CategoryFilter items={byType.filter(p => p.state !== 'gone')} />
+      {hiddenCount > 0 && <p className="text-xs text-muted">{hiddenCount} play{hiddenCount === 1 ? '' : 's'} hidden by your category filter.</p>}
       {plays.length === 0 ? <Empty title={emptyTitle}>{emptyText}</Empty> : plays.map(p => <PlayCard key={p.key} p={p} onOpenItem={openItem} />)}
     </div>
   );

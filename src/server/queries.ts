@@ -3,7 +3,7 @@ import { readingsSoFar } from '../analysis/history.ts';
 
 export interface PlayRow {
   key: string; detector: string; house_id: number; house_name: string; faction: string; item_id: number; item_name: string | null;
-  quality: string | null; icon_url: string | null; state: string; profit: number; peak_profit: number; confidence: string; summary: string;
+  quality: string | null; icon_url: string | null; item_class: string | null; item_subclass: string | null; state: string; profit: number; peak_profit: number; confidence: string; summary: string;
   detail: unknown; first_seen: number; last_seen: number; data_at: number; snapshots_seen: number; gone_at: number | null; user_status: string | null;
 }
 
@@ -14,7 +14,7 @@ export function listPlays(db: DB, f: { detector?: string[]; house?: number; incl
   if (f.house) { where.push('p.house_id = ?'); args.push(f.house); }
   if (!f.includeGone) where.push(`p.state != 'gone'`);
   where.push(`(p.user_status IS NULL OR p.user_status = 'done')`);
-  const rows = db.prepare(`SELECT p.*, h.name house_name, h.faction, i.name item_name, i.quality, i.icon_url
+  const rows = db.prepare(`SELECT p.*, h.name house_name, h.faction, i.name item_name, i.quality, i.icon_url, i.item_class, i.item_subclass
     FROM plays p JOIN houses h ON h.id = p.house_id LEFT JOIN items i ON i.id = p.item_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY (p.state = 'gone'), p.profit DESC LIMIT ?`).all(...args, f.limit ?? 300) as unknown as Array<PlayRow & { detail: string }>;
   return rows.map(r => ({ ...r, detail: JSON.parse(r.detail) }));
@@ -68,7 +68,7 @@ export function overview(db: DB) {
   let closest = null;
   if (cc) {
     const parsed = JSON.parse(cc) as { at: number; minEach: number; calls: Array<{ itemId: number; [k: string]: unknown }> };
-    const nameQ = db.prepare('SELECT name, quality, icon_url FROM items WHERE id = ?');
+    const nameQ = db.prepare('SELECT name, quality, icon_url, item_class, item_subclass FROM items WHERE id = ?');
     closest = { ...parsed, calls: parsed.calls.map(c => ({ ...c, ...(nameQ.get(c.itemId) as object ?? {}) })) };
   }
   return { counts, pinned, learning, datasets, totals, items, news: news ? JSON.parse(news) : null, closest };

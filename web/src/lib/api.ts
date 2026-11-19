@@ -8,7 +8,7 @@ export const put = <T,>(path: string, body: unknown) => api<T>(path, { method: '
 
 export interface Play {
   key: string; detector: string; house_id: number; house_name: string; faction: string; item_id: number; item_name: string | null;
-  quality: string | null; icon_url: string | null; state: 'new' | 'live' | 'fading' | 'gone'; profit: number; peak_profit: number;
+  quality: string | null; icon_url: string | null; item_class?: string | null; item_subclass?: string | null; state: 'new' | 'live' | 'fading' | 'gone'; profit: number; peak_profit: number;
   confidence: 'high' | 'medium' | 'low'; summary: string; detail: Record<string, any>; first_seen: number; last_seen: number; data_at: number;
   snapshots_seen: number; gone_at: number | null; user_status: string | null;
 }

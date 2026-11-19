@@ -63,3 +63,7 @@ What changed, newest last. The overnight loop appends here every night it runs.
   - Cards read in sentences; Strength replaces confidence everywhere; held back hides items already shown as plays.
   - Plain words: cheapest price and usual price, not floor and typical floor. Settings take silver, not copper.
   - Market hides week over week moves until a week of history exists. The changelog renders as a page.
+
+## 2026-11-19, category filters
+
+- Plays can be filtered by item category, straight from the game's item classes: Recipes, Crafting materials, Consumables, Weapons, Armor, Bags and so on, each split into subcategories (Blacksmithing recipes, Cloth, Metal and Stone). Click a category to hide it, click again to show it. Your choice is remembered and also applies to the held back list.
