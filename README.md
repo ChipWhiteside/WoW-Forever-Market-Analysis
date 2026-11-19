@@ -59,7 +59,18 @@ Your PC must be on for history to be recorded. Any hour it is off is gone for go
 The loop audits the data, fixes what it can on its own branch, tests and reviews every change, and merges only when both pass. Anything touching the profit math, alerts, stored data or its own guardrails becomes a proposal for you instead. A watchdog reverts any merged change that breaks a check that passed before.
 
 ## Useful commands
-`npm run contract` live check of every data source · `npm test` · `npm run engine` run in a terminal instead of the background
+
+| Command | What it does |
+| --- | --- |
+| `npm run contract` | Live check that every data source still has the shape the code expects |
+| `npm run publish-times` | When each house last published, and the minute past the hour it usually lands |
+| `npm run ladder -- 111 "Copper Ore"` | Every listing of one item on one house, grouped by price like the in game window, saved as CSV |
+| `npm run match-house` | Scores every house against what you saw in game (edit `scripts/seen.ts`) |
+| `npm run compare-houses` | The same, level by level, skipping the fastest moving cheap levels |
+| `npm test` | The test suite |
+| `npm run engine` | Run the engine in a terminal instead of the background |
+
+Your Blacksmithing plan is in `docs/blacksmithing-plan.md`, and live in the app under Crafting, Leveling plan.
 
 ## Credits
 Vendor, loot and item name data from [Efficient Games](https://efficient.games), licensed under CC BY 4.0, merged across builds. Recipe skill thresholds from the game's SkillLineAbility table via wago.tools. Auction and item data from the Blizzard API. World of Warcraft is a trademark of Blizzard Entertainment.
