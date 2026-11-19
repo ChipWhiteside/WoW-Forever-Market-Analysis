@@ -15,6 +15,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | B6 | Blizzard recipe id equals `SkillLineAbility.ID`. Row 1631 (Rough Sharpening Stone) has TrivialLow 15, TrivialHigh 55; green is the midpoint 35. Matches SkillScribe's 1, 15, 35, 55 | Downloaded CSV, test T3 bar met |
 | B7 | `MinSkillLineRank` is often 1 even for recipes learned higher (Smelt Bronze reads 1, learned at 65) | Same CSV. Learn skill falls back to yellow when no trainer row exists |
 | B8 | Mining the same vein with different spell ranks splits EG Link loot keys; merged per object, Copper Vein has 184 recorded nodes | Live merge |
+| B11 | **Chip's Alliance house is 111.** Matched against his Stormwind screenshots by price ladder: 33 of 57 price steps on 111, at most 1 on any other Alliance house, and only Linen units within 5 percent on 111. The partial match is the snapshot moving between his screenshot and the run | `npm run match-house`, November 19 |
 | B10 | Dead house 112 answers the commodities endpoint with 200 and no `auctions` key at all, not an empty list. The contract now reads a missing key as zero listings and flags it | Chip's live run of match-house crashed on it, November 19 |
 | B9 | This cloud container reaches Blizzard, GitHub raw, wago.tools and Discord | curl from the session |
 
@@ -27,7 +28,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | P3 | Deposit formula (T7) | Assumed 15 percent of vendor sell price, 1c minimum, 5x Blackwater | Chip's test listing |
 | P4 | Demand from vanished listings | Provisional by nature: cancellations leak in. Excludes listings that were about to expire | Calibration report over weeks |
 | P5 | Character professions from the profile API (T8) | Not wired. Professions are typed in Settings as JSON | Later release |
-| P6 | Your two house ids | Chip, in the House finder | In game, one minute |
+| P6 | Chip's Blackwater house (Alliance is 111, B11) | Candidates 116, 117, 121, 125 | Booty Bay ladders into match-house |
 
 ## Hand calculated checks in the test suite
 O1 vendor dump, O2 Bright Baubles at 4s 80c, O7 Wool Cloth Alliance to Blackwater, O3 Copper Ore 40 percent under typical,
