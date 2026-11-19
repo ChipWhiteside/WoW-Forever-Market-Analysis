@@ -13,14 +13,17 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   const since = now - hours * 3600_000;
   // Hours actually covered by differencing, per kind: the sum of the gaps between consecutive publishes
   // that were differenced. Gaps over 1.6 hours are never differenced, so outages cannot inflate demand.
-  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND diff_hours IS NOT NULL GROUP BY kind`)
-    .all(houseId, since) as Array<{ kind: string; h: number }>;
+  // Only rows counted with the current method (they carry sold_value). Rows from before it counted expiries and
+  // relists as sales, so they are left out rather than mixed in.
+  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND diff_hours IS NOT NULL
+     AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND sold_value IS NOT NULL) GROUP BY kind`)
+    .all(houseId, since, houseId, since) as Array<{ kind: string; h: number }>;
   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
   const out = new Map<number, Demand>();
   if (covered <= 0) return out;
   const rows = db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold,
      SUM(COALESCE(sold_value, 0)) value, COUNT(*) n
-     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL GROUP BY item_id`).all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number }>;
+     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number }>;
   for (const r of rows) out.set(r.item_id, { unitsPerDay: (r.sold / covered) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null });
   return out;
 }

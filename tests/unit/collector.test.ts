@@ -83,3 +83,14 @@ describe('collector', () => {
     await expect(c.poll(house, 'auctions')).rejects.toThrow(/Contract violation/);
   });
 });
+
+describe('old history', () => {
+  it('rows counted before the sold price existed are left out of demand', async () => {
+    const db = openDb(tempDir(), ':memory:');
+    const t = Date.parse('Wed, 18 Nov 2026 05:25:00 GMT');
+    db.exec(`INSERT INTO snapshots (id, house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, diff_hours) VALUES (1, 110, 'commodities', 'a', ${t}, ${t}, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder, gone_units, gone_units_near_floor, gone_units_expiring_near_floor, sold_value)
+      VALUES (1, 110, 5956, ${t}, 100, 1, 1, 1, 1, '[]', 48, 48, 0, NULL)`);
+    expect(demandByItem(db, 110, { now: t + 60_000 }).get(5956)).toBeUndefined();
+  });
+});
