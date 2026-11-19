@@ -15,6 +15,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | B6 | Blizzard recipe id equals `SkillLineAbility.ID`. Row 1631 (Rough Sharpening Stone) has TrivialLow 15, TrivialHigh 55; green is the midpoint 35. Matches SkillScribe's 1, 15, 35, 55 | Downloaded CSV, test T3 bar met |
 | B7 | `MinSkillLineRank` is often 1 even for recipes learned higher (Smelt Bronze reads 1, learned at 65) | Same CSV. Learn skill falls back to yellow when no trainer row exists |
 | B8 | Mining the same vein with different spell ranks splits EG Link loot keys; merged per object, Copper Vein has 184 recorded nodes | Live merge |
+| B10 | Dead house 112 answers the commodities endpoint with 200 and no `auctions` key at all, not an empty list. The contract now reads a missing key as zero listings and flags it | Chip's live run of match-house crashed on it, November 19 |
 | B9 | This cloud container reaches Blizzard, GitHub raw, wago.tools and Discord | curl from the session |
 
 ## Not yet proven, blocking or provisional

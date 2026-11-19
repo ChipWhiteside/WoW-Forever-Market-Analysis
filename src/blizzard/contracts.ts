@@ -36,8 +36,12 @@ export const HouseResponse = z.object({
   commodities: z.object({ href: z.string().url() }).optional(),
 }).passthrough();
 
+/**
+ * A dead house (112, V12) answers 200 with no `auctions` key at all (seen live November 19). Missing is read as
+ * zero listings, which the collector flags as a suspected bug rather than a market fact (ledger rule 2).
+ */
 export const CommoditiesResponse = z.object({
-  auctions: z.array(CommodityRow),
+  auctions: z.array(CommodityRow).optional().default([]),
 }).passthrough();
 
 export const HouseIndex = z.object({

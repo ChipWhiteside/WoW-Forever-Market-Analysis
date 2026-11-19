@@ -65,6 +65,15 @@ describe('collector', () => {
     expect(ev?.suspect[0]).toMatch(/zero listings/);
   });
 
+  it('a dead house that answers commodities with no auctions key is zero listings and a suspected bug (seen live)', async () => {
+    const dir = tempDir();
+    const { client } = fakeBlizzard({ '/data/wow/ruleset/2/auctions/112/commodities': () => ({ body: { _links: {} }, lastModified: 'Thu, 19 Nov 2026 04:00:00 GMT' }) });
+    const c = new Collector(client, openDb(dir, ':memory:'), dir);
+    const ev = await c.poll({ ...house, id: 112 }, 'commodities');
+    expect(ev?.rows).toBe(0);
+    expect(ev?.suspect[0]).toMatch(/zero listings/);
+  });
+
   it('rejects a payload that breaks the contract (commodities key as an array is fine, as a number is not)', async () => {
     const dir = tempDir();
     const { client } = fakeBlizzard({ '/data/wow/ruleset/2/auctions/110': () => ({ body: { id: 110, auctions: [{ id: 1, item: 4308, buyout: 1, quantity: 1, time_left: 'LONG' }] }, lastModified: 'x' }) });
