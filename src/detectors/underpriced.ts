@@ -27,7 +27,10 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       const soldInWindow = d ? (d.unitsPerDay * d.hours) / 24 : 0;
       if (!d || soldInWindow < UNDERPRICED.minDisappeared) continue;
       const judged = judgeSell(ctx, h, itemId, ls.filter(l => l.unitPrice! > line).length ? ls.filter(l => l.unitPrice! > line) : ls);
-      if (judged.gates.length || judged.score < 40) continue;
+      if (judged.gates.length || judged.score < 40) {
+        ctx.rejects?.push({ detector: 'underpriced', houseId: h.id, itemId, perItem: netPerUnit(h.faction, t.typicalFloor) - ls[0]!.unitPrice!, reason: judged.why, score: judged.score });
+        continue;
+      }
       const cheap = ls.filter(l => l.unitPrice! <= line);
       const available = cheap.reduce((s, l) => s + l.quantity, 0);
       const units = realisticUnits(available, d.unitsPerDay, share);

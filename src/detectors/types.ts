@@ -70,7 +70,11 @@ export interface DetectorContext {
   now: number;
   /** share of a market's daily sales Chip can realistically take, default 0.2 */
   sellShare?: number;
+  /** when present, detectors record candidates they held back and why ("closest calls") */
+  rejects?: Reject[];
 }
+
+export interface Reject { detector: DetectorId; houseId: number; itemId: number; perItem: number | null; reason: string; score?: number }
 
 /** Group a house's listings by item, cheapest first, buyout only. */
 export function byItem(listings: Listing[]): Map<number, Listing[]> {
@@ -109,7 +113,7 @@ import { marketPrice, priceGates, confidenceScore, confidenceLabel, sellPrice as
  * Every detector that resells on the auction house goes through this, so one troll listing can never set a price.
  */
 export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number, ladder: Listing[]): {
-  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean;
+  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean; why: string;
 } {
   const floor = ladder[0]!.unitPrice!;
   const m = marketPrice(ladder);
@@ -124,5 +128,10 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
   };
   const gates = priceGates(evidence);
   const score = confidenceScore(evidence, gates);
-  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt };
+  const short: string[] = [];
+  if (evidence.provenSales < 3) short.push(evidence.provenSales ? `only ${evidence.provenSales} sales seen so far` : 'no sales seen yet');
+  if (evidence.listings < 3) short.push(`only ${evidence.listings} listing${evidence.listings === 1 ? '' : 's'} up`);
+  if (evidence.hours < 6) short.push(`${evidence.hours} hours of sales history`);
+  const why = gates.length ? gates[0]! : `confidence ${score}/100: ${short.join(', ') || 'thin evidence'}`;
+  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why };
 }

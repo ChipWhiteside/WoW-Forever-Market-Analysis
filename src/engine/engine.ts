@@ -114,8 +114,15 @@ export class Engine {
     const setting = Number((this.db.prepare(`SELECT value FROM settings WHERE key = 'min_profit_each'`).get() as { value: string } | undefined)?.value);
     const minEach = Number.isFinite(setting) && setting >= 0 ? setting : MIN_PROFIT_EACH;
     // Anything under the minimum profit per item is not worth Chip's time: never stored, shown or alerted.
-    const plays = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical), ...sellNow(ctx, typical, heldItems(this.db))]
-      .filter(p => p.detail.perItem >= minEach);
+    ctx.rejects = [];
+    const all = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical), ...sellNow(ctx, typical, heldItems(this.db))];
+    const plays = all.filter(p => p.detail.perItem >= minEach);
+    for (const p of all) if (p.detail.perItem < minEach) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `under your ${minEach}c minimum per item` });
+    // Closest calls: the best candidates held back this round and why, so an empty board explains itself.
+    const seen = new Set<string>();
+    const closest = ctx.rejects.filter(r => r.perItem != null && r.perItem > 0).sort((a, b) => b.perItem! - a.perItem!)
+      .filter(r => { const k = `${r.detector}:${r.itemId}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 25);
+    setKv(this.db, 'closest_calls', JSON.stringify({ at: now, minEach, calls: closest }));
     const detectors: DetectorId[] = ['vendor_dump', 'vendor_supply', 'cross_house', 'underpriced', 'sell_now'];
     const life = applyLifecycle(this.db, plays, { detectors, houses: ctx.houses.map(h => h.id) }, now);
     // Plays left on houses that are no longer evaluated (Chip picked his houses) are closed out.

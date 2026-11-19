@@ -29,3 +29,7 @@ What changed, newest last. The overnight loop appends here every night it runs.
 ## 2026-11-19, minimum profit per item
 
 - Plays under 1 silver profit per item are never stored, shown or alerted. Change it in Settings, "Minimum profit per item".
+
+## 2026-11-19, held back this hour
+
+- Now lists the best candidates the engine held back each round, with the reason: under the minimum profit, no sales seen yet, a price outlier. An empty board explains itself.

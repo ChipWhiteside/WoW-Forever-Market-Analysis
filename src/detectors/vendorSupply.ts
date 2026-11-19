@@ -24,7 +24,11 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
       const best = (open.length ? open : offers).reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a));
       const gated = !open.length;
       const judged = judgeSell(ctx, h, itemId, ls);
-      if (!judged.show) continue;
+      if (!judged.show) {
+        const est = netPerUnit(h.faction, judged.price) - best.unitPrice;
+        if (est > 0) ctx.rejects?.push({ detector: 'vendor_supply', houseId: h.id, itemId, perItem: est, reason: judged.why, score: judged.score });
+        continue;
+      }
       const floor = judged.price;
       const net = netPerUnit(h.faction, floor);
       const perItem = net - best.unitPrice;

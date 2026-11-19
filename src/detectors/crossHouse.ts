@@ -28,7 +28,11 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     const item = ctx.items.get(itemId);
     if (item?.binding === 'ON_ACQUIRE') continue;
     const judged = judgeSell(ctx, sellH, itemId, sells);
-    if (!judged.show) continue;
+    if (!judged.show) {
+      const est = netPerUnit(sellH.faction, judged.price) - buys[0]!.unitPrice!;
+      if (est > 0) ctx.rejects?.push({ detector: 'cross_house', houseId: buyH.id, itemId, perItem: est, reason: judged.why, score: judged.score });
+      continue;
+    }
     const sellFloor = judged.price;
     const net = netPerUnit(sellH.faction, sellFloor);
     const d = ctx.demand.get(sellH.id)?.get(itemId);

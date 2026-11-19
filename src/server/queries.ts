@@ -63,5 +63,12 @@ export function overview(db: DB) {
   const totals = db.prepare('SELECT COUNT(*) snapshots, MIN(published_at) first FROM snapshots').get();
   const items = db.prepare(`SELECT COUNT(*) n, SUM(status = 200) blizzard, SUM(name IS NOT NULL) named FROM items`).get();
   const news = (db.prepare(`SELECT value FROM kv WHERE key = 'news:vendor_price_changes'`).get() as { value: string } | undefined)?.value;
-  return { counts, pinned, learning, datasets, totals, items, news: news ? JSON.parse(news) : null };
+  const cc = (db.prepare(`SELECT value FROM kv WHERE key = 'closest_calls'`).get() as { value: string } | undefined)?.value;
+  let closest = null;
+  if (cc) {
+    const parsed = JSON.parse(cc) as { at: number; minEach: number; calls: Array<{ itemId: number; [k: string]: unknown }> };
+    const nameQ = db.prepare('SELECT name, quality, icon_url FROM items WHERE id = ?');
+    closest = { ...parsed, calls: parsed.calls.map(c => ({ ...c, ...(nameQ.get(c.itemId) as object ?? {}) })) };
+  }
+  return { counts, pinned, learning, datasets, totals, items, news: news ? JSON.parse(news) : null, closest };
 }

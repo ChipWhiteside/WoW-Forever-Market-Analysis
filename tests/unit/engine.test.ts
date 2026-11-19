@@ -150,3 +150,30 @@ describe('minimum profit per item', () => {
     expect((await engine.detect()).plays.map(p => p.itemId).sort()).toEqual([2589, 2592]);
   });
 });
+
+describe('closest calls', () => {
+  it('an empty board explains itself: candidates under the minimum or without evidence are listed with the reason', async () => {
+    const dir = tempDir();
+    const lm = new Date(Date.now() - 5 * 60_000).toUTCString();
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 111, name: 'Alliance Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/111': () => ({ body: { id: 111, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/111/commodities': () => ({ body: { auctions: [
+        { id: 1, item: { id: 2589 }, quantity: 50, unit_price: 10, time_left: 'LONG' },
+        { id: 2, item: { id: 3857 }, quantity: 20, unit_price: 800, time_left: 'LONG' }] }, lastModified: lm }),
+      '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
+      '/data/wow/item/3857': () => ({ body: { id: 3857, name: 'Coal', sell_price: 125 } }),
+    });
+    const db = openDb(dir, ':memory:');
+    db.exec(`INSERT INTO vendor_items (npc_id, npc_name, faction, zone, x, y, map_id, item_id, price, price_by_standing, units_per_purchase, limited, standing_required)
+      VALUES (1, 'Smith', 'alliance', 'Stormwind City', 50, 50, 1453, 3857, 500, '{"5":500}', 1, 0, '5')`);
+    const engine = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await engine.init();
+    const r = await engine.round();
+    expect(r.plays).toHaveLength(0);
+    const cc = JSON.parse((db.prepare(`SELECT value FROM kv WHERE key = 'closest_calls'`).get() as { value: string }).value);
+    const coal = cc.calls.find((c: { itemId: number }) => c.itemId === 3857);
+    expect(coal.reason).toMatch(/no sales seen yet/);
+    expect(cc.calls.find((c: { itemId: number }) => c.itemId === 2589).reason).toMatch(/minimum/);
+  });
+});

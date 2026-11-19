@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api, type Health } from '../lib/api';
-import { PageHeader, Card } from '../components/ui';
+import { PageHeader, Card, Money, ItemIcon, ItemName } from '../components/ui';
+import { PLAY_LABEL } from '../lib/format';
 import { PlayList } from './plays';
 import { ago } from '../lib/format';
 import { useNav } from '../nav';
@@ -56,6 +57,32 @@ export function NowPage() {
       <HouseStatus />
       <PageHeader title="Now" sub="Every live play on your houses, best first. Ranked by profit per item times what you can realistically sell today." />
       <PlayList filters emptyTitle="Nothing worth your time this hour" emptyText="Every listing is checked within minutes of each refresh. When something clears your bar it lands here and on your phone." />
+      <ClosestCalls />
     </>
+  );
+}
+
+/** The best candidates held back this round, and exactly why. An empty board explains itself. */
+function ClosestCalls() {
+  const { openItem } = useNav();
+  const { data } = useQuery({ queryKey: ['overview'], queryFn: () => api<any>('/api/overview'), refetchInterval: 60_000 });
+  const cc = data?.closest;
+  if (!cc?.calls?.length) return null;
+  return (
+    <div className="mt-8">
+      <h2 className="font-display text-lg font-bold">Held back this hour</h2>
+      <p className="mb-3 text-sm text-muted">The best candidates the engine found that did not make the cut, and why. If something here looks real to you, say so: it is how the rules get tuned.</p>
+      <Card className="divide-y divide-line/70">
+        {cc.calls.map((c: any, i: number) => (
+          <div key={i} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+            <ItemIcon url={c.icon_url} quality={c.quality} size={28} />
+            <button onClick={() => openItem(c.itemId)} className="w-48 shrink-0 truncate text-left hover:underline"><ItemName name={c.name} id={c.itemId} quality={c.quality} /></button>
+            <span className="w-28 shrink-0 text-good"><Money c={c.perItem} size="sm" /> each</span>
+            <span className="w-44 shrink-0 text-xs text-muted">{PLAY_LABEL[c.detector]}</span>
+            <span className="text-xs">{c.reason}</span>
+          </div>
+        ))}
+      </Card>
+    </div>
   );
 }
