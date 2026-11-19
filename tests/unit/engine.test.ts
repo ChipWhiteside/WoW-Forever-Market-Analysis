@@ -78,3 +78,25 @@ describe('dev channel health reports', () => {
     expect(dev[0]).toMatch(/Suspected bug/);
   });
 });
+
+describe('restart', () => {
+  it('a fresh engine rebuilds plays from the last stored snapshot without waiting for a publish', async () => {
+    const dir = tempDir();
+    const lm = new Date(Date.now() - 5 * 60_000).toUTCString();
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 110, name: 'Alliance Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/110': () => ({ body: { id: 110, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/110/commodities': () => ({ body: { auctions: [{ id: 2, item: { id: 2589 }, quantity: 50, unit_price: 10, time_left: 'LONG' }] }, lastModified: lm }),
+      '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
+    });
+    const db = openDb(dir, 'restart.db');
+    const first = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await first.init();
+    await first.round();
+    db.exec(`DELETE FROM plays`); // what an update to a new play format looks like: nothing usable left
+    const second = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await second.init();
+    const r = await second.detect();
+    expect(r.plays.find(p => p.detector === 'vendor_dump')?.detail.perItem).toBe(3);
+  });
+});

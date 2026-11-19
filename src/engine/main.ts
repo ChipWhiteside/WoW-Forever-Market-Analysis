@@ -25,6 +25,10 @@ async function main() {
   if (once) await engine.init();
   else await retry(() => engine.init(), 'house sync', log);
 
+  // Rebuild plays from the last snapshot right away, so a restart (or an update) never leaves the app
+  // empty until the next hourly publish.
+  try { await engine.detect(); } catch (e) { log(`startup detect failed: ${(e as Error).message}`); }
+
   // Each daily step stands alone, so one failing source never blocks the others or the backup.
   const daily = async () => {
     if (!engine.dailyDue()) return;
