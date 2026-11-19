@@ -16,9 +16,9 @@ describe('world drops value per kill (O8)', () => {
       sell: new Map([[100, 20], [200, 300]]), binding: new Map([[200, 'ON_ACQUIRE']]), names: new Map(), vendor: new Map() };
     const rows = sourceBoard(db, book, { minKills: 0 });
     const wolf = rows.find(r => r.sourceId === 1)!;
-    // item 100: net floor(200*0.95)=190 - deposit floor(20*0.15)=3 = 187, x0.5 = 93.5; item 200 BoP vendor 300 x0.2 = 60
-    expect(wolf.valuePerKill).toBe(154);
-    expect(wolf.goldPerHour).toBe(154 * 60);
+    // item 100: net floor(200*0.95) = 190, x0.5 = 95; item 200 BoP vendor 300 x0.2 = 60
+    expect(wolf.valuePerKill).toBe(155);
+    expect(wolf.goldPerHour).toBe(155 * 60);
     expect(wolf.perHourBasis).toMatch(/estimated/);
     expect(rows.find(r => r.sourceId === 2)!.rough).toBe(true);
     expect(sourceBoard(db, book).find(r => r.sourceId === 2)).toBeUndefined(); // 7 kills, hidden by default

@@ -1,9 +1,10 @@
-import { money } from '../format/money.ts';
-import { byItem, houseLabel, plural, type DetectorContext, type Play } from './types.ts';
+import { byItem, auctionLeg, type DetectorContext, type Play } from './types.ts';
+import { AUCTION_HOUSES } from '../datasets/places.ts';
+import { playLine } from './summary.ts';
 
 /**
- * O1 Vendor dump. A listing priced below what any vendor pays for the item.
- * Any vendor buys at sell_price (V6), so no trip and no cut. Confidence high.
+ * O1 Auction house to vendor. A listing priced below what any vendor pays for the item.
+ * Any vendor buys at sell_price (V6) with no cut and no limit, so every unit under the line counts.
  */
 export function vendorDump(ctx: DetectorContext): Play[] {
   const plays: Play[] = [];
@@ -12,21 +13,24 @@ export function vendorDump(ctx: DetectorContext): Play[] {
       const item = ctx.items.get(itemId);
       const sell = item?.sellPrice;
       if (!sell || sell <= 0) continue;
-      let profit = 0, units = 0, listings = 0;
+      let total = 0, units = 0, listings = 0, spent = 0;
       for (const l of ls) {
         if (l.unitPrice! >= sell) break;
-        profit += (sell - l.unitPrice!) * l.quantity;
+        total += (sell - l.unitPrice!) * l.quantity;
+        spent += l.unitPrice! * l.quantity;
         units += l.quantity;
         listings++;
       }
       if (units === 0) continue;
       const name = item?.name ?? `Item ${itemId}`;
+      const avgBuy = Math.round(spent / units);
+      const buy = { ...auctionLeg(h, avgBuy, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: listings > 1 ? `${units} units from ${ls[0]!.unitPrice}c up` : undefined };
+      const sellLeg = { kind: 'any_vendor' as const, price: sell, who: 'Any vendor', places: [] };
+      const perItem = Math.round(total / units);
       plays.push({
-        key: `vendor_dump:${h.id}:${itemId}`,
-        detector: 'vendor_dump', houseId: h.id, itemId, profit,
-        confidence: 'high',
-        summary: `${units} ${name} listed under the ${money(sell)} vendor price on ${houseLabel(h)}. Buy them and sell to any vendor for about ${money(profit)}.`,
-        detail: { vendorSell: sell, units, listings, cheapest: ls[0]!.unitPrice, oneOff: listings === 1, ladder: ladderOf(ls) },
+        key: `vendor_dump:${h.id}:${itemId}`, detector: 'vendor_dump', houseId: h.id, itemId, profit: total, confidence: 'high',
+        summary: playLine(name, perItem, buy, sellLeg, null),
+        detail: { buy, sell: sellLeg, perItem, salesPerDay: null, available: units, realisticUnits: units, oneOff: listings === 1 },
         dataAt: h.publishedAt,
       });
     }

@@ -1,13 +1,12 @@
-import { money } from '../format/money.ts';
-import { netPerUnit } from '../rules/fees.ts';
+import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
-import { byItem, houseLabel, plural, type DetectorContext, type Play, type HouseCtx } from './types.ts';
+import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type HouseCtx } from './types.ts';
+import { AUCTION_HOUSES } from '../datasets/places.ts';
+import { playLine } from './summary.ts';
 
 /**
- * O7 Cross house flip. Buy on one of Chip's houses, carry it, list on the other.
- * Only runs between his pinned Alliance and pinned Blackwater house.
- * Profit available = for each buy side listing that clears the sell side's break even, net sale minus price,
- * capped at the sell side's daily demand once known.
+ * O7 Between houses. Buy on one of Chip's houses, carry it, list on the other. Only between his pinned houses.
+ * Profit per item = the sell floor after its cut minus the average buy price of the units worth taking.
  */
 export function crossHouse(ctx: DetectorContext): Play[] {
   const a = ctx.houses.find(h => h.pinned && h.faction === 'alliance');
@@ -16,37 +15,44 @@ export function crossHouse(ctx: DetectorContext): Play[] {
   return [...pair(ctx, a, b), ...pair(ctx, b, a)];
 }
 
-function pair(ctx: DetectorContext, buy: HouseCtx, sell: HouseCtx): Play[] {
+const placesOf = (h: HouseCtx) => AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance'];
+
+function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
   const plays: Play[] = [];
-  const buyBy = byItem(ctx.listings.get(buy.id) ?? []);
-  const sellBy = byItem(ctx.listings.get(sell.id) ?? []);
-  for (const [itemId, sells] of sellBy) {
+  const share = ctx.sellShare ?? DEFAULT_SELL_SHARE;
+  const buyBy = byItem(ctx.listings.get(buyH.id) ?? []);
+  for (const [itemId, sells] of byItem(ctx.listings.get(sellH.id) ?? [])) {
     const buys = buyBy.get(itemId);
     if (!buys?.length) continue;
     const item = ctx.items.get(itemId);
     if (item?.binding === 'ON_ACQUIRE') continue;
     const sellFloor = sells[0]!.unitPrice!;
-    const net = netPerUnit(sell.faction, sellFloor, item?.sellPrice);
-    const d = ctx.demand.get(sell.id)?.get(itemId);
-    const known = !!d && d.hours >= 3;
-    let cap = known ? Math.max(1, Math.round(d!.unitsPerDay)) : Infinity;
-    let profit = 0, units = 0;
+    const net = netPerUnit(sellH.faction, sellFloor);
+    const d = ctx.demand.get(sellH.id)?.get(itemId);
+    const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
+    let available = 0, spent = 0;
     for (const l of buys) {
       const gain = net - l.unitPrice!;
-      if (gain < MIN_GAIN.copper || gain < l.unitPrice! * MIN_GAIN.share || cap <= 0) break;
-      const q = Math.min(l.quantity, cap);
-      profit += gain * q; units += q; cap -= q;
+      if (gain < MIN_GAIN.copper || gain < l.unitPrice! * MIN_GAIN.share) break;
+      available += l.quantity; spent += l.unitPrice! * l.quantity;
     }
-    if (units === 0) continue;
+    if (available === 0) continue;
+    const units = realisticUnits(available, salesPerDay, share);
+    // Profit per item over the units worth taking today: the cheapest ones first.
+    let left = units, cost = 0;
+    for (const l of buys) { if (left <= 0) break; const q = Math.min(left, l.quantity); cost += q * l.unitPrice!; left -= q; }
+    const avgBuy = Math.round(cost / units);
+    const perItem = net - avgBuy;
+    const buy = auctionLeg(buyH, avgBuy, placesOf(buyH));
+    const sell = { ...auctionLeg(sellH, net, placesOf(sellH)), note: `floor ${sellFloor}c before the ${Math.round(sellH.cut * 100)}% cut` };
     const name = item?.name ?? `Item ${itemId}`;
-    const gainFirst = net - buys[0]!.unitPrice!;
     plays.push({
-      key: `cross_house:${buy.id}>${sell.id}:${itemId}`,
-      detector: 'cross_house', houseId: buy.id, itemId, profit,
-      confidence: known ? 'medium' : 'low',
-      summary: `${name} is ${money(buys[0]!.unitPrice)} on ${houseLabel(buy)} and ${money(sellFloor)} on ${houseLabel(sell)}. About ${money(gainFirst)} each after the ${Math.round(sell.cut * 100)}% cut, ${plural(units, 'unit')} clear it.`,
-      detail: { buyHouse: buy.id, sellHouse: sell.id, buyFloor: buys[0]!.unitPrice, sellFloor, netPerUnit: net, units, demandPerDay: known ? d!.unitsPerDay : null },
-      dataAt: Math.min(buy.publishedAt, sell.publishedAt),
+      key: `cross_house:${buyH.id}>${sellH.id}:${itemId}`, detector: 'cross_house', houseId: buyH.id, itemId, profit: perItem * units,
+      confidence: salesPerDay != null ? 'medium' : 'low',
+      summary: playLine(name, perItem, buy, sell, salesPerDay),
+      detail: { buy, sell, perItem, salesPerDay, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor,
+        listing: listingPlan(sellH.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
+      dataAt: Math.min(buyH.publishedAt, sellH.publishedAt),
     });
   }
   return plays;

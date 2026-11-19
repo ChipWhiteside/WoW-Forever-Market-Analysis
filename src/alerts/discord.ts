@@ -4,9 +4,9 @@ import { ALERTS } from '../rules/thresholds.ts';
 import type { Play } from '../detectors/types.ts';
 
 const ALERTING = new Set(['vendor_dump', 'vendor_supply', 'underpriced', 'cross_house', 'sell_now']);
-const LABEL: Record<string, string> = {
-  vendor_dump: 'Vendor dump', vendor_supply: 'Vendor supply', underpriced: 'Underpriced', cross_house: 'Cross house',
-  craft: 'Craft', sell_now: 'Sell now', world_drop: 'World drop',
+export const LABEL: Record<string, string> = {
+  vendor_dump: 'Auction house to vendor', vendor_supply: 'Vendor to auction house', underpriced: 'Cheap listing, relist', cross_house: 'Between houses',
+  craft: 'Craft', sell_now: 'Sell what you hold', world_drop: 'World drop',
 };
 
 export interface AlertSettings { profitBar: number; quietStart: number; quietEnd: number; timeZone: string; enabled: Set<string> }
@@ -45,7 +45,7 @@ export function selectForAlert(db: DB, candidates: Play[], pinned: Set<number>, 
 
 export function formatAlert(plays: Play[], appUrl: string | null): string {
   const lines = [`**${plays.length} new play${plays.length === 1 ? '' : 's'}**`];
-  for (const p of plays.slice(0, 12)) lines.push(`• **${LABEL[p.detector]}**, up to **${money(p.profit)}**. ${p.summary}`);
+  for (const p of plays.slice(0, 12)) lines.push(`• **${LABEL[p.detector]}** · ${p.summary} Worth about **${money(p.profit)}** today.`);
   if (plays.length > 12) lines.push(`…and ${plays.length - 12} more in the app.`);
   if (appUrl) lines.push(appUrl);
   return lines.join('\n').slice(0, 1990);

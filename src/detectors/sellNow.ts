@@ -1,17 +1,19 @@
-import { money } from '../format/money.ts';
-import { netPerUnit } from '../rules/fees.ts';
+import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { SELL_NOW } from '../rules/thresholds.ts';
-import { byItem, houseLabel, plural, type DetectorContext, type Play } from './types.ts';
+import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type Leg } from './types.ts';
 import type { Typical } from '../analysis/history.ts';
+import { AUCTION_HOUSES } from '../datasets/places.ts';
+import { playLine } from './summary.ts';
 
 export interface Held { itemId: number; units: number; unitCost: number | null; alertAbove: number | null }
 
 /**
- * O6 Sell now. Something Chip holds or watches jumped: the floor sits 50 percent above its typical floor,
- * or crosses a price he set. Profit available is his held units times (net price now minus what he paid).
+ * O6 Sell what you hold. Something Chip holds or watches jumped: the floor sits 50 percent above its typical floor,
+ * or crosses a price he set. Profit per item = the floor after the cut minus what he paid.
  */
 export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, Typical>>, held: Held[]): Play[] {
   const plays: Play[] = [];
+  const share = ctx.sellShare ?? DEFAULT_SELL_SHARE;
   for (const h of ctx.houses) {
     const floors = byItem(ctx.listings.get(h.id) ?? []);
     for (const x of held) {
@@ -23,15 +25,20 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
       const crossed = x.alertAbove != null && floor >= x.alertAbove;
       if (!jumped && !crossed) continue;
       const item = ctx.items.get(x.itemId);
-      const net = netPerUnit(h.faction, floor, item?.sellPrice);
-      const profit = x.units > 0 ? x.units * (net - (x.unitCost ?? 0)) : net;
+      const net = netPerUnit(h.faction, floor);
+      const perItem = net - (x.unitCost ?? 0);
+      const d = ctx.demand.get(h.id)?.get(x.itemId);
+      const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
+      const units = x.units > 0 ? realisticUnits(x.units, salesPerDay, share) : 1;
+      const buy: Leg = { kind: 'held', price: x.unitCost ?? 0, who: x.units ? `You hold ${x.units}` : 'On your watchlist', places: [] };
+      const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']),
+        note: (t ? `${Math.round((floor / t.typicalFloor - 1) * 100)}% over its typical ${t.typicalFloor}c` : '') + (crossed ? `${t ? ', ' : ''}past your ${x.alertAbove}c alert` : '') };
       const name = item?.name ?? `Item ${x.itemId}`;
       plays.push({
-        key: `sell_now:${h.id}:${x.itemId}`, detector: 'sell_now', houseId: h.id, itemId: x.itemId, profit,
-        confidence: 'high',
-        summary: `${name} floor is ${money(floor)} on ${houseLabel(h)}` + (t ? `, ${Math.round((floor / t.typicalFloor - 1) * 100)}% over its typical ${money(t.typicalFloor)}` : '') +
-          (crossed ? `, past your ${money(x.alertAbove)} alert` : '') + (x.units ? `. You hold ${x.units}.` : '.'),
-        detail: { floor, typicalFloor: t?.typicalFloor ?? null, held: x.units, unitCost: x.unitCost, net },
+        key: `sell_now:${h.id}:${x.itemId}`, detector: 'sell_now', houseId: h.id, itemId: x.itemId, profit: perItem * units, confidence: 'high',
+        summary: playLine(name, perItem, buy, sell, salesPerDay),
+        detail: { buy, sell, perItem, salesPerDay, available: x.units, realisticUnits: units, floor, typicalFloor: t?.typicalFloor ?? null,
+          listing: listingPlan(h.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
         dataAt: h.publishedAt,
       });
     }

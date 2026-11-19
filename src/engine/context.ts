@@ -23,13 +23,13 @@ export function itemsFor(db: DB, ids: Iterable<number>): Map<number, ItemCtx> {
 
 /** Vendors an Alliance character can use: Alliance and neutral. Unknown faction is never treated as usable (T4). */
 export function allianceVendors(db: DB): Map<number, VendorOffer[]> {
-  const rows = db.prepare(`SELECT npc_id, npc_name, faction, zone, x, y, item_id, price, limited, standing_required FROM vendor_items WHERE faction IN ('alliance', 'neutral') AND price > 0`).all() as Array<{
-    npc_id: number; npc_name: string; faction: string; zone: string | null; x: number | null; y: number | null; item_id: number; price: number; limited: number; standing_required: string | null }>;
+  const rows = db.prepare(`SELECT npc_id, npc_name, faction, zone, x, y, map_id, item_id, price, limited, standing_required FROM vendor_items WHERE faction IN ('alliance', 'neutral') AND price > 0`).all() as Array<{
+    npc_id: number; npc_name: string; faction: string; zone: string | null; x: number | null; y: number | null; map_id: number | null; item_id: number; price: number; limited: number; standing_required: string | null }>;
   const out = new Map<number, VendorOffer[]>();
   for (const r of rows) {
     let a = out.get(r.item_id);
     if (!a) out.set(r.item_id, (a = []));
-    a.push({ npcId: r.npc_id, npcName: r.npc_name, faction: r.faction, zone: r.zone, x: r.x, y: r.y, unitPrice: r.price, limited: !!r.limited, minStanding: Number(r.standing_required ?? 4) });
+    a.push({ npcId: r.npc_id, npcName: r.npc_name, faction: r.faction, zone: r.zone, x: r.x, y: r.y, uiMap: r.map_id, unitPrice: r.price, limited: !!r.limited, minStanding: Number(r.standing_required ?? 4) });
   }
   return out;
 }
@@ -47,5 +47,6 @@ export function buildContext(db: DB, collector: Collector, now = Date.now()): De
     for (const l of ls) ids.add(l.itemId);
   }
   const demand = new Map(houses.map(h => [h.id, demandByItem(db, h.id, { now })]));
-  return { houses, listings, items: itemsFor(db, ids), vendors: allianceVendors(db), demand, now };
+  const share = Number((db.prepare(`SELECT value FROM settings WHERE key = 'sell_share'`).get() as { value: string } | undefined)?.value ?? 0.2);
+  return { houses, listings, items: itemsFor(db, ids), vendors: allianceVendors(db), demand, now, sellShare: share > 0 && share <= 1 ? share : 0.2 };
 }

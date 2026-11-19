@@ -37,7 +37,7 @@ describe('engine end to end', () => {
     expect(dump.profit).toBe((13 - 10) * 200);
     expect(r.plays.some(p => p.detector === 'cross_house')).toBe(true);
     expect(sent.length).toBe(1);
-    expect(sent[0]).toMatch(/Vendor dump/);
+    expect(sent[0]).toMatch(/Auction house to vendor/);
 
     // Same publish again: 304s, no new events, no message.
     const r2 = await engine.round();

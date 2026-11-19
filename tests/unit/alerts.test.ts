@@ -6,7 +6,7 @@ import type { Play } from '../../src/detectors/types.ts';
 import { tempDir } from '../helpers.ts';
 
 const noon = Date.parse('2026-11-18T19:00:00Z'); // noon in Denver
-const P = (profit: number, key = 'vendor_dump:110:2589'): Play => ({ key, detector: 'vendor_dump', houseId: 110, itemId: 2589, profit, confidence: 'high', summary: 'x', detail: {}, dataAt: noon - 60_000 });
+const P = (profit: number, key = 'vendor_dump:110:2589'): Play => ({ key, detector: 'vendor_dump', houseId: 110, itemId: 2589, profit, confidence: 'high', summary: 'x', detail: { buy: { kind: 'auction', price: 10, who: 'A', places: [] }, sell: { kind: 'any_vendor', price: 13, who: 'Any vendor', places: [] }, perItem: 3, salesPerDay: null, available: 1, realisticUnits: 1 }, dataAt: noon - 60_000 });
 
 describe('alerts', () => {
   it('one message for new plays, nothing for repeats, again only after 25 percent growth', async () => {

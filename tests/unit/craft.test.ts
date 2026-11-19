@@ -28,10 +28,10 @@ describe('make or buy (O4)', () => {
     const c = new Crafter(db, book);
     expect(c.unitCost(2840, 1)).toMatchObject({ unit: 150, source: 'craft' });
     const row = craftBoard(db, book).find(r => r.recipeId === 2657)!;
-    // sale: floor(167*0.95)=158 - deposit max(1, floor(10*0.15)=1)=1 -> 157; cost 150; margin 7
+    // sale: floor(167*0.95) = 158 (the deposit comes back on a sale); cost 150; margin 8
     expect(row.cost).toBe(150);
-    expect(row.sale).toBe(157);
-    expect(row.margin).toBe(7);
+    expect(row.sale).toBe(158);
+    expect(row.margin).toBe(8);
   });
   it('a belt made from bars costs bars at the cheaper of buying and smelting', () => {
     const { db, book } = setup();
