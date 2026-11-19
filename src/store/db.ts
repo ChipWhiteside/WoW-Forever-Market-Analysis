@@ -161,6 +161,10 @@ const MIGRATIONS: string[] = [
   `
   CREATE TABLE inventory (item_id INTEGER PRIMARY KEY, count INTEGER NOT NULL, updated_at INTEGER NOT NULL);
   `,
+  // 8. The price sales happened at, so demand and price describe the same market level
+  `
+  ALTER TABLE item_stats ADD COLUMN sold_value INTEGER;
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

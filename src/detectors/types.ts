@@ -26,7 +26,8 @@ export interface ItemCtx { id: number; name: string; sellPrice: number | null; b
 
 export interface VendorOffer { npcId: number; npcName: string; faction: string; zone: string | null; x: number | null; y: number | null; uiMap?: number | null; unitPrice: number; limited: boolean; minStanding: number }
 
-export interface Demand { unitsPerDay: number; hours: number; snapshots: number }
+/** Estimated sales, and the average price they happened at (null before any sale was seen). */
+export interface Demand { unitsPerDay: number; hours: number; snapshots: number; soldPrice?: number | null }
 
 /** One side of a play: where you buy, or where you sell. */
 export interface Leg {
@@ -99,4 +100,29 @@ export function realisticUnits(available: number, salesPerDay: number | null, sh
 
 export function auctionLeg(h: HouseCtx, price: number, places: Place[]): Leg {
   return { kind: 'auction', price, who: `${houseLabel(h)} auction house`, places, houseId: h.id };
+}
+
+import { marketPrice, priceGates, confidenceScore, confidenceLabel, sellPrice as safeSellPrice, PRICE, type Evidence } from '../rules/price.ts';
+
+/**
+ * Judge a sell side: the price a play may claim, why it might be junk, and a 0 to 100 confidence.
+ * Every detector that resells on the auction house goes through this, so one troll listing can never set a price.
+ */
+export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number, ladder: Listing[]): {
+  price: number; market: number | null; evidence: Evidence; gates: string[]; score: number; confidence: Confidence; show: boolean;
+} {
+  const floor = ladder[0]!.unitPrice!;
+  const m = marketPrice(ladder);
+  const d = ctx.demand.get(house.id)?.get(itemId);
+  const item = ctx.items.get(itemId);
+  const offers = ctx.vendors.get(itemId);
+  const provenSales = d ? Math.round((d.unitsPerDay * d.hours) / 24) : 0;
+  const price = safeSellPrice(floor, m?.price ?? null, provenSales > 0 ? d?.soldPrice ?? null : null);
+  const evidence: Evidence = {
+    hours: d?.hours ?? 0, listings: m?.listings ?? ladder.length, provenSales, soldPrice: d?.soldPrice ?? null, askPrice: price,
+    quality: item?.quality ?? null, vendorSell: item?.sellPrice ?? null, vendorBuy: offers?.length ? Math.min(...offers.map(o => o.unitPrice)) : null,
+  };
+  const gates = priceGates(evidence);
+  const score = confidenceScore(evidence, gates);
+  return { price, market: m?.price ?? null, evidence, gates, score, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt };
 }

@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
-import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type HouseCtx } from './types.ts';
+import { byItem, auctionLeg, realisticUnits, judgeSell, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type HouseCtx } from './types.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { playLine } from './summary.ts';
 
@@ -27,7 +27,9 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     if (!buys?.length) continue;
     const item = ctx.items.get(itemId);
     if (item?.binding === 'ON_ACQUIRE') continue;
-    const sellFloor = sells[0]!.unitPrice!;
+    const judged = judgeSell(ctx, sellH, itemId, sells);
+    if (!judged.show) continue;
+    const sellFloor = judged.price;
     const net = netPerUnit(sellH.faction, sellFloor);
     const d = ctx.demand.get(sellH.id)?.get(itemId);
     const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
@@ -50,9 +52,9 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     const name = item?.name ?? `Item ${itemId}`;
     plays.push({
       key: `cross_house:${buyH.id}>${sellH.id}:${itemId}`, detector: 'cross_house', houseId: buyH.id, itemId, profit: perItem * units,
-      confidence: salesPerDay != null ? 'medium' : 'low',
+      confidence: judged.confidence,
       summary: playLine(name, perItem, buy, sell, salesPerDay),
-      detail: { buy, sell, perItem, salesPerDay, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor,
+      detail: { buy, sell, perItem, salesPerDay, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor, score: judged.score,
         listing: listingPlan(sellH.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
       dataAt: Math.min(buyH.publishedAt, sellH.publishedAt),
     });

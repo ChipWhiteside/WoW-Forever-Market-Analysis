@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play } from './types.ts';
+import { byItem, auctionLeg, realisticUnits, judgeSell, DEFAULT_SELL_SHARE, type DetectorContext, type Play } from './types.ts';
 import type { Typical } from '../analysis/history.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { playLine } from './summary.ts';
@@ -26,6 +26,8 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       const d = ctx.demand.get(h.id)?.get(itemId);
       const soldInWindow = d ? (d.unitsPerDay * d.hours) / 24 : 0;
       if (!d || soldInWindow < UNDERPRICED.minDisappeared) continue;
+      const judged = judgeSell(ctx, h, itemId, ls.filter(l => l.unitPrice! > line).length ? ls.filter(l => l.unitPrice! > line) : ls);
+      if (judged.gates.length || judged.score < 40) continue;
       const cheap = ls.filter(l => l.unitPrice! <= line);
       const available = cheap.reduce((s, l) => s + l.quantity, 0);
       const units = realisticUnits(available, d.unitsPerDay, share);
@@ -33,7 +35,8 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       let left = units, cost = 0;
       for (const l of cheap) { if (left <= 0) break; const q = Math.min(left, l.quantity); cost += q * l.unitPrice!; left -= q; }
       const avgBuy = Math.round(cost / units);
-      const net = netPerUnit(h.faction, t.typicalFloor);
+      const relistAt = d.soldPrice != null ? Math.min(t.typicalFloor, d.soldPrice) : t.typicalFloor;
+      const net = netPerUnit(h.faction, relistAt);
       const perItem = net - avgBuy;
       if (perItem <= 0) continue;
       const places = AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance'];
@@ -41,7 +44,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       const sell = { ...auctionLeg(h, net, places), note: `relist near the usual ${money(t.typicalFloor)}, before the cut` };
       const name = item?.name ?? `Item ${itemId}`;
       plays.push({
-        key: `underpriced:${h.id}:${itemId}`, detector: 'underpriced', houseId: h.id, itemId, profit: perItem * units, confidence: 'medium',
+        key: `underpriced:${h.id}:${itemId}`, detector: 'underpriced', houseId: h.id, itemId, profit: perItem * units, confidence: judged.confidence,
         summary: playLine(name, perItem, buy, sell, d.unitsPerDay),
         detail: { buy, sell, perItem, salesPerDay: d.unitsPerDay, available, realisticUnits: units, typicalFloor: t.typicalFloor, readings: t.readings, oneOff: cheap.length === 1,
           listing: listingPlan(h.faction, item?.sellPrice, perItem, (d.unitsPerDay * share) / 24, units) },

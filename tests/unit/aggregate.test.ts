@@ -64,3 +64,35 @@ describe('aggregate', () => {
     expect(c[0]!.unitPrice).toBe(100);
   });
 });
+
+describe('telling sales from expiries, relists and cancels', () => {
+  it('2 hour listings (MEDIUM) that vanish are expiries, not sales: the 48 a day Blacksmith Hammer', () => {
+    const prev = [L(1, 5956, 1, 100, 'MEDIUM'), L(2, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 900000, 'VERY_LONG')];
+    const cur = [L(4, 5956, 1, 100, 'MEDIUM'), L(5, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 900000, 'VERY_LONG')];
+    const a = aggregate(cur, prev).find(x => x.itemId === 5956)!;
+    expect(a.goneUnitsNearFloor).toBe(2);
+    expect(a.goneUnitsExpiringNearFloor).toBe(2); // none of them counted as sold
+    expect(a.soldValue).toBe(0);
+  });
+  it('a cancel and relist on a thin market is not a sale', () => {
+    const a = aggregate([L(2, 7, 5, 105, 'VERY_LONG')], [L(1, 7, 5, 100, 'LONG')])[0]!;
+    expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(0);
+  });
+  it('stackables: a stack that vanished while a cheaper one is still up was cancelled, never bought', () => {
+    const prev = [L(1, 7, 20, 100, 'LONG'), L(2, 7, 20, 105, 'LONG')];
+    const a = aggregate([L(1, 7, 20, 100, 'LONG')], prev, { commodity: true })[0]!;
+    expect(a.soldValue).toBe(0);
+  });
+  it('equipment: the buyer picks, so a slightly pricier listing selling first still counts', () => {
+    const prev = [L(1, 7, 1, 100, 'LONG'), L(2, 7, 1, 105, 'LONG')];
+    const a = aggregate([L(1, 7, 1, 100, 'LONG')], prev)[0]!;
+    expect(a.soldValue).toBe(105);
+  });
+  it('a real sale of the cheapest units counts, with its price', () => {
+    const prev = [L(1, 7, 20, 100, 'LONG'), L(2, 7, 20, 100, 'LONG'), L(3, 7, 20, 104, 'LONG'), L(4, 7, 20, 104, 'LONG'), L(5, 7, 20, 104, 'LONG'), L(6, 7, 20, 104, 'LONG')];
+    const cur = prev.slice(2);
+    const a = aggregate(cur, prev)[0]!;
+    expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40);
+    expect(a.soldValue).toBe(40 * 100);
+  });
+});

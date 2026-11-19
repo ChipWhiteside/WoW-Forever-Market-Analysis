@@ -70,7 +70,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
 
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5">
             <span className="text-xs text-muted">data {ago(p.data_at)}</span>
-            <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{p.confidence} confidence</Chip>
+            <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{p.confidence === 'low' ? 'watch only' : `${p.confidence} confidence`}{typeof (p.detail as { score?: number }).score === 'number' ? ` · ${(p.detail as { score: number }).score}/100` : ''}</Chip>
             {d.oneOff && <Chip tone="warn">one cheap listing, may be a one off</Chip>}
             <span className="ml-auto flex gap-1">
               {!gone && !p.user_status && !askDone && <>

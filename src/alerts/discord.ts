@@ -35,6 +35,7 @@ export function selectForAlert(db: DB, candidates: Play[], pinned: Set<number>, 
   const prev = db.prepare('SELECT alerted_profit FROM plays WHERE key = ?');
   return candidates
     // Cross house needs two houses fresh at once; one late house should not silence it (review finding 8).
+    .filter(p => p.confidence !== 'low') // watch plays stay in the app, never on the phone
     .filter(p => s.enabled.has(p.detector) && pinned.has(p.houseId) && p.profit >= s.profitBar && now - p.dataAt < (p.detector === 'cross_house' ? 150 : 90) * 60_000)
     .filter(p => {
       const r = prev.get(p.key) as { alerted_profit: number | null } | undefined;

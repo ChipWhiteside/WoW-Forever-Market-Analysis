@@ -18,9 +18,10 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
   const out = new Map<number, Demand>();
   if (covered <= 0) return out;
-  const rows = db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold, COUNT(*) n
-     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL GROUP BY item_id`).all(houseId, since) as Array<{ item_id: number; sold: number; n: number }>;
-  for (const r of rows) out.set(r.item_id, { unitsPerDay: (r.sold / covered) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n });
+  const rows = db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold,
+     SUM(COALESCE(sold_value, 0)) value, COUNT(*) n
+     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL GROUP BY item_id`).all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number }>;
+  for (const r of rows) out.set(r.item_id, { unitsPerDay: (r.sold / covered) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null });
   return out;
 }
 

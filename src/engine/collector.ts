@@ -80,8 +80,15 @@ export class Collector {
     // vanished listings span many hours and would read as one hour of huge demand (review finding 1).
     const prevAt = cur.lastModified ? Date.parse(cur.lastModified) : NaN;
     const diffHours = Number.isFinite(prevAt) ? (publishedAt - prevAt) / 3600_000 : null;
-    const diffable = cur.listings && diffHours != null && diffHours > 0 && diffHours <= MAX_DIFF_HOURS;
-    const stats = aggregate(listings, diffable ? cur.listings : null);
+    let diffable = !!cur.listings && diffHours != null && diffHours > 0 && diffHours <= MAX_DIFF_HOURS;
+    // House guard: if over 30 percent of last hour's listings vanished at once, it is a reset or a gap, not trading.
+    if (diffable && cur.listings!.length > 100) {
+      const now = new Set(listings.map(l => l.id));
+      let vanished = 0;
+      for (const l of cur.listings!) if (!now.has(l.id)) vanished++;
+      if (vanished / cur.listings!.length > 0.3) { diffable = false; suspect.push(`house ${house.id} ${kind}: ${Math.round(100 * vanished / cur.listings!.length)}% of listings vanished in one hour, not counted as sales`); }
+    }
+    const stats = aggregate(listings, diffable ? cur.listings : null, { commodity: kind === 'commodities' });
     const raw = rawPath(this.dataDir, house.id, kind, publishedAt);
     const bytes = writeRaw(raw, listings);
 
@@ -93,11 +100,11 @@ export class Collector {
         stats.filter(s => s.listings > 0).length, bytes, raw, diffable ? diffHours : null);
       const id = Number(ins.lastInsertRowid);
       const st = this.db.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5,
-        total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor, sold_value)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (const s of stats) {
         st.run(id, house.id, s.itemId, publishedAt, s.floor, s.unitsAtFloor, s.unitsWithin5, s.totalUnits, s.listings,
-          JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits, s.goneUnitsExpiringNearFloor);
+          JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits, s.goneUnitsExpiringNearFloor, s.soldValue);
       }
       return id;
     });

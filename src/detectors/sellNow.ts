@@ -1,7 +1,7 @@
 import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { SELL_NOW } from '../rules/thresholds.ts';
-import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type Leg } from './types.ts';
+import { byItem, auctionLeg, realisticUnits, judgeSell, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type Leg } from './types.ts';
 import type { Typical } from '../analysis/history.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { playLine } from './summary.ts';
@@ -20,7 +20,9 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
     for (const x of held) {
       const ls = floors.get(x.itemId);
       if (!ls?.length) continue;
-      const floor = ls[0]!.unitPrice!;
+      const judged = judgeSell(ctx, h, x.itemId, ls);
+      if (!judged.show) continue;
+      const floor = judged.price;
       const t = typical.get(h.id)?.get(x.itemId);
       const jumped = t && floor >= t.typicalFloor * (1 + SELL_NOW.aboveTypical);
       const crossed = x.alertAbove != null && floor >= x.alertAbove;
@@ -40,7 +42,7 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
         note: (t ? `${Math.round((floor / t.typicalFloor - 1) * 100)}% over its usual ${money(t.typicalFloor)}` : '') + (crossed ? `${t ? ', ' : ''}past your ${money(x.alertAbove)} alert` : '') };
       const name = item?.name ?? `Item ${x.itemId}`;
       plays.push({
-        key: `sell_now:${h.id}:${x.itemId}`, detector: 'sell_now', houseId: h.id, itemId: x.itemId, profit: perItem * units, confidence: 'high',
+        key: `sell_now:${h.id}:${x.itemId}`, detector: 'sell_now', houseId: h.id, itemId: x.itemId, profit: perItem * units, confidence: judged.confidence,
         summary: playLine(name, perItem, buy, sell, salesPerDay),
         detail: { buy, sell, perItem, salesPerDay, available: x.units, realisticUnits: units, floor, typicalFloor: t?.typicalFloor ?? null,
           listing: listingPlan(h.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },

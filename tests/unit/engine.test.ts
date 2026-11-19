@@ -35,7 +35,8 @@ describe('engine end to end', () => {
     expect(r.events.flatMap(e => e.suspect)).toEqual(["house 116 auctions: zero listings"]);
     const dump = r.plays.find(p => p.detector === 'vendor_dump')!;
     expect(dump.profit).toBe((13 - 10) * 200);
-    expect(r.plays.some(p => p.detector === 'cross_house')).toBe(true);
+    // No sales history yet, so no resale play is trusted on the first snapshot. Vendor dumps need none.
+    expect(r.plays.some(p => p.detector === 'cross_house')).toBe(false);
     expect(sent.length).toBe(1);
     expect(sent[0]).toMatch(/Auction house to vendor/);
 

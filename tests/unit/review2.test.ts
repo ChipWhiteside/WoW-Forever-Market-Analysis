@@ -9,8 +9,8 @@ import type { PriceBook } from '../../src/analysis/prices.ts';
 import { tempDir } from '../helpers.ts';
 
 const A: HouseCtx = { id: 111, name: 'Alliance Auction House', faction: 'alliance', cut: 0.05, pinned: true, publishedAt: 1 };
-const ctx = (price: number): DetectorContext => ({ houses: [A], listings: new Map([[111, [{ id: 1, itemId: 9, quantity: 1, unitPrice: price, timeLeft: 'LONG' }]]]),
-  items: new Map([[9, { id: 9, name: 'Thing', sellPrice: 10, binding: null, quality: null }]]), vendors: new Map(), demand: new Map(), now: 1 });
+const ctx = (price: number): DetectorContext => ({ houses: [A], listings: new Map([[111, Array.from({ length: 6 }, (_, i) => ({ id: i + 1, itemId: 9, quantity: 1, unitPrice: price, timeLeft: 'LONG' as const }))]]),
+  items: new Map([[9, { id: 9, name: 'Thing', sellPrice: 10, binding: null, quality: null }]]), vendors: new Map(), demand: new Map([[111, new Map([[9, { unitsPerDay: 20, hours: 24, snapshots: 24, soldPrice: 200 }]])]]), now: 1 });
 
 describe('review round 2 fixes', () => {
   it('sell now never claims a watchlist price as profit, and never shows a loss', () => {
