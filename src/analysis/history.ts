@@ -32,7 +32,8 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
     .all(houseId, since) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
   for (const r of rows) {
     const rc = recent.get(r.item_id);
-    out.set(r.item_id, { unitsPerDay: (r.sold / covered) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
+    // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
+    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(covered, 6)) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null });
   }
   return out;

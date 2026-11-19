@@ -158,5 +158,7 @@ export function craftBoard(db: DB, book: PriceBook, opts: { professions?: Record
       row.listing = listingPlan(book.faction, book.sell.get(pid), row.each.profit, row.salesPerDay == null ? null : (row.salesPerDay * share) / 24, units);
     }
   }
-  return out.sort((a, b) => (b.each.profit ?? -Infinity) - (a.each.profit ?? -Infinity));
+  // Recipes Chip can make come first, then by profit each times what realistically sells a day.
+  const worth = (r: CraftRow) => r.each.profit == null ? -Infinity : r.each.profit * Math.max(1, Math.round((r.salesPerDay ?? 0) * (opts.sellShare ?? 0.2)));
+  return out.sort((a, b) => Number(b.canCraft) - Number(a.canCraft) || worth(b) - worth(a));
 }

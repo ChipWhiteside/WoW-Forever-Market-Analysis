@@ -29,7 +29,7 @@ export function vendorDump(ctx: DetectorContext): Play[] {
       const sellLeg = { kind: 'any_vendor' as const, price: sell, who: 'Any vendor', places: [] };
       const perItem = Math.round(total / units);
       plays.push({
-        key: `vendor_dump:${h.id}:${itemId}`, detector: 'vendor_dump', houseId: h.id, itemId, profit: total, confidence: 'high',
+        key: `vendor_dump:${h.id}:${itemId}`, detector: 'vendor_dump', houseId: h.id, itemId, profit: total, confidence: listings === 1 ? 'medium' : 'high',
         summary: playLine(name, perItem, buy, sellLeg, null),
         detail: { buy, sell: sellLeg, perItem, salesPerDay: null, available: units, realisticUnits: units, oneOff: listings === 1 },
         dataAt: h.publishedAt,

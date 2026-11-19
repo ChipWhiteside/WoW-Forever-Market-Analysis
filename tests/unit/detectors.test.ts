@@ -148,3 +148,16 @@ describe('strength: why people buy it', () => {
     expect((quest.detail.why as { questTitle: string }).questTitle).toBe('Enticing Negolash');
   });
 });
+
+describe('no play without real sales', () => {
+  it('a deep, steady quest item with a week of history but no sales near the price is held back', () => {
+    const items = new Map([[4595, { id: 4595, name: 'Junglevine Wine', sellPrice: 25, binding: null, quality: 'COMMON' }]]);
+    const vendors = new Map([[4595, [{ npcId: 1, npcName: 'Innkeeper', faction: 'neutral', zone: 'Stranglethorn Vale', x: 27, y: 77, uiMap: 1434, unitPrice: 100, limited: false, minStanding: 4 }]]]);
+    const demand = new Map([[111, new Map([[4595, { unitsPerDay: 0, hours: 168, snapshots: 168, soldPrice: null, floorCv: 0.02 }]])]]);
+    const drivers = new Map([[4595, { quests: 1, questTitle: 'Enticing Negolash', questAmount: 5, questLevel: 52, recipes: 0, recipeNames: [], professions: [] }]]);
+    const rejects: Array<{ reason: string }> = [];
+    const p = vendorSupply(ctx({ houses: [A], listings: new Map([[111, deep(4595, 1700, 8, 5)]]), items, vendors, demand, drivers, rejects: rejects as never }));
+    expect(p).toHaveLength(0);
+    expect(rejects[0]!.reason).toMatch(/no sales seen/);
+  });
+});

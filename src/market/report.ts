@@ -1,5 +1,6 @@
 import type { DB } from '../store/db.ts';
 import { primaryHouse } from '../analysis/prices.ts';
+import { marketPrice } from '../rules/price.ts';
 
 /**
  * The market read from the bot report spec: whole market aggregates, category share, top items by value,
@@ -11,9 +12,11 @@ export function marketReport(db: DB) {
   const latest = db.prepare(`SELECT kind, MAX(published_at) t FROM snapshots WHERE house_id = ? GROUP BY kind`).all(house.id) as Array<{ kind: string; t: number }>;
   const ts = latest.map(l => l.t);
   if (!ts.length) return { house };
-  const now = db.prepare(`SELECT s.item_id, s.floor, s.total_units, s.units_within5, i.name, i.quality, i.icon_url, i.item_class FROM item_stats s LEFT JOIN items i ON i.id = s.item_id
+  const raw = db.prepare(`SELECT s.item_id, s.floor, s.ladder, s.listings, s.total_units, s.units_within5, i.name, i.quality, i.icon_url, i.item_class FROM item_stats s LEFT JOIN items i ON i.id = s.item_id
     WHERE s.house_id = ? AND s.published_at IN (${ts.map(() => '?').join(',')}) AND s.floor IS NOT NULL`).all(house.id, ...ts) as Array<{
-    item_id: number; floor: number; total_units: number; units_within5: number; name: string | null; quality: string | null; icon_url: string | null; item_class: string | null }>;
+    item_id: number; floor: number; ladder: string; listings: number; total_units: number; units_within5: number; name: string | null; quality: string | null; icon_url: string | null; item_class: string | null }>;
+  // Value at the trimmed market price, never one lone listing: single listing items are left out of the totals.
+  const now = raw.filter(r => r.listings >= 2).map(r => ({ ...r, floor: marketPrice((JSON.parse(r.ladder) as Array<[number, number]>).map(([p, u]) => ({ unitPrice: p, quantity: u })))?.price ?? r.floor }));
   const value = (r: { floor: number; total_units: number }) => r.floor * r.total_units;
   const totals = { value: now.reduce((s, r) => s + value(r), 0), items: now.length, units: now.reduce((s, r) => s + r.total_units, 0) };
   const cats = new Map<string, number>();

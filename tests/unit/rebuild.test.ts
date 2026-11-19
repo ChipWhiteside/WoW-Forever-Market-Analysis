@@ -31,7 +31,7 @@ describe('rebuilding history from raw snapshots', () => {
     const r = rebuildHistory(db);
     expect(r.rebuilt).toBe(3);
     const d = demandByItem(db, 111, { now: t0 + 3 * 3600_000 });
-    expect(d.get(3857)?.unitsPerDay).toBeCloseTo(40 * 24, 0); // 80 sold over 2 hours
+    expect(d.get(3857)?.unitsPerDay).toBeCloseTo(80 / 6 * 24, 0); // 80 sold, projected from at least 6 hours
     expect(d.get(3857)?.soldPrice).toBe(810); // 40 at 800, 40 at 820
     expect(d.get(5956)?.unitsPerDay ?? 0).toBe(0); // the expiring hammer relists are not sales
   });

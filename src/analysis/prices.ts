@@ -41,7 +41,7 @@ export function priceBook(db: DB, house = primaryHouse(db)): PriceBook {
     if (r.name) names.set(r.id, r.name);
   }
   const vendor = new Map<number, { price: number; npc: string; zone: string | null }>();
-  for (const r of db.prepare(`SELECT item_id, MIN(price) price, npc_name, zone FROM vendor_items WHERE faction IN ('alliance', 'neutral') AND price > 0 GROUP BY item_id`).all() as Array<{ item_id: number; price: number; npc_name: string; zone: string | null }>) {
+  for (const r of db.prepare(`SELECT item_id, MIN(price) price, npc_name, zone FROM vendor_items WHERE faction IN ('alliance', 'neutral') AND price > 0 AND limited = 0 AND COALESCE(CAST(standing_required AS INTEGER), 4) <= 5 GROUP BY item_id`).all() as Array<{ item_id: number; price: number; npc_name: string; zone: string | null }>) {
     vendor.set(r.item_id, { price: r.price, npc: r.npc_name, zone: r.zone });
   }
   const quality = new Map((db.prepare('SELECT id, quality FROM items').all() as Array<{ id: number; quality: string | null }>).map(r => [r.id, r.quality]));

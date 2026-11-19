@@ -37,7 +37,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <button onClick={() => onOpenItem(p.item_id)} className="block truncate text-left text-base hover:underline"><ItemName name={p.item_name} id={p.item_id} quality={p.quality} /></button>
-              <p className="text-xs text-muted">{PLAY_LABEL[p.detector]}{p.state === 'new' ? ' · new' : p.state === 'fading' ? ' · fading' : gone ? ' · gone' : ''}</p>
+              <p className="text-xs text-muted">{PLAY_LABEL[p.detector]}{p.state === 'new' ? ', new this hour' : p.state === 'fading' ? ', profit shrinking' : gone ? ', gone' : ''}</p>
             </div>
             <div className="shrink-0 text-right">
               <div className={(d.perItem ?? 0) >= 0 ? 'text-good' : 'text-bad'}>{(d.perItem ?? 0) >= 0 && <span className="text-lg font-bold">+</span>}<Money c={d.perItem} size="xl" /></div>
@@ -70,9 +70,10 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
             <li className="flex gap-2">
               <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Volume</span>
               <span>
-                {d.salesPerDay != null ? <><b>~{Math.round(d.salesPerDay).toLocaleString()}</b> sell a day <span className="text-xs text-muted">(from {d.salesHours != null && d.salesHours >= 48 ? `${Math.round(d.salesHours / 24)} days` : `${Math.round(d.salesHours ?? 0)} hours`} of watching)</span></> : p.detector === 'vendor_dump' ? 'Vendors buy any amount' : <span className="text-muted">No sales seen yet</span>}
-                {d.available != null && Number.isFinite(d.available) && <span className="text-muted"> · {d.available.toLocaleString()} available at this price</span>}
-                <span className="text-muted"> · worth doing <b className="text-ink">{d.realisticUnits}</b>{d.cappedByGold ? ' (all your gold covers)' : ''}, costs </span><Money c={d.costToDo} size="sm" /><span className="text-muted">, makes about </span><Money c={p.profit} size="sm" />
+                {p.detector === 'vendor_dump' ? <>Vendors buy any amount. {d.available} listed under the vendor price. </>
+                  : d.salesPerDay != null ? <>About <b>{Math.round(d.salesPerDay).toLocaleString()}</b> sell a day <span className="text-xs text-muted">({d.salesHours != null && d.salesHours >= 48 ? `${Math.round(d.salesHours / 24)} days` : `${Math.round(d.salesHours ?? 0)} hours`} of data)</span>. </>
+                  : <span className="text-muted">No sales seen yet. </span>}
+                Worth doing <b>{d.realisticUnits}</b>{d.cappedByGold ? ' (all your gold covers)' : ''}: costs <Money c={d.costToDo} size="sm" />, makes about <Money c={p.profit} size="sm" />.
               </span>
             </li>
             {d.listing && (
@@ -93,9 +94,9 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5">
             <span className="text-xs text-muted">data {ago(p.data_at)}</span>
             <span title={d.strength ? d.strength.map(x => `${x.label}: ${x.points} of ${x.max}`).join('\n') : undefined} className="cursor-help">
-              <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{typeof d.score === 'number' ? `strength ${d.score}/100` : `${p.confidence} confidence`}{p.confidence === 'low' ? ', watch only' : ''}</Chip>
+              <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{typeof d.score === 'number' ? `strength ${d.score}/100${p.confidence === 'low' ? ', watch only' : ''}` : 'sure thing: simple arithmetic'}</Chip>
             </span>
-            {d.strength && <span className="hidden text-[11px] text-muted md:inline">{d.strength.filter(x => x.points < x.max).slice(0, 3).map(x => `weak: ${x.label}`).join(' · ')}</span>}
+            {d.strength && <span className="hidden text-[11px] text-muted md:inline">{(() => { const weak = d.strength.filter(x => x.points < x.max).slice(0, 3).map(x => x.label); return weak.length ? `Weakest: ${weak.join(', ')}.` : ''; })()}</span>}
             {d.oneOff && <Chip tone="warn">one cheap listing, may be a one off</Chip>}
             <span className="ml-auto flex gap-1">
               {!gone && !p.user_status && !askDone && <>
@@ -129,7 +130,7 @@ function LegRow({ label, leg }: { label: string; leg: Leg }) {
         {leg.places.slice(0, 1).map(pl => {
           const href = mapHref(pl);
           const text = `${pl.zone ?? pl.label}${pl.x != null ? ` ${pl.x}, ${pl.y}` : ''}`;
-          return href ? <a key={pl.label} href={href} className="text-alliance underline decoration-dotted underline-offset-2 hover:decoration-solid">📍 {text}</a> : <span key={pl.label} className="text-muted">{text}</span>;
+          return href ? <a key={pl.label} href={href} className="text-alliance underline decoration-dotted underline-offset-2 hover:decoration-solid">{text}</a> : <span key={pl.label} className="text-muted">{text}</span>;
         })}
         {leg.places.length > 1 && <span className="text-xs text-muted">also {leg.places.slice(1).map((pl, i) => {
           const href = mapHref(pl);

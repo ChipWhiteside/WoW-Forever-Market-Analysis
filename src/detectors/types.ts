@@ -111,7 +111,7 @@ export interface PricePicture { levels: Array<[number, number, number]>; thinTop
 /** Units worth doing in a day: Chip's share of daily sales, at least 1, never more than what is available. */
 export function realisticUnits(available: number, salesPerDay: number | null, share = DEFAULT_SELL_SHARE): number {
   if (salesPerDay == null) return Math.min(available, 1);
-  if (salesPerDay <= 0) return 0; // measured: nothing sells, so nothing is worth doing
+  if (salesPerDay < 1) return 0; // under one sale a day: nothing is worth stocking up on
   return Math.max(1, Math.min(available, Math.round(salesPerDay * share)));
 }
 
@@ -151,7 +151,7 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
   if (evidence.provenSales < 3) short.push(evidence.provenSales ? `only ${evidence.provenSales} sales seen so far` : 'no sales seen yet');
   if (evidence.listings < 3) short.push(`only ${evidence.listings} listing${evidence.listings === 1 ? '' : 's'} up`);
   if (evidence.hours < 6) short.push(`${evidence.hours} hours of sales history`);
-  const why = gates.length ? gates[0]! : `confidence ${score}/100: ${short.join(', ') || 'thin evidence'}`;
+  const why = gates.length ? gates[0]! : `strength ${score}/100, ${short.join(', ') || 'thin evidence'}`;
   // The price picture shown on the card: the cheapest levels with their depth, recent sales, and which price was used and why.
   const levels: Array<[number, number, number]> = [];
   for (const l of ladder) {
@@ -165,5 +165,9 @@ export function judgeSell(ctx: DetectorContext, house: HouseCtx, itemId: number,
     note: used === 'sold' ? `using what it actually sold for${recentOk ? ' in the last 24 hours' : ''}: the cheapest listing now is higher, but nothing has sold up there yet`
       : thinTop ? `only ${levels[0]![1]} at the cheapest price, then ${Math.round((levels[1]![0] / levels[0]![0] - 1) * 100)}% higher` : '',
   };
-  return { price, market: m?.price ?? null, evidence, gates, score, parts, driver: ctx.drivers?.get(itemId) ?? null, confidence: confidenceLabel(score), show: !gates.length && score >= PRICE.showAt, why, picture };
+    // No play without real sales near its price: history and steadiness alone never qualify. Medium or better needs 3.
+  const soldNear = provenSales >= 1 && soldRef != null;
+  let confidence = confidenceLabel(score);
+  if (provenSales < 3 && confidence !== 'low') confidence = 'low';
+  return { price, market: m?.price ?? null, evidence, gates, score, parts, driver: ctx.drivers?.get(itemId) ?? null, confidence, show: !gates.length && score >= PRICE.showAt && soldNear, why: soldNear ? why : 'no sales seen yet near this price', picture };
 }

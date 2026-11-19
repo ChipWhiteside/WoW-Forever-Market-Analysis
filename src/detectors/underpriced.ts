@@ -38,7 +38,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       let left = units, cost = 0;
       for (const l of cheap) { if (left <= 0) break; const q = Math.min(left, l.quantity); cost += q * l.unitPrice!; left -= q; }
       const avgBuy = Math.round(cost / units);
-      const relistAt = d.soldPrice != null ? Math.min(t.typicalFloor, d.soldPrice) : t.typicalFloor;
+      const relistAt = Math.min(t.typicalFloor, judged.price);
       const net = netPerUnit(h.faction, relistAt);
       const perItem = net - avgBuy;
       if (perItem <= 0) continue;
@@ -49,7 +49,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       plays.push({
         key: `underpriced:${h.id}:${itemId}`, detector: 'underpriced', houseId: h.id, itemId, profit: perItem * units, confidence: judged.confidence,
         summary: playLine(name, perItem, buy, sell, d.unitsPerDay),
-        detail: { buy, sell, perItem, salesPerDay: d.unitsPerDay, salesHours: d.hours, available, realisticUnits: units, typicalFloor: t.typicalFloor, readings: t.readings, oneOff: cheap.length === 1,
+        detail: { buy, sell, perItem, salesPerDay: d.unitsPerDay, salesHours: d.hours, price: judged.picture, strength: judged.parts, why: judged.driver, score: judged.score, available, realisticUnits: units, typicalFloor: t.typicalFloor, readings: t.readings, oneOff: cheap.length === 1,
           listing: listingPlan(h.faction, item?.sellPrice, perItem, (d.unitsPerDay * share) / 24, units) },
         dataAt: h.publishedAt,
       });

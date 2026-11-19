@@ -46,7 +46,11 @@ export function selectForAlert(db: DB, candidates: Play[], pinned: Set<number>, 
 
 export function formatAlert(plays: Play[], appUrl: string | null): string {
   const lines = [`**${plays.length} new play${plays.length === 1 ? '' : 's'}**`];
-  for (const p of plays.slice(0, 12)) lines.push(`• **${LABEL[p.detector]}** · ${p.summary} Worth about **${money(p.profit)}** today.`);
+  for (const p of plays.slice(0, 12)) {
+    const d = p.detail as { score?: number; costToDo?: number; realisticUnits: number };
+    const strengthText = typeof d.score === 'number' ? ` Strength ${d.score}/100.` : '';
+    lines.push(`• **${LABEL[p.detector]}**: ${p.summary} Worth doing ${d.realisticUnits}, costs ${money(d.costToDo ?? 0)}, makes about **${money(p.profit)}**.${strengthText}`);
+  }
   if (plays.length > 12) lines.push(`…and ${plays.length - 12} more in the app.`);
   if (appUrl) lines.push(appUrl);
   return lines.join('\n').slice(0, 1990);

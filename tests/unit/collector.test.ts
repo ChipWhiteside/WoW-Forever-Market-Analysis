@@ -45,7 +45,7 @@ describe('collector', () => {
     // Two differenced hours. Sales: 7 at 149 in hour 2 (the 5 SHORT units at 160 expired in hour 1, not sold).
     const d = demandByItem(db, 110, { now: Date.parse('Wed, 18 Nov 2026 06:30:00 GMT') }).get(2770)!;
     expect(d.hours).toBe(2);
-    expect(d.unitsPerDay).toBeCloseTo(84, -1);
+    expect(d.unitsPerDay).toBeCloseTo(28, 0); // 7 sold, projected from at least 6 hours of watching, never fewer
     expect(d.soldPrice).toBe(149);
     const n = db.prepare('SELECT COUNT(*) n FROM snapshots').get() as { n: number };
     expect(n.n).toBe(3);

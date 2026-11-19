@@ -57,7 +57,7 @@ export function searchItems(db: DB, q: string, limit = 20) {
 }
 
 export function overview(db: DB) {
-  const counts = db.prepare(`SELECT detector, COUNT(*) n, SUM(profit) profit, SUM(state = 'new') fresh FROM plays WHERE state != 'gone' AND user_status IS NULL GROUP BY detector`).all();
+  const counts = db.prepare(`SELECT detector, COUNT(*) n, SUM(CASE WHEN confidence != 'low' THEN profit ELSE 0 END) profit, SUM(state = 'new') fresh FROM plays WHERE state != 'gone' AND user_status IS NULL GROUP BY detector`).all();
   const pinned = db.prepare('SELECT id, name, faction FROM houses WHERE pinned = 1').all() as Array<{ id: number; name: string; faction: string }>;
   const learning = pinned.length ? pinned.map(h => ({ house: h.id, readings: readingsSoFar(db, h.id) })) : [];
   const datasets = db.prepare('SELECT * FROM datasets').all();

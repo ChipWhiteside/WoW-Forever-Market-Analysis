@@ -129,7 +129,7 @@ export class Engine {
     }
     for (const p of all) if (p.detail.realisticUnits <= 0) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `costs ${Math.round(p.detail.buy.price / 100) / 100}g each, more than your gold on hand` });
     const plays = all.filter(p => p.detail.perItem >= minEach && p.detail.realisticUnits > 0);
-    for (const p of all) if (p.detail.perItem < minEach) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `under your ${minEach}c minimum per item` });
+    for (const p of all) if (p.detail.perItem < minEach) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `under your ${minEach >= 100 ? `${minEach / 100}s` : `${minEach}c`} minimum profit per item` });
     // Closest calls: the best candidates held back this round and why, so an empty board explains itself.
     const seen = new Set<string>();
     const closest = ctx.rejects.filter(r => r.perItem != null && r.perItem > 0).sort((a, b) => b.perItem! - a.perItem!)
