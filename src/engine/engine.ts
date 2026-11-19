@@ -116,7 +116,19 @@ export class Engine {
     // Anything under the minimum profit per item is not worth Chip's time: never stored, shown or alerted.
     ctx.rejects = [];
     const all = [...vendorDump(ctx), ...vendorSupply(ctx), ...crossHouse(ctx), ...underpriced(ctx, typical), ...sellNow(ctx, typical, heldItems(this.db))];
-    const plays = all.filter(p => p.detail.perItem >= minEach);
+    // Within reach: cap units at what Chip's gold can buy, and hold back anything he cannot afford even once.
+    const goldSetting = Number((this.db.prepare(`SELECT value FROM settings WHERE key = 'gold_on_hand'`).get() as { value: string } | undefined)?.value);
+    const gold = Number.isFinite(goldSetting) && goldSetting > 0 ? Math.round(goldSetting * 10000) : null;
+    for (const p of all) {
+      const each = p.detail.buy.kind === 'held' ? 0 : p.detail.buy.price;
+      if (gold != null && each > 0) {
+        const affordable = Math.floor(gold / each);
+        if (affordable < p.detail.realisticUnits) { p.detail.realisticUnits = affordable; p.detail.cappedByGold = true; p.profit = p.detail.perItem * affordable; }
+      }
+      p.detail.costToDo = each * p.detail.realisticUnits;
+    }
+    for (const p of all) if (p.detail.realisticUnits <= 0) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `costs ${Math.round(p.detail.buy.price / 100) / 100}g each, more than your gold on hand` });
+    const plays = all.filter(p => p.detail.perItem >= minEach && p.detail.realisticUnits > 0);
     for (const p of all) if (p.detail.perItem < minEach) ctx.rejects.push({ detector: p.detector, houseId: p.houseId, itemId: p.itemId, perItem: p.detail.perItem, reason: `under your ${minEach}c minimum per item` });
     // Closest calls: the best candidates held back this round and why, so an empty board explains itself.
     const seen = new Set<string>();

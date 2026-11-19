@@ -58,6 +58,7 @@ export function SettingsPage() {
       ))}
       <h2 className="mb-2 mt-8 font-display text-lg font-bold">Alerts and you</h2>
       <Card className="grid max-w-2xl gap-4 p-5 md:grid-cols-2">
+        {field('gold_on_hand', 'Gold on hand', 'in gold, like 12.5. Plays are capped at what you can afford')}
         {field('min_profit_each', 'Minimum profit per item, copper', '100 = 1 silver. Plays under this never show')}
         {field('profit_bar', 'Alert bar, copper', 'total for the day. 2500 = 25 silver')}
         {field('time_zone', 'Time zone')}

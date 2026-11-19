@@ -23,7 +23,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
     mutationFn: (b: { status: string; quantity?: number; unitCost?: number }) => post(`/api/plays/${encodeURIComponent(p.key)}/status`, b),
     onSuccess: () => qc.invalidateQueries(),
   });
-  const d = p.detail as { why?: { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] } | null;
+  const d = p.detail as { costToDo?: number; cappedByGold?: boolean; why?: { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] } | null;
     strength?: Array<{ label: string; points: number; max: number }>; score?: number;
     price?: { levels: Array<[number, number, number]>; thinTop: boolean; recentSoldPrice: number | null; recentSales: number; soldPrice: number | null; used: string; note: string };
     buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; salesHours?: number; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
@@ -72,7 +72,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
               <span>
                 {d.salesPerDay != null ? <><b>~{Math.round(d.salesPerDay).toLocaleString()}</b> sell a day <span className="text-xs text-muted">(from {d.salesHours != null && d.salesHours >= 48 ? `${Math.round(d.salesHours / 24)} days` : `${Math.round(d.salesHours ?? 0)} hours`} of watching)</span></> : p.detector === 'vendor_dump' ? 'Vendors buy any amount' : <span className="text-muted">No sales seen yet</span>}
                 {d.available != null && Number.isFinite(d.available) && <span className="text-muted"> · {d.available.toLocaleString()} available at this price</span>}
-                <span className="text-muted"> · worth doing <b className="text-ink">{d.realisticUnits}</b>, about </span><Money c={p.profit} size="sm" />
+                <span className="text-muted"> · worth doing <b className="text-ink">{d.realisticUnits}</b>{d.cappedByGold ? ' (all your gold covers)' : ''}, costs </span><Money c={d.costToDo} size="sm" /><span className="text-muted">, makes about </span><Money c={p.profit} size="sm" />
               </span>
             </li>
             {d.listing && (

@@ -177,3 +177,28 @@ describe('closest calls', () => {
     expect(cc.calls.find((c: { itemId: number }) => c.itemId === 2589).reason).toMatch(/minimum/);
   });
 });
+
+describe('within reach', () => {
+  it('units are capped at what gold on hand can buy; what cannot be afforded once is held back', async () => {
+    const dir = tempDir();
+    const lm = new Date(Date.now() - 5 * 60_000).toUTCString();
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 111, name: 'Alliance Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/111': () => ({ body: { id: 111, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/111/commodities': () => ({ body: { auctions: [
+        { id: 1, item: { id: 2592 }, quantity: 50, unit_price: 5000, time_left: 'LONG' },
+        { id: 2, item: { id: 9999 }, quantity: 1, unit_price: 200000, time_left: 'LONG' }] }, lastModified: lm }),
+      '/data/wow/item/2592': () => ({ body: { id: 2592, name: 'Pricey Thing', sell_price: 6000 } }),
+      '/data/wow/item/9999': () => ({ body: { id: 9999, name: 'Gold Bar Thing', sell_price: 300000 } }),
+    });
+    const db = openDb(dir, ':memory:');
+    db.exec(`INSERT INTO settings (key, value) VALUES ('gold_on_hand', '12')`);
+    const engine = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await engine.init();
+    const r = await engine.round();
+    const p = r.plays.find(x => x.itemId === 2592)!;
+    expect(p.detail.realisticUnits).toBe(24); // 12g / 50s each
+    expect(p.detail.costToDo).toBe(24 * 5000);
+    expect(r.plays.find(x => x.itemId === 9999)).toBeUndefined(); // 20g each, more than 12g
+  });
+});
