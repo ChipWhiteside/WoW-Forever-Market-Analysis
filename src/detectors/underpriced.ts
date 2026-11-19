@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
 import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play } from './types.ts';
@@ -36,7 +37,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       if (perItem <= 0) continue;
       const places = AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance'];
       const buy = { ...auctionLeg(h, avgBuy, places), note: `${Math.round((1 - ls[0]!.unitPrice! / t.typicalFloor) * 100)}% under its typical price` };
-      const sell = { ...auctionLeg(h, net, places), note: `relist near the typical ${t.typicalFloor}c, before the cut` };
+      const sell = { ...auctionLeg(h, net, places), note: `relist near the usual ${money(t.typicalFloor)}, before the cut` };
       const name = item?.name ?? `Item ${itemId}`;
       plays.push({
         key: `underpriced:${h.id}:${itemId}`, detector: 'underpriced', houseId: h.id, itemId, profit: perItem * units, confidence: 'medium',

@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
 import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type HouseCtx } from './types.ts';
@@ -44,7 +45,7 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     const avgBuy = Math.round(cost / units);
     const perItem = net - avgBuy;
     const buy = auctionLeg(buyH, avgBuy, placesOf(buyH));
-    const sell = { ...auctionLeg(sellH, net, placesOf(sellH)), note: `floor ${sellFloor}c before the ${Math.round(sellH.cut * 100)}% cut` };
+    const sell = { ...auctionLeg(sellH, net, placesOf(sellH)), note: `listed at ${money(sellFloor)} before the ${Math.round(sellH.cut * 100)}% cut` };
     const name = item?.name ?? `Item ${itemId}`;
     plays.push({
       key: `cross_house:${buyH.id}>${sellH.id}:${itemId}`, detector: 'cross_house', houseId: buyH.id, itemId, profit: perItem * units,

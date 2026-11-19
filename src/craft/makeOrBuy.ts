@@ -1,6 +1,7 @@
 import type { DB } from '../store/db.ts';
 import type { PriceBook } from '../analysis/prices.ts';
-import { netPerUnit } from '../rules/fees.ts';
+import { netPerUnit, listingPlan, type ListingPlan } from '../rules/fees.ts';
+import type { Demand } from '../detectors/types.ts';
 
 /**
  * O4 Make or buy. Every product breaks into ingredients, every craftable ingredient breaks again, down to raw
@@ -113,9 +114,13 @@ export interface CraftRow {
   margin: number | null; marginPct: number | null; productFloor: number | null; productUnits: number; blocked: string | null; bop: boolean;
   thresholds: { learn: number | null; yellow: number | null; green: number | null; grey: number | null }; canCraft: boolean;
   sources: string; skillUp: number | null; costPerPoint: number | null;
+  /** per single item made (a craft can make more than one) */
+  each: { cost: number | null; sale: number | null; profit: number | null };
+  salesPerDay: number | null;
+  listing: ListingPlan | null;
 }
 
-export function craftBoard(db: DB, book: PriceBook, opts: { professions?: Record<string, number> | null; profession?: string } = {}): CraftRow[] {
+export function craftBoard(db: DB, book: PriceBook, opts: { professions?: Record<string, number> | null; profession?: string; demand?: Map<number, Demand>; sellShare?: number } = {}): CraftRow[] {
   const c = new Crafter(db, book, null);
   const out: CraftRow[] = [];
   for (const r of c.recipes) {
@@ -141,7 +146,17 @@ export function craftBoard(db: DB, book: PriceBook, opts: { professions?: Record
       canCraft: skill != null ? skill >= (r.learn_skill ?? r.yellow ?? 1) : false,
       sources: nodes.map(n => `${n.quantity}x ${n.name} (${n.source})`).join(', '),
       skillUp: chance, costPerPoint: chance && margin != null && margin < 0 ? Math.round(-margin / chance) : null,
+      each: { cost: cost == null ? null : Math.ceil(cost / qty), sale: unitSale, profit: cost == null || unitSale == null ? null : unitSale - Math.ceil(cost / qty) },
+      salesPerDay: null, listing: null,
     });
+    const row = out[out.length - 1]!;
+    const d = opts.demand?.get(pid);
+    if (d && d.hours >= 3) row.salesPerDay = d.unitsPerDay;
+    if (!bop && row.each.profit != null && row.each.profit > 0 && pf) {
+      const share = opts.sellShare ?? 0.2;
+      const units = row.salesPerDay != null ? Math.max(1, Math.round(row.salesPerDay * share)) : 1;
+      row.listing = listingPlan(book.faction, book.sell.get(pid), row.each.profit, row.salesPerDay == null ? null : (row.salesPerDay * share) / 24, units);
+    }
   }
-  return out.sort((a, b) => (b.margin ?? -Infinity) - (a.margin ?? -Infinity));
+  return out.sort((a, b) => (b.each.profit ?? -Infinity) - (a.each.profit ?? -Infinity));
 }

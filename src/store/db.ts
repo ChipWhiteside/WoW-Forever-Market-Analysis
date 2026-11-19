@@ -157,6 +157,10 @@ const MIGRATIONS: string[] = [
   ALTER TABLE item_stats ADD COLUMN gone_units_expiring_near_floor INTEGER;
   ALTER TABLE snapshots ADD COLUMN diff_hours REAL;
   `,
+  // 7. Chip's own materials, for the leveling planner
+  `
+  CREATE TABLE inventory (item_id INTEGER PRIMARY KEY, count INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

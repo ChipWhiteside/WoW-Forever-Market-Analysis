@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { MIN_GAIN } from '../rules/thresholds.ts';
 import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type Leg } from './types.ts';
@@ -31,7 +32,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
       const units = best.limited ? 1 : realisticUnits(Infinity, salesPerDay, share);
       const buy: Leg = { kind: 'vendor', price: best.unitPrice, who: best.npcName, places: [{ label: best.npcName, zone: best.zone, uiMap: best.uiMap ?? null, x: best.x, y: best.y }],
         note: [best.limited ? 'limited stock' : null, gated ? 'price only seen at Honored or better, may need reputation' : null].filter(Boolean).join(', ') || undefined };
-      const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: `floor ${floor}c before the cut` };
+      const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: `listed at ${money(floor)} before the cut` };
       const name = item?.name ?? `Item ${itemId}`;
       plays.push({
         key: `vendor_supply:${h.id}:${itemId}`, detector: 'vendor_supply', houseId: h.id, itemId, profit: perItem * units,

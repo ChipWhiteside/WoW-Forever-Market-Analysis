@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { netPerUnit, listingPlan } from '../rules/fees.ts';
 import { SELL_NOW } from '../rules/thresholds.ts';
 import { byItem, auctionLeg, realisticUnits, DEFAULT_SELL_SHARE, type DetectorContext, type Play, type Leg } from './types.ts';
@@ -32,7 +33,7 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
       const units = x.units > 0 ? realisticUnits(x.units, salesPerDay, share) : 1;
       const buy: Leg = { kind: 'held', price: x.unitCost ?? 0, who: x.units ? `You hold ${x.units}` : 'On your watchlist', places: [] };
       const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']),
-        note: (t ? `${Math.round((floor / t.typicalFloor - 1) * 100)}% over its typical ${t.typicalFloor}c` : '') + (crossed ? `${t ? ', ' : ''}past your ${x.alertAbove}c alert` : '') };
+        note: (t ? `${Math.round((floor / t.typicalFloor - 1) * 100)}% over its usual ${money(t.typicalFloor)}` : '') + (crossed ? `${t ? ', ' : ''}past your ${money(x.alertAbove)} alert` : '') };
       const name = item?.name ?? `Item ${x.itemId}`;
       plays.push({
         key: `sell_now:${h.id}:${x.itemId}`, detector: 'sell_now', houseId: h.id, itemId: x.itemId, profit: perItem * units, confidence: 'high',

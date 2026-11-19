@@ -5,8 +5,10 @@ import { ItemDrawer } from './components/ItemDrawer';
 import { NowPage } from './pages/now';
 import { VendorPage, ResalePage } from './pages/plays';
 import { LookupPage, SettingsPage, HealthPage, ChangelogPage } from './pages/misc';
-import { CraftingPage, DropsPage, FarmingPage, PositionsPage, WatchlistPage, MarketPage } from './pages/more';
+import { CraftingPage } from './pages/crafting';
+import { DropsPage, FarmingPage, PositionsPage, WatchlistPage, MarketPage } from './pages/more';
 import { api } from './lib/api';
+import { MapPage } from './pages/map';
 
 const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.Element | null; count?: string[] }> = [
   { id: 'now', label: 'Now', group: 'Plays', el: NowPage },
@@ -15,6 +17,7 @@ const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.
   { id: 'crafting', label: 'Crafting', group: 'Plays', el: CraftingPage },
   { id: 'drops', label: 'World drops', group: 'Plays', el: DropsPage },
   { id: 'farming', label: 'Farming', group: 'Plays', el: FarmingPage },
+  { id: 'map', label: 'Map', group: 'Plays', el: MapPage },
   { id: 'positions', label: 'Positions', group: 'Mine', el: PositionsPage },
   { id: 'watchlist', label: 'Watchlist', group: 'Mine', el: WatchlistPage },
   { id: 'market', label: 'Market', group: 'Insight', el: MarketPage },
@@ -25,10 +28,11 @@ const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.
 ];
 
 export default function App() {
-  const [page, setPage] = useState(() => location.hash.slice(1) || 'now');
+  const pageOf = () => location.hash.slice(1).split('/')[0] || 'now';
+  const [page, setPage] = useState(pageOf);
   const [item, setItem] = useState<number | null>(null);
   const [dark, setDark] = useState(() => { try { return localStorage.getItem('theme') === 'dark'; } catch { return false; } });
-  useEffect(() => { const f = () => setPage(location.hash.slice(1) || 'now'); addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
+  useEffect(() => { const f = () => setPage(pageOf()); addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch { /* fine */ } }, [dark]);
   useEffect(() => {
     const f = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); location.hash = 'lookup'; } if (e.key === 'Escape') setItem(null); };

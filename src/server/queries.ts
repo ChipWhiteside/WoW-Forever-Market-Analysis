@@ -40,7 +40,7 @@ export function itemDetail(db: DB, id: number) {
     ORDER BY h.pinned DESC, h.id`).all(id, id) as Array<Record<string, unknown> & { ladder: string }>;
   const history = db.prepare(`SELECT house_id, published_at t, floor, total_units FROM item_stats WHERE item_id = ? AND published_at > ? AND floor IS NOT NULL ORDER BY published_at`)
     .all(id, Date.now() - 7 * 86_400_000);
-  const vendors = db.prepare(`SELECT npc_id, npc_name, faction, zone, x, y, price, price_by_standing, units_per_purchase, limited FROM vendor_items WHERE item_id = ? ORDER BY faction = 'horde', price`).all(id);
+  const vendors = db.prepare(`SELECT npc_id, npc_name, faction, zone, x, y, map_id, price, price_by_standing, units_per_purchase, limited FROM vendor_items WHERE item_id = ? ORDER BY faction = 'horde', price`).all(id);
   const madeBy = db.prepare(`SELECT r.*, (SELECT json_group_array(json_object('item_id', g.item_id, 'quantity', g.quantity, 'name', i.name)) FROM recipe_reagents g LEFT JOIN items i ON i.id = g.item_id WHERE g.recipe_id = r.id) reagents
     FROM recipes r WHERE r.crafted_item_id = ?`).all(id);
   const usedIn = db.prepare(`SELECT r.id, r.name, r.profession, r.crafted_item_id, g.quantity FROM recipe_reagents g JOIN recipes r ON r.id = g.recipe_id WHERE g.item_id = ? ORDER BY r.profession, r.yellow LIMIT 60`).all(id);

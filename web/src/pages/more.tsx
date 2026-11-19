@@ -9,66 +9,6 @@ import { useNav } from '../nav';
 const th = 'px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted';
 const td = 'px-3 py-2 align-top';
 
-export function CraftingPage() {
-  const { openItem } = useNav();
-  const [prof, setProf] = useState('');
-  const [open, setOpen] = useState<number | null>(null);
-  const { data } = useQuery({ queryKey: ['crafting', prof], queryFn: () => api<any>(`/api/crafting${prof ? `?profession=${encodeURIComponent(prof)}` : ''}`) });
-  const rows: any[] = data?.rows ?? [];
-  return (
-    <>
-      <PageHeader title="Crafting" sub={<>Make or buy for every recipe: each ingredient at the cheapest of the auction house, an Alliance usable vendor, or crafting it yourself. Margin is after the cut, priced on {data?.house ?? 'your house'}. Your own gathered materials count at what you could sell them for.</>} />
-      <div className="mb-4 flex flex-wrap gap-2">
-        <button onClick={() => setProf('')} className={`rounded-full px-3 py-1 text-xs ${!prof ? 'bg-gold/20 font-semibold' : 'border border-line'}`}>All</button>
-        {(data?.profs ?? []).map((p: any) => <button key={p.profession} onClick={() => setProf(p.profession)} className={`rounded-full px-3 py-1 text-xs ${prof === p.profession ? 'bg-gold/20 font-semibold' : 'border border-line'}`}>{p.profession} <span className="text-muted">{p.n}</span></button>)}
-      </div>
-      {!data?.professions && <p className="mb-3 text-xs text-muted">Add your professions in Settings (for example {'{"Blacksmithing": 75, "Mining": 90}'}) to see skill up odds and cost per point.</p>}
-      {rows.length === 0 ? <Empty title="No recipes loaded yet">Recipes load with the daily data refresh once the Blizzard connection works.</Empty> : (
-        <Card className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="border-b border-line"><tr><th className={th}>Recipe</th><th className={th}>Cost</th><th className={th}>Sells for</th><th className={th}>Margin</th><th className={th}>Skill</th><th className={th}>Ingredients</th></tr></thead>
-            <tbody>
-              {rows.slice(0, 200).map(r => (
-                <>
-                  <tr key={r.recipeId} className="cursor-pointer border-b border-line/60 hover:bg-line/20" onClick={() => setOpen(open === r.recipeId ? null : r.recipeId)}>
-                    <td className={td}><button className="font-semibold hover:underline" onClick={e => { e.stopPropagation(); openItem(r.productId); }}>{r.name}</button><div className="text-xs text-muted">{r.profession}{r.bop ? ' · binds on pickup, vendor value only' : ''}</div></td>
-                    <td className={td}>{r.cost != null ? <Money c={r.cost} size="sm" /> : <Chip tone="bad">blocked</Chip>}</td>
-                    <td className={td}><Money c={r.sale} size="sm" />{r.productFloor == null && <div className="text-[11px] text-muted">not listed, vendor price</div>}</td>
-                    <td className={td}>{r.margin != null ? <span className={r.margin > 0 ? 'text-good' : 'text-bad'}><Money c={r.margin} size="sm" /></span> : '—'}{r.marginPct != null && <div className="text-[11px] text-muted">{Math.round(r.marginPct * 100)}%</div>}</td>
-                    <td className={`${td} text-xs text-muted`}>{r.thresholds.yellow != null ? `${r.thresholds.learn ?? '?'} · ${r.thresholds.yellow} · ${r.thresholds.green} · ${r.thresholds.grey}` : 'no threshold row'}{r.skillUp != null && <div>{Math.round(r.skillUp * 100)}% skill up{r.costPerPoint ? <>, <Money c={r.costPerPoint} size="sm" /> a point</> : null}</div>}</td>
-                    <td className={`${td} text-xs text-muted`}>{r.blocked ?? r.sources}</td>
-                  </tr>
-                  {open === r.recipeId && <tr key={`${r.recipeId}-t`}><td colSpan={6} className="bg-page px-6 py-3"><Tree id={r.recipeId} /></td></tr>}
-                </>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
-    </>
-  );
-}
-
-function Tree({ id }: { id: number }) {
-  const { openItem } = useNav();
-  const { data } = useQuery({ queryKey: ['craft', id], queryFn: () => api<any>(`/api/crafting/${id}`) });
-  if (!data?.tree) return <p className="text-xs text-muted">Loading…</p>;
-  const render = (nodes: any[], depth = 0): JSX.Element => (
-    <div className={depth ? 'ml-5 border-l border-line pl-3' : ''}>
-      {nodes.map((n: any) => (
-        <div key={n.itemId} className="py-0.5 text-xs">
-          <button className="font-semibold hover:underline" onClick={() => openItem(n.itemId)}>{n.quantity}× {n.name}</button>{' '}
-          <Chip tone={n.source === 'none' ? 'bad' : n.source === 'craft' ? 'gold' : 'muted'}>{n.source === 'auction' ? 'buy on auction' : n.source === 'vendor' ? 'buy from vendor' : n.source === 'craft' ? 'craft it' : 'no source'}</Chip>{' '}
-          {n.unitCost != null && <><Money c={n.unitCost} size="sm" /> each</>} <span className="text-muted">{n.detail}</span>
-          {n.alternatives.filter((a: any) => a.source !== n.source).map((a: any) => <span key={a.source} className="ml-2 text-muted">· {a.source} <Money c={a.unitCost} size="sm" dim /></span>)}
-          {n.children && render(n.children, depth + 1)}
-        </div>
-      ))}
-    </div>
-  );
-  return render(data.tree);
-}
-
 export function DropsPage() {
   const { openItem } = useNav();
   const [min, setMin] = useState('');

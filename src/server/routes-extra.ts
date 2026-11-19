@@ -6,6 +6,10 @@ import { sourceBoard } from '../drops/value.ts';
 import { marketReport } from '../market/report.ts';
 import { itemValue } from '../drops/value.ts';
 import { calibration } from '../analysis/calibration.ts';
+import { levelingPlan } from '../craft/leveling.ts';
+import { parseInventoryLine } from '../craft/inventory.ts';
+import { demandByItem } from '../analysis/history.ts';
+import { primaryHouse } from '../analysis/prices.ts';
 
 const professionsSetting = (deps: ServerDeps): Record<string, number> | null => {
   const r = deps.db.prepare(`SELECT value FROM settings WHERE key = 'professions'`).get() as { value: string } | undefined;
@@ -18,7 +22,9 @@ export function registerExtraRoutes(app: FastifyInstance, deps: ServerDeps): voi
   app.get<{ Querystring: { profession?: string } }>('/api/crafting', async req => {
     const book = priceBook(db);
     const professions = professionsSetting(deps);
-    const rows = craftBoard(db, book, { professions, profession: req.query.profession || undefined });
+    const house = primaryHouse(db);
+    const share = Number((db.prepare(`SELECT value FROM settings WHERE key = 'sell_share'`).get() as { value: string } | undefined)?.value ?? 0.2);
+    const rows = craftBoard(db, book, { professions, profession: req.query.profession || undefined, demand: house ? demandByItem(db, house.id) : undefined, sellShare: share });
     const profs = db.prepare('SELECT profession, COUNT(*) n FROM recipes GROUP BY profession ORDER BY profession').all();
     return { house: book.houseName, professions, profs, rows: rows.slice(0, 400) };
   });
@@ -37,6 +43,34 @@ export function registerExtraRoutes(app: FastifyInstance, deps: ServerDeps): voi
   });
 
   app.get('/api/market', async () => marketReport(db));
+
+  // Leveling plan from the guide, using Chip's materials first.
+  app.get<{ Querystring: { profession?: string; from?: string; to?: string } }>('/api/leveling', async req => {
+    const profession = req.query.profession || 'Blacksmithing';
+    const current = professionsSetting(deps)?.[profession] ?? 1;
+    const from = Number(req.query.from || current), to = Number(req.query.to || Math.min(300, Math.max(from + 25, 150)));
+    return { ...levelingPlan(db, priceBook(db), profession, from, to), current };
+  });
+
+  // Chip's materials. PUT one item, or POST a pasted list of "name count" lines.
+  app.get('/api/inventory', async () => db.prepare(`SELECT v.item_id, v.count, i.name, i.icon_url, i.quality FROM inventory v LEFT JOIN items i ON i.id = v.item_id ORDER BY i.name`).all());
+  app.put<{ Body: { itemId: number; count: number } }>('/api/inventory', async req => {
+    if (req.body.count > 0) db.prepare('INSERT INTO inventory (item_id, count, updated_at) VALUES (?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at').run(req.body.itemId, Math.round(req.body.count), Date.now());
+    else db.prepare('DELETE FROM inventory WHERE item_id = ?').run(req.body.itemId);
+    return { ok: true };
+  });
+  app.post<{ Body: { text: string } }>('/api/inventory/paste', async req => {
+    const added: string[] = [], unknown: string[] = [];
+    for (const line of req.body.text.split(/\r?\n/)) {
+      const parsed = parseInventoryLine(line);
+      if (!parsed) { if (line.trim()) unknown.push(line.trim()); continue; }
+      const it = db.prepare('SELECT id, name FROM items WHERE lower(name) = lower(?)').get(parsed.name) as { id: number; name: string } | undefined;
+      if (!it) { unknown.push(parsed.name); continue; }
+      db.prepare('INSERT INTO inventory (item_id, count, updated_at) VALUES (?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at').run(it.id, parsed.count, Date.now());
+      added.push(`${parsed.count} ${it.name}`);
+    }
+    return { added, unknown };
+  });
   app.get('/api/calibration', async () => calibration(db));
 
   // Positions

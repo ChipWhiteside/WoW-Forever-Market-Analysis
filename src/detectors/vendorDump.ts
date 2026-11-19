@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { byItem, auctionLeg, type DetectorContext, type Play } from './types.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { playLine } from './summary.ts';
@@ -24,7 +25,7 @@ export function vendorDump(ctx: DetectorContext): Play[] {
       if (units === 0) continue;
       const name = item?.name ?? `Item ${itemId}`;
       const avgBuy = Math.round(spent / units);
-      const buy = { ...auctionLeg(h, avgBuy, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: listings > 1 ? `${units} units from ${ls[0]!.unitPrice}c up` : undefined };
+      const buy = { ...auctionLeg(h, avgBuy, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: listings > 1 ? `${units} units from ${money(ls[0]!.unitPrice)} up` : undefined };
       const sellLeg = { kind: 'any_vendor' as const, price: sell, who: 'Any vendor', places: [] };
       const perItem = Math.round(total / units);
       plays.push({

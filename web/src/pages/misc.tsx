@@ -31,7 +31,9 @@ export function SettingsPage() {
   const pin = useMutation({ mutationFn: (b: { alliance?: number | null; blackwater?: number | null }) => post('/api/houses/pin', b), onSuccess: () => qc.invalidateQueries() });
   const save = useMutation({ mutationFn: (b: Record<string, string | number>) => put('/api/settings', b), onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }) });
   const [form, setForm] = useState<Record<string, string>>({});
-  useEffect(() => { if (settings) setForm({ profit_bar: '2500', quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', ...settings }); }, [settings]);
+  useEffect(() => { if (settings) setForm({ profit_bar: '2500', quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
+  const profs: Record<string, number> = (() => { try { return JSON.parse(form.professions ?? '{}'); } catch { return {}; } })();
+  const setProf = (name: string, v: string) => { const next = { ...profs }; if (v.trim()) next[name] = Number(v); else delete next[name]; setForm({ ...form, professions: JSON.stringify(next) }); };
   const field = (k: string, label: string, hint?: string) => (
     <label className="block text-sm"><span className="font-semibold">{label}</span>{hint && <span className="ml-2 text-xs text-muted">{hint}</span>}
       <input value={form[k] ?? ''} onChange={e => setForm({ ...form, [k]: e.target.value })} className="mt-1 w-full rounded-lg border border-line bg-page px-3 py-2" /></label>
@@ -62,6 +64,17 @@ export function SettingsPage() {
         {field('quiet_end', 'Quiet until (hour)')}
         {field('character', 'Character name', 'for professions and reputation')}
         {field('home_city', 'Home city', 'trip times start here')}
+        <label className="block text-sm md:col-span-2"><span className="font-semibold">Your share of daily sales</span><span className="ml-2 text-xs text-muted">how much of an item's daily sales you plan to sell. 0.2 = 20%. Sets "worth doing" and the sort order</span>
+          <input value={form.sell_share ?? ''} onChange={e => setForm({ ...form, sell_share: e.target.value })} className="mt-1 w-32 rounded-lg border border-line bg-page px-3 py-2" /></label>
+        <div className="md:col-span-2">
+          <p className="text-sm font-semibold">Your professions <span className="text-xs font-normal text-muted">skill level, leave blank if you do not have it</span></p>
+          <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+            {['Mining', 'Blacksmithing', 'Herbalism', 'Skinning', 'Alchemy', 'Engineering', 'Enchanting', 'Leatherworking', 'Tailoring', 'Cooking', 'First Aid', 'Fishing'].map(n => (
+              <label key={n} className="text-xs"><span className="text-muted">{n}</span>
+                <input value={profs[n] ?? ''} onChange={e => setProf(n, e.target.value)} className="mt-0.5 w-full rounded border border-line bg-page px-2 py-1 text-sm" /></label>
+            ))}
+          </div>
+        </div>
         <button onClick={() => save.mutate(form)} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
       </Card>
       <p className="mt-8 text-xs text-muted">Vendor, loot and item name data from <a className="underline" href="https://efficient.games">Efficient Games</a>, licensed under CC BY 4.0, merged across builds. Recipe skill thresholds from the game's SkillLineAbility table via wago.tools. Auction and item data from the Blizzard API.</p>

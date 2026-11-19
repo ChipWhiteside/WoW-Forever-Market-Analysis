@@ -15,6 +15,8 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | B6 | Blizzard recipe id equals `SkillLineAbility.ID`. Row 1631 (Rough Sharpening Stone) has TrivialLow 15, TrivialHigh 55; green is the midpoint 35. Matches SkillScribe's 1, 15, 35, 55 | Downloaded CSV, test T3 bar met |
 | B7 | `MinSkillLineRank` is often 1 even for recipes learned higher (Smelt Bronze reads 1, learned at 65) | Same CSV. Learn skill falls back to yellow when no trainer row exists |
 | B8 | Mining the same vein with different spell ranks splits EG Link loot keys; merged per object, Copper Vein has 184 recorded nodes | Live merge |
+| B15 | **Deposit is 20 percent of the vendor price per hour, per unit, on the Alliance house.** Coarse Stone (vendor 15c) cost 6c for 2 hours, 24c for 8, 72c for 24 | Chip's own listing, November 19 |
+| B16 | **Forever changed recipe learn ranks.** Trainers teach Rough Bronze Leggings at 80 and Bronze Warhammer at 100, and Green Iron Leggings costs 50s | EG Link trainer recordings, build 1.60.1.70938 |
 | B14 | **House 111 confirmed against every other house.** Screenshot levels 7 onward (39 levels): house 111 has 19 exact, 8 within 10 percent, 0 missing. Every other Alliance and Blackwater house has 0 exact and is missing 25 to 39 of the 39 prices | `npm run compare-houses`, November 19, 9:25 snapshot |
 | B13 | **The in game auction house is live; the API is a frozen snapshot.** Full ladders for house 111 (9:25 snapshot) against Chip's Stormwind screenshots: the deep tail matches exactly (Copper Ore 1s 4c x32, 1s 6c x154, 1s 7c x69, 1s 37c x2; Copper Bar 1s 11c x117, 1s 14c x94, 1s 16c x56, 1s 29c x76; Linen 31c to 50c, 14 of 16 steps exact). Differences sit almost entirely in the cheapest few steps, which trade fastest. Same market, different moment | `npm run ladder` for three items, November 19 |
 | B12 | **All houses publish together, about 25 minutes past the hour.** Eight houses' Last-Modified fell between 9:24:54 and 9:25:02 AM. Matches the 04:25 publish of house 110 on November 18 (V17) | Chip's `npm run publish-times`, November 19 |
@@ -28,7 +30,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | --- | --- | --- | --- |
 | P1 | Live auction shapes still match the contracts in `src/blizzard/contracts.ts` | Contracts written from V2 to V17 records. Not re-run in this build because the cloud credential was rejected | `npm run contract` on first run, setup runs it too |
 | P2 | Item `binding`, `quality`, `media` fields present in Forever item responses (T1, T11) | Provisional | `npm run contract` checks binding and icon |
-| P3 | Deposit formula (T7) | Assumed 15 percent of vendor sell price, 1c minimum, 5x Blackwater | Chip's test listing |
+| P3 | Blackwater deposit is 5 times the Alliance deposit, and deposits come back when an item sells | Guide claim and Classic behaviour, not yet seen | One Blackwater listing, and one sale's mail |
 | P4 | Demand from vanished listings | Provisional by nature: cancellations leak in. Excludes listings that were about to expire | Calibration report over weeks |
 | P5 | Character professions from the profile API (T8) | Not wired. Professions are typed in Settings as JSON | Later release |
 | P6 | Chip's Blackwater house (Alliance is 111, B11) | Candidates 116, 117, 121, 125 | Booty Bay ladders into match-house |

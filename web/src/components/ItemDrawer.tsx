@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { ago } from '../lib/format';
 import { Money, ItemIcon, ItemName, HouseBadge, Chip, Sparkline, Ladder } from './ui';
+import { mapHref } from '../lib/zones';
 
 /** Everything known about one item. Opens from any screen. */
 export function ItemDrawer({ id, onClose, onOpenItem }: { id: number; onClose: () => void; onOpenItem: (id: number) => void }) {
@@ -44,7 +45,7 @@ export function ItemDrawer({ id, onClose, onOpenItem }: { id: number; onClose: (
             <Section title="Vendors that sell it">
               {data.vendors.length === 0 ? <p className="text-sm text-muted">No vendor recorded selling it in WoW Forever.</p> : data.vendors.slice(0, 12).map((v: any) => (
                 <div key={v.npc_id} className={`flex items-center justify-between py-1 text-sm ${v.faction === 'horde' ? 'opacity-40' : ''}`}>
-                  <span>{v.npc_name} <span className="text-muted">· {v.zone ?? '?'}{v.x != null ? ` ${v.x}, ${v.y}` : ''}</span> {v.faction === 'horde' ? <Chip tone="bad">Horde only</Chip> : v.faction === 'unknown' ? <Chip tone="warn">faction unknown</Chip> : null}{v.limited ? <Chip tone="warn">limited</Chip> : null}</span>
+                  <span>{v.npc_name} {(() => { const h = mapHref({ label: v.npc_name, zone: v.zone, uiMap: v.map_id, x: v.x, y: v.y }); const t = `${v.zone ?? '?'}${v.x != null ? ` ${v.x}, ${v.y}` : ''}`; return h ? <a href={h} onClick={onClose} className="text-alliance underline decoration-dotted">📍 {t}</a> : <span className="text-muted">· {t}</span>; })()} {v.faction === 'horde' ? <Chip tone="bad">Horde only</Chip> : v.faction === 'unknown' ? <Chip tone="warn">faction unknown</Chip> : null}{v.limited ? <Chip tone="warn">limited</Chip> : null}</span>
                   <Money c={v.price} size="sm" />
                 </div>
               ))}

@@ -21,3 +21,9 @@ export const DETECTOR_VERB: Record<string, string> = {
   vendor_dump: 'Buy, then vendor', vendor_supply: 'Buy from vendor, list', underpriced: 'Buy, relist', cross_house: 'Buy, carry, list',
   craft: 'Craft, list', sell_now: 'List now', world_drop: 'Farm',
 };
+
+/** Plain words for each kind of play: what you actually do. */
+export const PLAY_LABEL: Record<string, string> = {
+  vendor_dump: 'Auction house to vendor', vendor_supply: 'Vendor to auction house', underpriced: 'Cheap listing, relist',
+  cross_house: 'Between your two houses', sell_now: 'Sell what you hold', craft: 'Craft and sell', world_drop: 'Farm',
+};
