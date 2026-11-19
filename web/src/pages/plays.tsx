@@ -23,7 +23,7 @@ export function PlayList({ detectors, filters = false, emptyTitle, emptyText }: 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        {filters && <>
+        {filters && counts.size > 1 && <>
           <button onClick={() => setOnly(null)} className={`rounded-full px-3 py-1 text-xs ${!only ? 'bg-gold/20 font-semibold' : 'border border-line'}`}>All {all.filter(p => p.state !== 'gone').length}</button>
           {[...counts.entries()].map(([d, n]) => (
             <button key={d} onClick={() => setOnly(only === d ? null : d)} className={`rounded-full px-3 py-1 text-xs ${only === d ? 'bg-gold/20 font-semibold' : 'border border-line'}`}>{PLAY_LABEL[d]} {n}</button>

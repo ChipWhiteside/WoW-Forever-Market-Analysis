@@ -94,7 +94,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5">
             <span className="text-xs text-muted">data {ago(p.data_at)}</span>
             <span title={d.strength ? d.strength.map(x => `${x.label}: ${x.points} of ${x.max}`).join('\n') : undefined} className="cursor-help">
-              <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{typeof d.score === 'number' ? `strength ${d.score}/100${p.confidence === 'low' ? ', watch only' : ''}` : 'sure thing: simple arithmetic'}</Chip>
+              <Chip tone={p.confidence === 'high' ? 'good' : p.confidence === 'medium' ? 'gold' : 'warn'}>{typeof d.score === 'number' ? `strength ${d.score}/100${p.confidence === 'low' ? ', watch only' : ''}` : 'simple arithmetic, no resale risk'}</Chip>
             </span>
             {d.strength && <span className="hidden text-[11px] text-muted md:inline">{(() => { const weak = d.strength.filter(x => x.points < x.max).slice(0, 3).map(x => x.label); return weak.length ? `Weakest: ${weak.join(', ')}.` : ''; })()}</span>}
             {d.oneOff && <Chip tone="warn">one cheap listing, may be a one off</Chip>}

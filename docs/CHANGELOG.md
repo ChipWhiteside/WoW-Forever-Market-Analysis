@@ -50,3 +50,16 @@ What changed, newest last. The overnight loop appends here every night it runs.
 - Every play says why people buy the item: a quest that needs it (name, amount, level), recipes that use it, or neither. Quest data comes from EG Link's recorded quest descriptions, refreshed daily.
 - Confidence became Strength, 0 to 100, now including how many listings hold the price, how steady it has been for 3 days, and the demand reason (quest strongest, recipe next). Hover the chip for the breakdown.
 - Item lookup shows the quests that need an item.
+
+## 2026-11-19, alignment pass against the vision
+
+- The vision is written down in docs/vision.md and is now the yardstick for every session and the overnight auditor.
+- Two independent audits (logic and data, the app) checked everything against it. Fixed:
+  - Real sales near the price are required for any resale play; medium or better needs 3.
+  - Crafting, World drops, positions and the leveling plan use the trusted price, never one lone listing. Junk prices are left out.
+  - Sales a day projects from at least 6 hours of watching; under 1 sale a day is not worth stocking.
+  - Gold on hand (Settings) caps every play at what you can afford and shows what it costs.
+  - Crafting board lists recipes you can make first, ranked by profit each times what sells.
+  - Cards read in sentences; Strength replaces confidence everywhere; held back hides items already shown as plays.
+  - Plain words: cheapest price and usual price, not floor and typical floor. Settings take silver, not copper.
+  - Market hides week over week moves until a week of history exists. The changelog renders as a page.

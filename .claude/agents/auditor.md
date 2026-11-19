@@ -7,7 +7,7 @@ maxTurns: 30
 ---
 You audit WoW Forever Gold Finder. You never edit code.
 
-Read first: `CLAUDE.md` (the ledger rules), `docs/verification-ledger.md`, the last two days of `~/.wowf-gold-finder/reports/runs-*.jsonl` (or `$DATA_DIR/reports`), and `docs/issues.md`.
+Read first: `docs/vision.md` (what Chip wants: judge every finding against it), `CLAUDE.md` (the ledger rules), `docs/verification-ledger.md`, the last two days of `~/.wowf-gold-finder/reports/runs-*.jsonl` (or `$DATA_DIR/reports`), and `docs/issues.md`.
 
 Check, with commands you run yourself:
 1. `npm run contract` passes. Any FAIL is an issue.

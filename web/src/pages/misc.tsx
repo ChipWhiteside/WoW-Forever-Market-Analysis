@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
 import { api, post, put, type Health } from '../lib/api';
-import { ago } from '../lib/format';
+import { ago, PLAY_LABEL } from '../lib/format';
 import { PageHeader, Card, Money, HouseBadge, Chip, ItemIcon, ItemName, Empty } from '../components/ui';
 import { useNav } from '../nav';
 
@@ -11,7 +11,7 @@ export function LookupPage() {
   const { data } = useQuery({ queryKey: ['search', q], queryFn: () => api<any[]>(`/api/items/search?q=${encodeURIComponent(q)}`), enabled: q.trim().length >= 2 });
   return (
     <>
-      <PageHeader title="Item lookup" sub="Search anything. Floor and ladder on both houses, history, vendors with faction, recipes, and every source that drops it." />
+      <PageHeader title="Item lookup" sub="Search anything. Prices on your houses, price history, who sells it, why people buy it, recipes, and where it drops." />
       <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Copper Ore, Bright Baubles, 2589…" className="mb-4 w-full rounded-xl border border-line bg-card px-4 py-3 text-base shadow-card outline-none focus:border-gold" />
       <div className="grid gap-2">
         {(data ?? []).map((it: any) => (
@@ -31,7 +31,7 @@ export function SettingsPage() {
   const pin = useMutation({ mutationFn: (b: { alliance?: number | null; blackwater?: number | null }) => post('/api/houses/pin', b), onSuccess: () => qc.invalidateQueries() });
   const save = useMutation({ mutationFn: (b: Record<string, string | number>) => put('/api/settings', b), onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }) });
   const [form, setForm] = useState<Record<string, string>>({});
-  useEffect(() => { if (settings) setForm({ min_profit_each: '100', profit_bar: '2500', quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
+  useEffect(() => { if (settings) setForm({ min_profit_each_s: String(Number(settings.min_profit_each ?? 100) / 100), profit_bar_s: String(Number(settings.profit_bar ?? 2500) / 100), quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
   const profs: Record<string, number> = (() => { try { return JSON.parse(form.professions ?? '{}'); } catch { return {}; } })();
   const setProf = (name: string, v: string) => { const next = { ...profs }; if (v.trim()) next[name] = Number(v); else delete next[name]; setForm({ ...form, professions: JSON.stringify(next) }); };
   const field = (k: string, label: string, hint?: string) => (
@@ -59,8 +59,8 @@ export function SettingsPage() {
       <h2 className="mb-2 mt-8 font-display text-lg font-bold">Alerts and you</h2>
       <Card className="grid max-w-2xl gap-4 p-5 md:grid-cols-2">
         {field('gold_on_hand', 'Gold on hand', 'in gold, like 12.5. Plays are capped at what you can afford')}
-        {field('min_profit_each', 'Minimum profit per item, copper', '100 = 1 silver. Plays under this never show')}
-        {field('profit_bar', 'Alert bar, copper', 'total for the day. 2500 = 25 silver')}
+        {field('min_profit_each_s', 'Minimum profit per item, in silver', 'plays under this never show. 1 = 1 silver')}
+        {field('profit_bar_s', 'Alert bar, in silver', 'what a play must be worth today to ping your phone')}
         {field('time_zone', 'Time zone')}
         {field('quiet_start', 'Quiet from (hour)')}
         {field('quiet_end', 'Quiet until (hour)')}
@@ -77,7 +77,7 @@ export function SettingsPage() {
             ))}
           </div>
         </div>
-        <button onClick={() => save.mutate(form)} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
+        <button onClick={() => { const { min_profit_each_s, profit_bar_s, ...rest } = form; save.mutate({ ...rest, ...(min_profit_each_s ? { min_profit_each: String(Math.round(Number(min_profit_each_s) * 100)) } : {}), ...(profit_bar_s ? { profit_bar: String(Math.round(Number(profit_bar_s) * 100)) } : {}) }); }} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
       </Card>
       <p className="mt-8 text-xs text-muted">Vendor, loot and item name data from <a className="underline" href="https://efficient.games">Efficient Games</a>, licensed under CC BY 4.0, merged across builds. Recipe skill thresholds from the game's SkillLineAbility table via wago.tools. Auction and item data from the Blizzard API.</p>
     </>
@@ -107,14 +107,14 @@ export function HealthPage() {
           <p><span className="font-semibold">{ov.totals?.snapshots ?? 0}</span> snapshots since {ov.totals?.first ? new Date(ov.totals.first).toLocaleString() : 'never'}.</p>
           <p className="mt-1">{ov.items?.named ?? 0} of {ov.items?.n ?? 0} items named, {ov.items?.blizzard ?? 0} from Blizzard.</p>
           {(ov.datasets ?? []).map((d: any) => <p key={d.name} className="mt-1 text-muted">{d.name}: {d.version}, {d.records} records, refreshed {ago(d.fetched_at)}. {d.note}</p>)}
-          {ov.learning?.map((l: any) => <p key={l.house} className="mt-1">House {l.house}: {Math.min(l.readings, 24)} of 24 hourly readings for typical floors{l.readings >= 24 ? ', learned' : ''}.</p>)}
+          {ov.learning?.map((l: any) => <p key={l.house} className="mt-1">House {l.house}: {l.readings >= 24 ? 'usual prices learned' : `${Math.min(l.readings, 24)} of 24 hours collected to learn usual prices`}.</p>)}
         </Card>
       )}
       <h2 className="mb-2 mt-8 font-display text-lg font-bold">How plays behave, last 14 days</h2>
       {!cal?.length ? <p className="text-sm text-muted">Fills in as plays open and close. After a week this says how long each kind of play usually lasts on your houses.</p> : (
         <div className="grid gap-3 md:grid-cols-2">{cal.map((c: any) => (
           <Card key={c.detector} className="p-4 text-sm">
-            <p className="font-semibold">{c.detector.replace('_', ' ')}</p>
+            <p className="font-semibold">{PLAY_LABEL[c.detector] ?? c.detector}</p>
             <p className="text-muted">{c.plays} plays · usually last {c.medianLifeMin != null ? `${c.medianLifeMin} min` : '?'} · a quarter close within {c.p25LifeMin != null ? `${c.p25LifeMin} min` : '?'}</p>
             <p className="text-muted">you acted on {c.done}, skipped {c.skipped}, found {c.alreadyGone} already gone</p>
           </Card>))}</div>
@@ -128,7 +128,20 @@ export function ChangelogPage() {
   return (
     <>
       <PageHeader title="Changelog" sub="What the overnight loop changed, reverted or wants you to look at." />
-      {!data?.markdown ? <Empty title="No changes yet" /> : <Card className="whitespace-pre-wrap p-5 font-mono text-xs leading-relaxed">{data.markdown}</Card>}
+      {!data?.markdown ? <Empty title="No changes yet" /> : <Card className="p-5 text-sm leading-relaxed">{renderMarkdown(data.markdown)}</Card>}
     </>
   );
+}
+
+/** Just enough markdown for the changelog: headings, bullets, bold and code. */
+function renderMarkdown(md: string) {
+  const inline = (t: string) => t.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) =>
+    part.startsWith('**') ? <b key={i}>{part.slice(2, -2)}</b> : part.startsWith('`') ? <code key={i} className="rounded bg-line/50 px-1 text-xs">{part.slice(1, -1)}</code> : part);
+  return md.split(/\r?\n/).map((line, i) => {
+    if (line.startsWith('# ')) return <h2 key={i} className="mb-2 font-display text-lg font-bold">{line.slice(2)}</h2>;
+    if (line.startsWith('## ')) return <h3 key={i} className="mb-1 mt-5 font-display text-sm font-bold text-gold">{line.slice(3)}</h3>;
+    if (/^\s*[-*] /.test(line)) return <p key={i} className="ml-4 -indent-3 py-0.5">• {inline(line.replace(/^\s*[-*] /, ''))}</p>;
+    if (!line.trim()) return null;
+    return <p key={i} className="py-0.5">{inline(line)}</p>;
+  });
 }

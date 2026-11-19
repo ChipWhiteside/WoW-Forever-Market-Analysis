@@ -38,7 +38,10 @@ function Leveling() {
         <span className="text-muted">Your skill comes from Settings. Owned materials are free.</span>
         <span className="ml-auto">Still to buy: {data.partial ? 'at least ' : ''}<Money c={data.totalBuyCost} /></span>
       </Card>
-      {data.partial && <Card className="mb-4 border-warn/40 bg-warn/5 p-3 text-sm"><p className="font-semibold">The cost above is a floor, not the full cost:</p>{data.partialWhy.map((w: string) => <p key={w}>· {w}</p>)}</Card>}
+      {data.partial && <Card className="mb-4 border-warn/40 bg-warn/5 p-3 text-sm">
+        <p className="font-semibold">Some prices are not available yet, so the total leaves them out.</p>
+        <p className="text-xs text-muted">{[...new Set(data.partialWhy as string[])].length} items: {[...new Set((data.partialWhy as string[]).map(w => w.replace(/^no price or source for \d+ /, '').replace(/ is not loaded yet$/, '').replace(/ \(.*$/, '')))].join(', ')}. They fill in once they are listed or the recipes load.</p>
+      </Card>}
       {data.sellInstead.length > 0 && (
         <Card className="mb-4 border-good/40 bg-good/5 p-4 text-sm">
           <p className="mb-1 font-semibold">Sell these instead of using them</p>
@@ -100,9 +103,9 @@ function ProfitBoard() {
               <Fragment key={r.recipeId}>
                 <tr className="cursor-pointer border-b border-line/60 hover:bg-line/20" onClick={() => setOpen(open === r.recipeId ? null : r.recipeId)}>
                   <td className={td}><button className="font-semibold hover:underline" onClick={e => { e.stopPropagation(); openItem(r.productId); }}>{r.productName}</button><div className="text-xs text-muted">{r.profession}{r.bop ? ' · binds on pickup' : ''}</div></td>
-                  <td className={td}>{r.each.cost != null ? <Money c={r.each.cost} size="sm" /> : <Chip tone="bad">{r.blocked ?? 'blocked'}</Chip>}</td>
-                  <td className={td}><Money c={r.each.sale} size="sm" />{r.productFloor == null && <div className="text-[11px] text-muted">not listed, vendor price</div>}</td>
-                  <td className={td}>{r.each.profit != null ? <span className={`font-bold ${r.each.profit > 0 ? 'text-good' : 'text-bad'}`}><Money c={r.each.profit} size="sm" /></span> : '?'}</td>
+                  <td className={td}>{r.each.cost != null ? <Money c={r.each.cost} size="sm" /> : <span className="text-xs text-warn">{r.blocked ?? 'an ingredient has no price yet'}</span>}</td>
+                  <td className={td}><Money c={r.each.sale} size="sm" /><div className="text-[11px] text-muted">{r.productFloor == null ? 'what a vendor pays, not listed' : 'trusted auction price'}</div></td>
+                  <td className={td}>{r.each.profit != null ? <span className={`font-bold ${r.each.profit > 0 ? 'text-good' : 'text-bad'}`}><Money c={r.each.profit} size="sm" /></span> : <span className="text-xs text-muted">unknown until every ingredient has a price</span>}</td>
                   <td className={`${td} num`}>{r.salesPerDay != null ? Math.round(r.salesPerDay) : <span className="text-xs text-muted">learning</span>}</td>
                   <td className={`${td} text-xs`}>{r.listing ? r.listing.options.map((o: any) => <span key={o.hours} className={`mr-2 ${o.hours === r.listing.best ? 'font-bold' : 'text-muted'}`}>{o.hours}h <Money c={o.depositEach} size="sm" dim={o.hours !== r.listing.best} /></span>) : ''}</td>
                 </tr>

@@ -33,7 +33,7 @@ export function DropsPage() {
               <div className="flex flex-wrap items-baseline gap-x-3">
                 <Money c={r.goldPerHour ?? r.valuePerKill} size="lg" /><span className="text-xs text-muted">{r.goldPerHour ? 'an hour' : r.kind === 'item' ? 'per open' : 'per kill'}</span>
                 <span className="font-semibold">{r.name}</span>
-                <span className="text-xs text-muted">{[r.zone, r.minLevel ? `level ${r.minLevel}${r.maxLevel !== r.minLevel ? `-${r.maxLevel}` : ''}` : null, r.classification].filter(Boolean).join(' · ')}</span>
+                <span className="text-xs text-muted">{[r.zone, r.minLevel ? `level ${r.minLevel}${r.maxLevel !== r.minLevel ? ` to ${r.maxLevel}` : ''}` : null, r.classification].filter(Boolean).join(' · ')}</span>
               </div>
               <div className="mt-1 flex flex-wrap gap-2 text-xs">
                 <span><Money c={r.valuePerKill} size="sm" /> {r.kind === 'item' ? 'per open' : r.kind === 'fishing' ? 'per catch' : r.kind === 'object' ? 'per node' : r.kind.includes('spell') ? 'per skin' : 'per kill'}</span>
@@ -67,7 +67,7 @@ export function FarmingPage() {
       <PageHeader title="Farming" sub="Gold an hour you actually measured, at today's prices. Start a timer, play, end it with what you gathered. Measured rates replace estimates in World drops." />
       <Card className="mb-5 flex gap-2 p-3"><input value={activity} onChange={e => setActivity(e.target.value)} placeholder="What are you farming? e.g. Trunk fishing, Booty Bay docks" className="flex-1 rounded-lg border border-line bg-page px-3 py-2 text-sm" />
         <button disabled={!activity} onClick={() => start.mutate()} className="rounded-md bg-ink px-4 text-sm font-semibold text-page disabled:opacity-40">Start</button></Card>
-      {(data ?? []).length === 0 ? <Empty title="No sessions yet" /> : (data ?? []).map(s => (
+      {(data ?? []).length === 0 ? <Empty title="No sessions yet">Type what you are farming above and press Start. End it with what you gathered to see your gold an hour.</Empty> : (data ?? []).map(s => (
         <Card key={s.id} className="mb-3 p-4">
           <div className="flex flex-wrap items-baseline gap-3"><span className="font-semibold">{s.activity}</span><span className="text-xs text-muted">{new Date(s.started_at).toLocaleString()} · {s.hours.toFixed(2)} h</span>
             {s.goldPerHour != null ? <span className="ml-auto"><Money c={s.goldPerHour} size="lg" /> <span className="text-xs text-muted">an hour</span></span> : <Chip tone="gold">running</Chip>}</div>
@@ -113,7 +113,7 @@ export function WatchlistPage() {
   const add = useMutation({ mutationFn: () => post('/api/watchlist', { itemId: Number(id), alertAbove: above ? Number(above) : null }), onSuccess: () => { setId(''); setAbove(''); qc.invalidateQueries({ queryKey: ['watchlist'] }); } });
   return (
     <>
-      <PageHeader title="Watchlist" sub="Pinned items. When one jumps 50 percent over its typical floor, or past a price you set, it shows as Sell now." />
+      <PageHeader title="Watchlist" sub="Pinned items. When one jumps 50 percent over its usual price, or past a price you set, it shows as a Sell what you hold play." />
       <Card className="mb-4 flex gap-2 p-3"><input value={id} onChange={e => setId(e.target.value)} placeholder="item id" className="w-32 rounded-lg border border-line bg-page px-3 py-2 text-sm" /><input value={above} onChange={e => setAbove(e.target.value)} placeholder="alert above, copper (optional)" className="flex-1 rounded-lg border border-line bg-page px-3 py-2 text-sm" /><button disabled={!id} onClick={() => add.mutate()} className="rounded-md bg-ink px-4 text-sm font-semibold text-page disabled:opacity-40">Add</button></Card>
       {(data ?? []).map(w => (
         <Card key={w.item_id} className="mb-2 flex items-center gap-3 p-3">
@@ -122,7 +122,7 @@ export function WatchlistPage() {
           <div className="text-right"><Money c={w.floor} /><p className="text-[11px] text-muted">{w.units} listed</p></div>
         </Card>
       ))}
-      <div className="mt-6"><PlayList detectors={['sell_now']} emptyTitle="Nothing to sell into right now" emptyText="Sell now plays need a typical floor, which takes 24 hourly readings, or a price you set." /></div>
+      <div className="mt-6"><PlayList detectors={['sell_now']} emptyTitle="Nothing to sell into right now" emptyText="These need a day of price history to learn the usual price, or a price you set above." /></div>
     </>
   );
 }
@@ -149,8 +149,9 @@ export function MarketPage() {
           {data.categories.slice(0, 10).map((c: any) => <div key={c.name} className="flex items-center gap-2 py-0.5 text-sm"><span className="w-32 truncate">{c.name}</span><span className="h-2 rounded-full bg-gold/60" style={{ width: `${Math.max(2, c.share * 220)}px` }} /><span className="num text-xs text-muted">{Math.round(c.share * 100)}%</span></div>)}
         </Card>
         <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Top by value</h3>{data.topByValue.slice(0, 12).map((r: any) => <Row key={r.item_id} r={r} extra={<Money c={r.value} size="sm" />} />)}</Card>
-        <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Risers {data.historyDays < 7 ? `(since ${new Date(data.comparedFrom).toLocaleDateString()}, a week is not in yet)` : 'this week'}</h3>{data.risers.map((r: any) => <Row key={r.item_id} r={r} extra={<span className="num text-xs text-good">+{Math.round(r.change * 100)}%</span>} />)}</Card>
-        <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Fallers</h3>{data.fallers.map((r: any) => <Row key={r.item_id} r={r} extra={<span className="num text-xs text-bad">{Math.round(r.change * 100)}%</span>} />)}</Card>
+        {data.historyDays < 7 ? <Card className="p-4 text-sm text-muted"><h3 className="mb-2 font-display text-sm font-bold text-gold">Price moves</h3>Week over week risers and fallers appear after 7 days of history. {Math.max(0, Math.ceil(7 - data.historyDays))} days to go.</Card> : <>
+        <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Risers this week</h3>{data.risers.filter((r: any) => r.change > 0).map((r: any) => <Row key={r.item_id} r={r} extra={<span className="num text-xs text-good">+{Math.round(r.change * 100)}%</span>} />)}</Card>
+        <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Fallers this week</h3>{data.fallers.filter((r: any) => r.change < 0).map((r: any) => <Row key={r.item_id} r={r} extra={<span className="num text-xs text-bad">{Math.round(r.change * 100)}%</span>} />)}</Card></>}
         <Card className="p-4"><h3 className="mb-2 font-display text-sm font-bold text-gold">Most units listed</h3>{data.topByUnits.slice(0, 12).map((r: any) => <Row key={r.item_id} r={r} extra={<span className="num text-xs text-muted">{r.total_units.toLocaleString()}</span>} />)}</Card>
       </div>
     </>

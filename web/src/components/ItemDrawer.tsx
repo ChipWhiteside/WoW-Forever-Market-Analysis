@@ -37,12 +37,12 @@ export function ItemDrawer({ id, onClose, onOpenItem }: { id: number; onClose: (
               {data.houses.map((h: any) => (
                 <div key={h.id} className="mb-4">
                   <div className="mb-1.5 flex items-center gap-2 text-sm"><HouseBadge faction={h.faction} name={h.name} /><span className="text-muted">house {h.id}{h.pinned ? ', yours' : ''} · {ago(h.published_at)}</span></div>
-                  <div className="mb-2 flex gap-6 text-sm"><span>floor <Money c={h.floor} /></span><span className="text-muted">{h.units_at_floor} at floor · {h.total_units} total · {h.listings} listings</span></div>
+                  <div className="mb-2 flex gap-6 text-sm"><span>cheapest <Money c={h.floor} /></span><span className="text-muted">{h.units_at_floor} at that price, {h.total_units} listed in {h.listings} listings</span></div>
                   <Ladder ladder={h.ladder} />
                 </div>
               ))}
               {data.history.length > 1 && (
-                <div className="mt-2"><p className="mb-1 text-xs font-semibold text-muted">Floor, last 7 days{data.houses[0] ? `, ${data.houses[0].name} ${data.houses[0].id}` : ''}</p>
+                <div className="mt-2"><p className="mb-1 text-xs font-semibold text-muted">Cheapest price, last 7 days{data.houses[0] ? `, ${data.houses[0].name} ${data.houses[0].id}` : ''}</p>
                   <Sparkline points={data.history.filter((r: any) => !data.houses[0] || r.house_id === data.houses[0].id).map((r: any) => [r.t, r.floor])} width={480} />
                 </div>
               )}
@@ -64,7 +64,7 @@ export function ItemDrawer({ id, onClose, onOpenItem }: { id: number; onClose: (
             {data.usedIn.length > 0 && <Section title="Used in">{data.usedIn.map((r: any) => (
               <button key={r.id} onClick={() => r.crafted_item_id && onOpenItem(r.crafted_item_id)} className="mr-2 mb-1 rounded-md border border-line px-2 py-0.5 text-xs hover:bg-line/40">{r.name} <span className="text-muted">{r.profession}</span></button>))}</Section>}
             {data.drops.length > 0 && <Section title="Drops from">{data.drops.slice(0, 15).map((d: any, i: number) => (
-              <div key={i} className="flex justify-between py-0.5 text-sm"><span>{d.source_name ?? `${d.source_kind} ${d.source_id}`} <span className="text-muted">· {d.zone ?? ''} {d.min_level ? `level ${d.min_level}${d.max_level !== d.min_level ? `-${d.max_level}` : ''}` : ''}</span></span>
+              <div key={i} className="flex justify-between py-0.5 text-sm"><span>{d.source_name ?? `${d.source_kind} ${d.source_id}`} <span className="text-muted">· {d.zone ?? ''} {d.min_level ? `level ${d.min_level}${d.max_level !== d.min_level ? ` to ${d.max_level}` : ''}` : ''}</span></span>
                 <span className="num">{(d.chance * 100).toFixed(1)}% <span className={`text-xs ${d.kills < 50 ? 'text-warn' : 'text-muted'}`}>({d.kills} {d.source_kind === 'npc' ? 'kills' : 'opens'}{d.kills < 50 ? ', rough' : ''})</span></span></div>))}</Section>}
           </>
         )}

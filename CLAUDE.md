@@ -2,7 +2,7 @@
 
 A money radar for Chip's WoW Forever auction houses. Code computes, agents judge, Chip decides.
 
-Read first: `docs/build-plan.md` (the plan, wins over older docs), `wow-forever-gold-finder-spec.md` (product spec v3),
+Read first: `docs/vision.md` (what Chip wants, the yardstick for every change), `docs/build-plan.md` (the plan, wins over older docs), `wow-forever-gold-finder-spec.md` (product spec v3),
 `wow-forever-session-files/docs/wow-forever-app-verification-ledger.md` (what is proven), `docs/verification.md` (what this build proved).
 
 ## The ledger rule (binding, every session, every agent)
