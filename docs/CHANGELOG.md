@@ -25,3 +25,7 @@ What changed, newest last. The overnight loop appends here every night it runs.
 - Prices: a play never claims more than where sales actually happened. Common items over 20x their vendor price, and vendor items over 20x what the vendor charges, need real sales there.
 - Every resale play carries a 0 to 100 confidence score. Below 40 is hidden, 40 to 59 shows as "watch only" and never alerts.
 - Plays only come from the houses you picked.
+
+## 2026-11-19, minimum profit per item
+
+- Plays under 1 silver profit per item are never stored, shown or alerted. Change it in Settings, "Minimum profit per item".

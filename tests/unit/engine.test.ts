@@ -28,7 +28,7 @@ describe('engine end to end', () => {
     const engine = new Engine(client, db, { dataDir: dir, webhookUrl: 'https://discord.example/hook', log: () => {}, fetchFn });
     await engine.init();
     db.prepare(`UPDATE houses SET pinned = 1 WHERE id IN (110, 116)`).run();
-    db.prepare(`INSERT INTO settings (key, value) VALUES ('profit_bar', '100'), ('quiet_start', '0'), ('quiet_end', '0')`).run();
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('profit_bar', '100'), ('quiet_start', '0'), ('quiet_end', '0'), ('min_profit_each', '0')`).run();
 
     const r = await engine.round();
     expect(r.events.length).toBe(4); // 116 auctions is empty, still a publish, and flagged as a suspected bug
@@ -91,6 +91,7 @@ describe('restart', () => {
       '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
     });
     const db = openDb(dir, 'restart.db');
+    db.exec(`INSERT INTO settings (key, value) VALUES ('min_profit_each', '0')`);
     const first = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
     await first.init();
     await first.round();
@@ -116,6 +117,7 @@ describe('only your houses', () => {
       '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
     });
     const db = openDb(dir, ':memory:');
+    db.exec(`INSERT INTO settings (key, value) VALUES ('min_profit_each', '0')`);
     const engine = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
     await engine.init();
     await engine.round();
@@ -123,5 +125,28 @@ describe('only your houses', () => {
     db.prepare('UPDATE houses SET pinned = 1 WHERE id = 111').run();
     await engine.detect();
     expect((db.prepare(`SELECT house_id FROM plays WHERE state != 'gone'`).all() as Array<{ house_id: number }>).map(r => r.house_id)).toEqual([111]);
+  });
+});
+
+describe('minimum profit per item', () => {
+  it('a 3 copper play never shows; raising the bar to 1 copper lets it through', async () => {
+    const dir = tempDir();
+    const lm = new Date(Date.now() - 5 * 60_000).toUTCString();
+    const { client } = fakeBlizzard({
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [{ id: 111, name: 'Alliance Auction House' }] } }),
+      '/data/wow/ruleset/2/auctions/111': () => ({ body: { id: 111, auctions: [] }, lastModified: lm }),
+      '/data/wow/ruleset/2/auctions/111/commodities': () => ({ body: { auctions: [
+        { id: 1, item: { id: 2589 }, quantity: 50, unit_price: 10, time_left: 'LONG' },
+        { id: 2, item: { id: 2592 }, quantity: 5, unit_price: 50, time_left: 'LONG' }] }, lastModified: lm }),
+      '/data/wow/item/2589': () => ({ body: { id: 2589, name: 'Linen Cloth', sell_price: 13 } }),
+      '/data/wow/item/2592': () => ({ body: { id: 2592, name: 'Wool Cloth', sell_price: 200 } }),
+    });
+    const db = openDb(dir, ':memory:');
+    const engine = new Engine(client, db, { dataDir: dir, webhookUrl: null, log: () => {} });
+    await engine.init();
+    const r = await engine.round();
+    expect(r.plays.map(p => p.itemId)).toEqual([2592]); // 1s 50c each passes, 3c each does not
+    db.exec(`INSERT INTO settings (key, value) VALUES ('min_profit_each', '1')`);
+    expect((await engine.detect()).plays.map(p => p.itemId).sort()).toEqual([2589, 2592]);
   });
 });

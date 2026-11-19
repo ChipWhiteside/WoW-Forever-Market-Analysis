@@ -31,7 +31,7 @@ export function SettingsPage() {
   const pin = useMutation({ mutationFn: (b: { alliance?: number | null; blackwater?: number | null }) => post('/api/houses/pin', b), onSuccess: () => qc.invalidateQueries() });
   const save = useMutation({ mutationFn: (b: Record<string, string | number>) => put('/api/settings', b), onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }) });
   const [form, setForm] = useState<Record<string, string>>({});
-  useEffect(() => { if (settings) setForm({ profit_bar: '2500', quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
+  useEffect(() => { if (settings) setForm({ min_profit_each: '100', profit_bar: '2500', quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
   const profs: Record<string, number> = (() => { try { return JSON.parse(form.professions ?? '{}'); } catch { return {}; } })();
   const setProf = (name: string, v: string) => { const next = { ...profs }; if (v.trim()) next[name] = Number(v); else delete next[name]; setForm({ ...form, professions: JSON.stringify(next) }); };
   const field = (k: string, label: string, hint?: string) => (
@@ -58,7 +58,8 @@ export function SettingsPage() {
       ))}
       <h2 className="mb-2 mt-8 font-display text-lg font-bold">Alerts and you</h2>
       <Card className="grid max-w-2xl gap-4 p-5 md:grid-cols-2">
-        {field('profit_bar', 'Profit bar, copper', '2500 = 25 silver')}
+        {field('min_profit_each', 'Minimum profit per item, copper', '100 = 1 silver. Plays under this never show')}
+        {field('profit_bar', 'Alert bar, copper', 'total for the day. 2500 = 25 silver')}
         {field('time_zone', 'Time zone')}
         {field('quiet_start', 'Quiet from (hour)')}
         {field('quiet_end', 'Quiet until (hour)')}

@@ -2,6 +2,9 @@
  * PROTECTED. Thresholds that decide what counts as a play. The overnight loop proposes changes
  * here from the calibration report, and only Chip approves them.
  */
+/** Smallest profit per item worth Chip's time, copper. Settings key min_profit_each overrides it. */
+export const MIN_PROFIT_EACH = 100;
+
 export const MIN_GAIN = {
   /** smallest net gain per unit worth showing, copper */
   copper: 5,
