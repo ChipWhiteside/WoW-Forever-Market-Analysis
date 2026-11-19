@@ -23,7 +23,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
     mutationFn: (b: { status: string; quantity?: number; unitCost?: number }) => post(`/api/plays/${encodeURIComponent(p.key)}/status`, b),
     onSuccess: () => qc.invalidateQueries(),
   });
-  const d = p.detail as { buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
+  const d = p.detail as { buy?: Leg; sell?: Leg; perItem?: number; salesPerDay?: number | null; salesHours?: number; available?: number | null; realisticUnits?: number; listing?: { best: number; options: ListingOption[]; quantity: number }; oneOff?: boolean };
   const gone = p.state === 'gone';
   if (!d.buy || !d.sell) return null; // a play from before the new layout; it refreshes on the next publish
   return (
@@ -48,7 +48,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
             <li className="flex gap-2">
               <span className="w-12 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">Volume</span>
               <span>
-                {d.salesPerDay != null ? <><b>{Math.round(d.salesPerDay).toLocaleString()}</b> sell a day</> : p.detector === 'vendor_dump' ? 'Vendors buy any amount' : <span className="text-muted">Sales a day not known yet</span>}
+                {d.salesPerDay != null ? <><b>~{Math.round(d.salesPerDay).toLocaleString()}</b> sell a day <span className="text-xs text-muted">(from {d.salesHours != null && d.salesHours >= 48 ? `${Math.round(d.salesHours / 24)} days` : `${Math.round(d.salesHours ?? 0)} hours`} of watching)</span></> : p.detector === 'vendor_dump' ? 'Vendors buy any amount' : <span className="text-muted">No sales seen yet</span>}
                 {d.available != null && Number.isFinite(d.available) && <span className="text-muted"> · {d.available.toLocaleString()} available at this price</span>}
                 <span className="text-muted"> · worth doing <b className="text-ink">{d.realisticUnits}</b>, about </span><Money c={p.profit} size="sm" />
               </span>

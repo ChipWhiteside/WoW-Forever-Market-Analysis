@@ -49,7 +49,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       plays.push({
         key: `underpriced:${h.id}:${itemId}`, detector: 'underpriced', houseId: h.id, itemId, profit: perItem * units, confidence: judged.confidence,
         summary: playLine(name, perItem, buy, sell, d.unitsPerDay),
-        detail: { buy, sell, perItem, salesPerDay: d.unitsPerDay, available, realisticUnits: units, typicalFloor: t.typicalFloor, readings: t.readings, oneOff: cheap.length === 1,
+        detail: { buy, sell, perItem, salesPerDay: d.unitsPerDay, salesHours: d.hours, available, realisticUnits: units, typicalFloor: t.typicalFloor, readings: t.readings, oneOff: cheap.length === 1,
           listing: listingPlan(h.faction, item?.sellPrice, perItem, (d.unitsPerDay * share) / 24, units) },
         dataAt: h.publishedAt,
       });

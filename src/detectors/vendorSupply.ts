@@ -34,7 +34,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
       const perItem = net - best.unitPrice;
       if (perItem < MIN_GAIN.copper || perItem < best.unitPrice * MIN_GAIN.share) continue;
       const d = ctx.demand.get(h.id)?.get(itemId);
-      const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
+      const salesPerDay = d && d.hours >= 1 ? d.unitsPerDay : null;
       const units = best.limited ? 1 : realisticUnits(Infinity, salesPerDay, share);
       if (units <= 0) continue;
       const buy: Leg = { kind: 'vendor', price: best.unitPrice, who: best.npcName, places: [{ label: best.npcName, zone: best.zone, uiMap: best.uiMap ?? null, x: best.x, y: best.y }],
@@ -45,7 +45,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
         key: `vendor_supply:${h.id}:${itemId}`, detector: 'vendor_supply', houseId: h.id, itemId, profit: perItem * units,
         confidence: gated || best.limited ? 'low' : judged.confidence,
         summary: playLine(name, perItem, buy, sell, salesPerDay),
-        detail: { buy, sell, perItem, salesPerDay, available: Infinity, realisticUnits: units, floor, vendorPrice: best.unitPrice, score: judged.score, soldPrice: judged.evidence.soldPrice, limited: best.limited, reputationGated: gated,
+        detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, available: Infinity, realisticUnits: units, floor, vendorPrice: best.unitPrice, score: judged.score, soldPrice: judged.evidence.soldPrice, limited: best.limited, reputationGated: gated,
           otherVendors: offers.filter(o => o !== best).slice(0, 5),
           listing: listingPlan(h.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
         dataAt: h.publishedAt,

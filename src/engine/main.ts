@@ -6,6 +6,7 @@ import { syncEgLink } from '../datasets/eglink.ts';
 import { syncRecipes } from '../datasets/recipes.ts';
 import { dailyMaintenance } from './daily.ts';
 import { startServer } from '../server/server.ts';
+import { rebuildIfRulesChanged } from './rebuild.ts';
 
 const POLL_MS = 2 * 60_000;
 let lastDailyFailure = 0;
@@ -24,6 +25,9 @@ async function main() {
 
   if (once) await engine.init();
   else await retry(() => engine.init(), 'house sync', log);
+
+  // When the sale rules change, re-count every stored snapshot with them, so history is never thrown away.
+  try { rebuildIfRulesChanged(db, log); } catch (e) { log(`history rebuild failed: ${(e as Error).message}`); }
 
   // Rebuild plays from the last snapshot right away, so a restart (or an update) never leaves the app
   // empty until the next hourly publish.

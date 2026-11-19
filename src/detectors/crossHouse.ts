@@ -36,7 +36,7 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     const sellFloor = judged.price;
     const net = netPerUnit(sellH.faction, sellFloor);
     const d = ctx.demand.get(sellH.id)?.get(itemId);
-    const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
+    const salesPerDay = d && d.hours >= 1 ? d.unitsPerDay : null;
     let available = 0, spent = 0;
     for (const l of buys) {
       const gain = net - l.unitPrice!;
@@ -58,7 +58,7 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
       key: `cross_house:${buyH.id}>${sellH.id}:${itemId}`, detector: 'cross_house', houseId: buyH.id, itemId, profit: perItem * units,
       confidence: judged.confidence,
       summary: playLine(name, perItem, buy, sell, salesPerDay),
-      detail: { buy, sell, perItem, salesPerDay, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor, score: judged.score,
+      detail: { buy, sell, perItem, salesPerDay, salesHours: d?.hours, available, realisticUnits: units, buyHouse: buyH.id, sellHouse: sellH.id, sellFloor, score: judged.score,
         listing: listingPlan(sellH.faction, item?.sellPrice, perItem, salesPerDay == null ? null : (salesPerDay * share) / 24, units) },
       dataAt: Math.min(buyH.publishedAt, sellH.publishedAt),
     });

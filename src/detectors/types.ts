@@ -50,6 +50,8 @@ export interface PlayDetail {
   perItem: number;
   /** estimated units sold a day on the selling house, null until history exists */
   salesPerDay: number | null;
+  /** hours of sales history behind salesPerDay */
+  salesHours?: number;
   /** units at the buy price right now */
   available: number;
   /** units worth doing today: all of them for a vendor, else Chip's share of daily sales */

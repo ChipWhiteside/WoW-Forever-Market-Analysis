@@ -33,3 +33,8 @@ What changed, newest last. The overnight loop appends here every night it runs.
 ## 2026-11-19, held back this hour
 
 - Now lists the best candidates the engine held back each round, with the reason: under the minimum profit, no sales seen yet, a price outlier. An empty board explains itself.
+
+## 2026-11-19, history re-counted, not thrown away
+
+- On start, the engine re-counts every stored raw snapshot with the current sale rules, so sales history goes back to the day the engine started instead of restarting. It runs once each time the sale rules change.
+- Sales a day now shows from the first hour of watching, labelled with how many hours or days it is based on.
