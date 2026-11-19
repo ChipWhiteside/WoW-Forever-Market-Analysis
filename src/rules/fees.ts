@@ -45,7 +45,7 @@ export function breakEvenPrice(faction: Faction, cost: number, _sellPrice?: numb
   return Math.ceil(cost / (1 - CUT[faction]));
 }
 
-export interface ListingOption { hours: Duration; depositEach: number; expectedSold: number; expectedProfit: number; sellsOut: boolean }
+export interface ListingOption { hours: Duration; depositEach: number; expectedSold: number | null; expectedProfit: number | null; sellsOut: boolean }
 export interface ListingPlan { quantity: number; options: ListingOption[]; best: Duration; why: string }
 
 /**
@@ -58,13 +58,15 @@ export function listingPlan(faction: Faction, sellPrice: number | null | undefin
   const q = Math.max(1, Math.round(quantity));
   const options = DURATIONS.map(hours => {
     const depositEach = deposit(faction, sellPrice, 1, hours);
-    const sold = unitsPerHour == null ? (hours === 24 ? q : 0) : Math.min(q, unitsPerHour * hours);
+    // With no sales rate, say so: never invent how many would sell.
+    if (unitsPerHour == null) return { hours, depositEach, expectedSold: null, expectedProfit: null, sellsOut: false };
+    const sold = Math.min(q, unitsPerHour * hours);
     const expectedProfit = Math.round(sold * profitEach - (q - sold) * depositEach);
     return { hours, depositEach, expectedSold: Math.round(sold * 10) / 10, expectedProfit, sellsOut: sold >= q };
   });
   if (unitsPerHour == null) return { quantity: q, options, best: 24, why: 'Sales rate not known yet, the longest listing gives it the most time.' };
   const firstSellOut = options.find(o => o.sellsOut);
   if (firstSellOut) return { quantity: q, options, best: firstSellOut.hours, why: `${q} sell within ${firstSellOut.hours} hours at your share of the market, so the shortest listing that sells out wins.` };
-  const top = [...options].sort((a, b) => b.expectedProfit - a.expectedProfit)[0]!;
+  const top = [...options].sort((a, b) => (b.expectedProfit ?? 0) - (a.expectedProfit ?? 0))[0]!;
   return { quantity: q, options, best: top.hours, why: `No listing length sells all ${q}; ${top.hours} hours earns the most after expired deposits.` };
 }

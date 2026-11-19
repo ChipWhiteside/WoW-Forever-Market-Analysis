@@ -48,13 +48,15 @@ export function registerExtraRoutes(app: FastifyInstance, deps: ServerDeps): voi
   app.get<{ Querystring: { profession?: string; from?: string; to?: string } }>('/api/leveling', async req => {
     const profession = req.query.profession || 'Blacksmithing';
     const current = professionsSetting(deps)?.[profession] ?? 1;
-    const from = Number(req.query.from || current), to = Number(req.query.to || Math.min(300, Math.max(from + 25, 150)));
+    const num = (v: string | undefined, d: number) => { const n = Number(v); return v && Number.isFinite(n) ? Math.min(300, Math.max(1, Math.round(n))) : d; };
+    const from = num(req.query.from, current), to = Math.max(from + 1, num(req.query.to, Math.min(300, Math.max(from + 25, 150))));
     return { ...levelingPlan(db, priceBook(db), profession, from, to), current };
   });
 
   // Chip's materials. PUT one item, or POST a pasted list of "name count" lines.
   app.get('/api/inventory', async () => db.prepare(`SELECT v.item_id, v.count, i.name, i.icon_url, i.quality FROM inventory v LEFT JOIN items i ON i.id = v.item_id ORDER BY i.name`).all());
-  app.put<{ Body: { itemId: number; count: number } }>('/api/inventory', async req => {
+  app.put<{ Body: { itemId: number; count: number } }>('/api/inventory', async (req, reply) => {
+    if (!Number.isFinite(Number(req.body.count)) || !Number.isFinite(Number(req.body.itemId))) return reply.code(400).send({ error: 'count and itemId must be numbers' });
     if (req.body.count > 0) db.prepare('INSERT INTO inventory (item_id, count, updated_at) VALUES (?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at').run(req.body.itemId, Math.round(req.body.count), Date.now());
     else db.prepare('DELETE FROM inventory WHERE item_id = ?').run(req.body.itemId);
     return { ok: true };
@@ -64,7 +66,9 @@ export function registerExtraRoutes(app: FastifyInstance, deps: ServerDeps): voi
     for (const line of req.body.text.split(/\r?\n/)) {
       const parsed = parseInventoryLine(line);
       if (!parsed) { if (line.trim()) unknown.push(line.trim()); continue; }
-      const it = db.prepare('SELECT id, name FROM items WHERE lower(name) = lower(?)').get(parsed.name) as { id: number; name: string } | undefined;
+      // When two items share a name, prefer the one with a recipe or a price behind it.
+      const it = db.prepare(`SELECT i.id, i.name FROM items i WHERE lower(i.name) = lower(?)
+        ORDER BY (EXISTS (SELECT 1 FROM recipe_reagents g WHERE g.item_id = i.id) OR EXISTS (SELECT 1 FROM recipes r WHERE r.crafted_item_id = i.id)) DESC, i.status = 200 DESC, i.id LIMIT 1`).get(parsed.name) as { id: number; name: string } | undefined;
       if (!it) { unknown.push(parsed.name); continue; }
       db.prepare('INSERT INTO inventory (item_id, count, updated_at) VALUES (?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at').run(it.id, parsed.count, Date.now());
       added.push(`${parsed.count} ${it.name}`);

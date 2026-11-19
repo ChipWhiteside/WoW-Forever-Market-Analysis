@@ -30,6 +30,7 @@ export function vendorSupply(ctx: DetectorContext): Play[] {
       const d = ctx.demand.get(h.id)?.get(itemId);
       const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
       const units = best.limited ? 1 : realisticUnits(Infinity, salesPerDay, share);
+      if (units <= 0) continue;
       const buy: Leg = { kind: 'vendor', price: best.unitPrice, who: best.npcName, places: [{ label: best.npcName, zone: best.zone, uiMap: best.uiMap ?? null, x: best.x, y: best.y }],
         note: [best.limited ? 'limited stock' : null, gated ? 'price only seen at Honored or better, may need reputation' : null].filter(Boolean).join(', ') || undefined };
       const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']), note: `listed at ${money(floor)} before the cut` };

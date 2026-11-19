@@ -7,7 +7,7 @@ import { mapHref, type Place } from '../lib/zones';
 import { Money, ItemIcon, ItemName, Chip, Card } from './ui';
 
 interface Leg { kind: 'vendor' | 'auction' | 'any_vendor' | 'held'; price: number; who: string; places: Place[]; note?: string }
-interface ListingOption { hours: number; depositEach: number; expectedSold: number; expectedProfit: number; sellsOut: boolean }
+interface ListingOption { hours: number; depositEach: number; expectedSold: number | null; expectedProfit: number | null; sellsOut: boolean }
 
 const KIND: Record<Leg['kind'], string> = { vendor: 'Vendor', auction: 'Auction house', any_vendor: 'Any vendor', held: 'Your bags' };
 
@@ -37,7 +37,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
               <p className="text-xs text-muted">{PLAY_LABEL[p.detector]}{p.state === 'new' ? ' · new' : p.state === 'fading' ? ' · fading' : gone ? ' · gone' : ''}</p>
             </div>
             <div className="shrink-0 text-right">
-              <div className="text-good"><span className="text-lg font-bold">+</span><Money c={d.perItem} size="xl" /></div>
+              <div className={(d.perItem ?? 0) >= 0 ? 'text-good' : 'text-bad'}>{(d.perItem ?? 0) >= 0 && <span className="text-lg font-bold">+</span>}<Money c={d.perItem} size="xl" /></div>
               <p className="text-[11px] text-muted">profit per item</p>
             </div>
           </div>
@@ -59,9 +59,10 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
                 <span className="flex flex-wrap gap-x-3 gap-y-1">
                   {d.listing.options.map(o => (
                     <span key={o.hours} className={o.hours === d.listing!.best ? 'font-bold' : 'text-muted'}>
-                      {o.hours}h: deposit <Money c={o.depositEach} size="sm" dim={o.hours !== d.listing!.best} /> each, sells ~{Math.round(o.expectedSold)}{o.hours === d.listing!.best ? ' ✓' : ''}
+                      {o.hours}h: deposit <Money c={o.depositEach} size="sm" dim={o.hours !== d.listing!.best} /> each{o.expectedSold != null ? `, sells ~${Math.round(o.expectedSold)}` : ''}{o.hours === d.listing!.best ? ' ✓' : ''}
                     </span>
                   ))}
+                  {d.listing.options[0]?.expectedSold == null && <span className="text-xs text-muted">sales rate not known yet</span>}
                 </span>
               </li>
             )}

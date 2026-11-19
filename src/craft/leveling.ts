@@ -21,35 +21,44 @@ export interface StepPlan {
 }
 export interface Need { itemId: number; name: string; need: number; fromBags: number; craftedFromBags: number; buy: number; unitCost: number | null; source: string; buyCost: number | null }
 export interface SellInstead { itemId: number; name: string; units: number; saleValue: number; replacementCost: number; saves: number; replacement: string }
-export interface LevelingPlan { profession: string; from: number; to: number; steps: StepPlan[]; needs: Need[]; totalBuyCost: number; sellInstead: SellInstead[]; missing: string[] }
+export interface LevelingPlan { profession: string; from: number; to: number; steps: StepPlan[]; needs: Need[]; totalBuyCost: number; sellInstead: SellInstead[]; missing: string[];
+  /** true when a step's crafts or a material's price is unknown, so totals are a floor, not the full cost */
+  partial: boolean; partialWhy: string[] }
 
 /**
  * Make up to `want` of an item from what is in the bags, through as many crafting steps as needed (ore to bars,
  * bars to bronze, stone to grinding stones), one craft at a time so nothing is half consumed. Mutates `left`.
  */
-export function produceFromBags(crafter: Crafter, left: Map<number, number>, itemId: number, want: number, depth: number): number {
+export function produceFromBags(crafter: Crafter, left: Map<number, number>, itemId: number, want: number, depth: number, consumed?: Map<number, number>): number {
   if (depth > 3 || want <= 0) return 0;
   let made = 0;
   for (const recipe of crafter.recipes.filter(r => r.crafted_item_id === itemId)) {
-    const per = avgQty(recipe);
+    // Whole items only: a recipe that makes 1 to 2 counts as 1 here, never 1.5.
+    const per = Math.max(1, Math.floor(avgQty(recipe)));
     const ins = crafter.reagentsOf(recipe.id);
     if (!ins.length) continue;
     while (made < want) {
       const snapshot = new Map(left);
+      const consumedSnapshot = consumed ? new Map(consumed) : null;
       let ok = true;
       for (const g of ins) {
         const have = left.get(g.item_id) ?? 0;
         const fromHave = Math.min(have, g.quantity);
         left.set(g.item_id, have - fromHave);
+        if (fromHave) consumed?.set(g.item_id, (consumed.get(g.item_id) ?? 0) + fromHave);
         const short = g.quantity - fromHave;
         if (short > 0) {
-          const got = produceFromBags(crafter, left, g.item_id, short, depth + 1);
+          const got = produceFromBags(crafter, left, g.item_id, short, depth + 1, consumed);
           if (got < short) { ok = false; break; }
           // A craft can make more than needed (one Bronze smelt makes 2 bars): the extra goes back in the bags.
           if (got > short) left.set(g.item_id, (left.get(g.item_id) ?? 0) + got - short);
         }
       }
-      if (!ok) { left.clear(); for (const [k, v] of snapshot) left.set(k, v); break; }
+      if (!ok) {
+        left.clear(); for (const [k, v] of snapshot) left.set(k, v);
+        if (consumed) { consumed.clear(); for (const [k, v] of consumedSnapshot!) consumed.set(k, v); }
+        break;
+      }
       made += per;
     }
     if (made >= want) break;
@@ -108,6 +117,8 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
 
   // Source each material: bags, then crafted from bags (one level: bars from ore, stones from stone), then buy.
   const left = new Map(bags);
+  /** owned units that went into crafting (smelted, ground), as opposed to used as they are */
+  const intoCrafts = new Map<number, number>();
   const take = (id: number, n: number) => { const have = left.get(id) ?? 0; const t = Math.min(have, n); left.set(id, have - t); return t; };
   const needs: Need[] = [];
   for (const [itemId, total] of need) {
@@ -115,7 +126,7 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
     const fromBags = take(itemId, rest); rest -= fromBags;
     let craftedFromBags = 0;
     if (rest > 0) {
-      const made = produceFromBags(crafter, left, itemId, rest, 0);
+      const made = produceFromBags(crafter, left, itemId, rest, 0, intoCrafts);
       craftedFromBags = Math.min(made, rest);
       if (made > rest) left.set(itemId, (left.get(itemId) ?? 0) + made - rest);
       rest -= craftedFromBags;
@@ -126,8 +137,8 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
 
   // Owned raw materials worth more sold than smelted or ground: sell them, buy the product instead.
   const sellInstead: SellInstead[] = [];
-  for (const [itemId, owned] of bags) {
-    const used = owned - (left.get(itemId) ?? 0);
+  for (const [itemId] of bags) {
+    const used = intoCrafts.get(itemId) ?? 0;
     if (used <= 0) continue;
     const f = book.floor.get(itemId);
     if (!f) continue;
@@ -144,5 +155,10 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
     }
   }
 
-  return { profession, from, to, steps, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing };
+  const partialWhy = [
+    ...steps.filter(s => s.found && s.crafts == null).map(s => `${s.recipe} (${s.from} to ${s.to}) has no skill up chance in that range, so its crafts are not counted`),
+    ...missing.map(m => `${m} is not loaded yet`),
+    ...needs.filter(n => n.buy > 0 && n.buyCost == null).map(n => `no price or source for ${n.buy} ${n.name}`),
+  ];
+  return { profession, from, to, steps, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing, partial: partialWhy.length > 0, partialWhy };
 }

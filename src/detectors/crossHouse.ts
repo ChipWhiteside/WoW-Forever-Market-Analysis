@@ -39,6 +39,7 @@ function pair(ctx: DetectorContext, buyH: HouseCtx, sellH: HouseCtx): Play[] {
     }
     if (available === 0) continue;
     const units = realisticUnits(available, salesPerDay, share);
+    if (units <= 0) continue;
     // Profit per item over the units worth taking today: the cheapest ones first.
     let left = units, cost = 0;
     for (const l of buys) { if (left <= 0) break; const q = Math.min(left, l.quantity); cost += q * l.unitPrice!; left -= q; }

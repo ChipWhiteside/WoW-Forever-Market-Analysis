@@ -25,20 +25,20 @@ export function CraftingPage() {
 function Leveling() {
   const { openItem } = useNav();
   const [to, setTo] = useState('150');
-  const [from, setFrom] = useState('');
-  const { data } = useQuery({ queryKey: ['leveling', from, to], queryFn: () => api<any>(`/api/leveling?profession=Blacksmithing&to=${to}${from ? `&from=${from}` : ''}`) });
+  const [from, setFrom] = useState<string | null>(null);
+  const { data } = useQuery({ queryKey: ['leveling', from, to], queryFn: () => api<any>(`/api/leveling?profession=Blacksmithing&to=${to}${from ? `&from=${from}` : ''}`), placeholderData: prev => prev });
   if (!data) return <p className="text-muted">Loading…</p>;
   const buying = data.needs.filter((n: any) => n.buy > 0);
   return (
     <>
       <Card className="mb-4 flex flex-wrap items-center gap-3 p-4 text-sm">
         <span className="font-semibold">Blacksmithing</span>
-        <label className="flex items-center gap-2">from <input value={from || data.current} onChange={e => setFrom(e.target.value)} className="w-16 rounded border border-line bg-page px-2 py-1" /></label>
+        <label className="flex items-center gap-2">from <input value={from ?? String(data.current)} onChange={e => setFrom(e.target.value)} className="w-16 rounded border border-line bg-page px-2 py-1" /></label>
         <label className="flex items-center gap-2">to <input value={to} onChange={e => setTo(e.target.value)} className="w-16 rounded border border-line bg-page px-2 py-1" /></label>
         <span className="text-muted">Your skill comes from Settings. Owned materials are free.</span>
-        <span className="ml-auto">Still to buy: <Money c={data.totalBuyCost} /></span>
+        <span className="ml-auto">Still to buy: {data.partial ? 'at least ' : ''}<Money c={data.totalBuyCost} /></span>
       </Card>
-      {data.missing.length > 0 && <Card className="mb-4 border-warn/40 bg-warn/5 p-3 text-sm">Recipes not loaded yet: {data.missing.join(', ')}. They appear after the daily recipe refresh.</Card>}
+      {data.partial && <Card className="mb-4 border-warn/40 bg-warn/5 p-3 text-sm"><p className="font-semibold">The cost above is a floor, not the full cost:</p>{data.partialWhy.map((w: string) => <p key={w}>· {w}</p>)}</Card>}
       {data.sellInstead.length > 0 && (
         <Card className="mb-4 border-good/40 bg-good/5 p-4 text-sm">
           <p className="mb-1 font-semibold">Sell these instead of using them</p>
@@ -138,7 +138,7 @@ function Materials() {
           <div key={m.item_id} className="flex items-center gap-2 py-1 text-sm">
             <ItemIcon url={m.icon_url} quality={m.quality} size={22} />
             <button onClick={() => openItem(m.item_id)} className="flex-1 text-left hover:underline"><ItemName name={m.name} id={m.item_id} quality={m.quality} /></button>
-            <input defaultValue={m.count} onBlur={e => { const v = Number(e.target.value); if (v !== m.count) set.mutate({ itemId: m.item_id, count: v }); }} className="w-20 rounded border border-line bg-page px-2 py-0.5 text-right text-xs" />
+            <input defaultValue={m.count} onBlur={e => { const v = Number(e.target.value.replace(/,/g, '')); if (Number.isFinite(v) && v !== m.count) set.mutate({ itemId: m.item_id, count: v }); else e.target.value = String(m.count); }} className="w-20 rounded border border-line bg-page px-2 py-0.5 text-right text-xs" />
           </div>
         ))}
       </Card>

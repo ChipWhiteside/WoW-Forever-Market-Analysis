@@ -93,6 +93,7 @@ export const DEFAULT_SELL_SHARE = 0.2;
 /** Units worth doing in a day: Chip's share of daily sales, at least 1, never more than what is available. */
 export function realisticUnits(available: number, salesPerDay: number | null, share = DEFAULT_SELL_SHARE): number {
   if (salesPerDay == null) return Math.min(available, 1);
+  if (salesPerDay <= 0) return 0; // measured: nothing sells, so nothing is worth doing
   return Math.max(1, Math.min(available, Math.round(salesPerDay * share)));
 }
 

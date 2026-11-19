@@ -29,6 +29,7 @@ export function underpriced(ctx: DetectorContext, typical: Map<number, Map<numbe
       const cheap = ls.filter(l => l.unitPrice! <= line);
       const available = cheap.reduce((s, l) => s + l.quantity, 0);
       const units = realisticUnits(available, d.unitsPerDay, share);
+      if (units <= 0) continue;
       let left = units, cost = 0;
       for (const l of cheap) { if (left <= 0) break; const q = Math.min(left, l.quantity); cost += q * l.unitPrice!; left -= q; }
       const avgBuy = Math.round(cost / units);

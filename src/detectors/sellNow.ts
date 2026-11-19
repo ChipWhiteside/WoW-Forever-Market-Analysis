@@ -27,11 +27,15 @@ export function sellNow(ctx: DetectorContext, typical: Map<number, Map<number, T
       if (!jumped && !crossed) continue;
       const item = ctx.items.get(x.itemId);
       const net = netPerUnit(h.faction, floor);
-      const perItem = net - (x.unitCost ?? 0);
+      // A watchlist item with no cost has no profit to claim, and selling at a loss is not a play.
+      if (x.unitCost == null || x.units <= 0) continue;
+      const perItem = net - x.unitCost;
+      if (perItem <= 0) continue;
       const d = ctx.demand.get(h.id)?.get(x.itemId);
       const salesPerDay = d && d.hours >= 3 ? d.unitsPerDay : null;
-      const units = x.units > 0 ? realisticUnits(x.units, salesPerDay, share) : 1;
-      const buy: Leg = { kind: 'held', price: x.unitCost ?? 0, who: x.units ? `You hold ${x.units}` : 'On your watchlist', places: [] };
+      const units = realisticUnits(x.units, salesPerDay, share);
+      if (units <= 0) continue;
+      const buy: Leg = { kind: 'held', price: x.unitCost, who: `You hold ${x.units}`, places: [] };
       const sell = { ...auctionLeg(h, net, AUCTION_HOUSES[h.faction === 'blackwater' ? 'blackwater' : 'alliance']),
         note: (t ? `${Math.round((floor / t.typicalFloor - 1) * 100)}% over its usual ${money(t.typicalFloor)}` : '') + (crossed ? `${t ? ', ' : ''}past your ${money(x.alertAbove)} alert` : '') };
       const name = item?.name ?? `Item ${x.itemId}`;
