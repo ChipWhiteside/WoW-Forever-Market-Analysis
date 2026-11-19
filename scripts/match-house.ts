@@ -3,6 +3,9 @@
  * in game: floor price, total units available, and the full price ladder of one item. A ladder of many price steps
  * is a fingerprint no other house shares, so this works even if the floor moved since you looked.
  *
+ * The in game auction house is live; the API is a snapshot taken up to an hour earlier. So the cheapest steps and the
+ * totals drift between the two even when no new snapshot has landed. Deeper ladder steps barely move and count double.
+ *
  * Usage: npm run match-house
  * Edit SEEN below with what the in game auction house shows (prices in copper, Available column = units).
  */
@@ -61,14 +64,21 @@ for (const h of houses) {
     if (!seen) continue;
     const ladder = new Map<number, number>();
     for (const l of listings) if (l.item.id === it.id) ladder.set(l.unit_price, (ladder.get(l.unit_price) ?? 0) + l.quantity);
-    const hits = seen.filter(([p, u]) => { const here = ladder.get(p); return here != null && Math.abs(here - u) <= Math.max(2, u * 0.1); }).length;
-    score += hits;
-    lines.push(`${it.name} ladder: ${hits} of ${seen.length} price steps match`);
+    // The cheapest four steps churn first (bought, undercut). Deeper steps sit for hours, so they count double.
+    const sorted = [...seen].sort((a, b) => a[0] - b[0]);
+    let hits = 0, deepHits = 0;
+    sorted.forEach(([p, u], i) => {
+      const here = ladder.get(p);
+      if (here == null || Math.abs(here - u) > Math.max(2, u * 0.1)) return;
+      if (i < 4) hits++; else deepHits++;
+    });
+    score += hits + 2 * deepHits;
+    lines.push(`${it.name} ladder: ${hits} of ${Math.min(4, sorted.length)} cheapest steps, ${deepHits} of ${Math.max(0, sorted.length - 4)} deeper steps match`);
   }
   rows.push({ id: h.id, faction: factionOf(h.name), score, lines });
 }
 
-const max = 3 * SEEN.items.length + Object.values(SEEN.ladders).reduce((n, l) => n + l.length, 0);
+const max = 3 * SEEN.items.length + Object.values(SEEN.ladders).reduce((n, l) => n + Math.min(4, l.length) + 2 * Math.max(0, l.length - 4), 0);
 for (const r of rows.sort((a, b) => b.score - a.score)) {
   console.log(`\nHouse ${r.id} (${r.faction})  score ${r.score} of ${max}`);
   for (const l of r.lines) console.log(`  ${l}`);

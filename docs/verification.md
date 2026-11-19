@@ -15,7 +15,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | B6 | Blizzard recipe id equals `SkillLineAbility.ID`. Row 1631 (Rough Sharpening Stone) has TrivialLow 15, TrivialHigh 55; green is the midpoint 35. Matches SkillScribe's 1, 15, 35, 55 | Downloaded CSV, test T3 bar met |
 | B7 | `MinSkillLineRank` is often 1 even for recipes learned higher (Smelt Bronze reads 1, learned at 65) | Same CSV. Learn skill falls back to yellow when no trainer row exists |
 | B8 | Mining the same vein with different spell ranks splits EG Link loot keys; merged per object, Copper Vein has 184 recorded nodes | Live merge |
-| B11 | **Chip's Alliance house is 111.** Matched against his Stormwind screenshots by price ladder: 33 of 57 price steps on 111, at most 1 on any other Alliance house, and only Linen units within 5 percent on 111. The partial match is the snapshot moving between his screenshot and the run | `npm run match-house`, November 19 |
+| B11 | **Chip's Alliance house is 111.** Matched against his Stormwind screenshots by price ladder: 33 of 57 price steps on 111, at most 1 on any other Alliance house. Every in game total was higher than the API's on all three items. The partial match is NOT explained yet: Chip saw no publish between screenshot and run, so the working theory is that the in game house is live while the API snapshot is frozen (see P7) | `npm run match-house`, November 19 |
 | B10 | Dead house 112 answers the commodities endpoint with 200 and no `auctions` key at all, not an empty list. The contract now reads a missing key as zero listings and flags it | Chip's live run of match-house crashed on it, November 19 |
 | B9 | This cloud container reaches Blizzard, GitHub raw, wago.tools and Discord | curl from the session |
 
@@ -28,6 +28,7 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
 | P3 | Deposit formula (T7) | Assumed 15 percent of vendor sell price, 1c minimum, 5x Blackwater | Chip's test listing |
 | P4 | Demand from vanished listings | Provisional by nature: cancellations leak in. Excludes listings that were about to expire | Calibration report over weeks |
 | P5 | Character professions from the profile API (T8) | Not wired. Professions are typed in Settings as JSON | Later release |
+| P7 | The in game auction house is live while the API is a snapshot up to an hour old, so floors and totals drift between them without a publish | Theory, fits B11 (all in game totals higher) | `npm run publish-times` on Chip's PC, then a screenshot taken right after a publish lands should match nearly perfectly |
 | P6 | Chip's Blackwater house (Alliance is 111, B11) | Candidates 116, 117, 121, 125 | Booty Bay ladders into match-house |
 
 ## Hand calculated checks in the test suite
