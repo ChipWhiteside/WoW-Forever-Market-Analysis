@@ -49,6 +49,11 @@ async function main() {
     if (results.every(Boolean)) engine.markDaily();
     else lastDailyFailure = Date.now();
   };
+  // A dataset added by an update (trainers on November 20) fills on the first start, not up to a day later.
+  const trainers = db.prepare('SELECT COUNT(*) AS n FROM trainer_spells').get() as { n: number };
+  if (trainers.n === 0) {
+    try { const r = await syncEgLink(db, cfg.dataDir); log(`eglink on start: ${r.trainerSpells} trainer recipes`); } catch (e) { log(`eglink on start failed: ${(e as Error).message}`); }
+  }
   await daily();
   for (;;) {
     const started = Date.now();
