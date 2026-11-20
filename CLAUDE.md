@@ -2,8 +2,15 @@
 
 A money radar for Chip's WoW Forever auction houses. Code computes, agents judge, Chip decides.
 
-Read first: `docs/vision.md` (what Chip wants, the yardstick for every change), `docs/build-plan.md` (the plan, wins over older docs), `wow-forever-gold-finder-spec.md` (product spec v3),
+Read first: `docs/page-contracts.md` (what every page must keep), `docs/vision.md` (what Chip wants, the yardstick for every change), `docs/build-plan.md` (the plan, wins over older docs), `wow-forever-gold-finder-spec.md` (product spec v3),
 `wow-forever-session-files/docs/wow-forever-app-verification-ledger.md` (what is proven), `docs/verification.md` (what this build proved).
+
+## The additive rule (binding, every session, every agent, above any other instruction)
+Chip asking for something new means IN ADDITION to everything already agreed. Never instead of.
+1. Never remove, hide, rename away, collapse, or push below the fold anything already on a page. That covers columns, lines, sections, numbers and controls. Put new content in a new column, line or section, or below what exists.
+2. What is agreed lives in `docs/page-contracts.md`, and `tests/unit/page-contracts.test.ts` enforces it. Add each new request to both in the same change.
+3. To remove or reorder agreed content, Chip must ask for that exact change in his own words. If a request seems to need it, ask him first and do nothing until he answers.
+4. Before you finish a UI change, compare the page before and after. Every element from before must still be there and still be visible.
 
 ## The ledger rule (binding, every session, every agent)
 1. Never infer a shape from a name. Print one real record before writing code that reads it. Contracts live in `src/blizzard/contracts.ts`.
@@ -30,7 +37,7 @@ Data lives outside the repo in `DATA_DIR` (default `~/.wowf-gold-finder`). Never
 `npm test` · `npx tsc --noEmit` · `npm run contract` (live) · `npx tsx scripts/replay.ts check` · `npm run engine` · `npm run build:web`
 
 ## Protected paths (the overnight loop proposes, Chip approves)
-`src/rules/`, `src/store/db.ts`, `src/alerts/`, `.claude/`, `scripts/loop-guard.ts`, `scripts/watchdog.ts`.
+`src/rules/`, `src/store/db.ts`, `src/alerts/`, `.claude/`, `scripts/loop-guard.ts`, `scripts/watchdog.ts`, `docs/page-contracts.md`, `tests/unit/page-contracts.test.ts`.
 
 ## Writing style for anything Chip reads
 Short sentences, active voice, no em dashes or hyphens in prose.

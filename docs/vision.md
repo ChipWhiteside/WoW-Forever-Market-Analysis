@@ -18,3 +18,5 @@ The yardstick for every change, by any session or agent. Distilled from Chip's o
 - He thinks in profit per item and units per day, not totals.
 - He wants to understand why: why it sells, why this price, why nothing is showing.
 - He acts in game quickly: locations, prices to pay and sell at, and travel matter more than charts.
+11. **Additive, never subtractive.** A new request is in addition to everything already agreed, never instead of it. Nothing on a page is removed, hidden or pushed down unless Chip asks for that exact change. Agreed content is listed in docs/page-contracts.md and guarded by a test. (November 20: a new recipe table pushed the leveling steps off screen, and Chip lost the plan he relied on.)
+

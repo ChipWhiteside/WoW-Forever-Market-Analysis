@@ -5,7 +5,7 @@
  */
 import { execSync } from 'node:child_process';
 
-const PROTECTED = [/^src\/rules\//, /^src\/store\/db\.ts$/, /^src\/alerts\//, /^\.env/, /^scripts\/loop-guard\.ts$/, /^scripts\/watchdog\.ts$/, /^\.claude\//, /^src\/datasets\/.*SOURCES/];
+const PROTECTED = [/^src\/rules\//, /^src\/store\/db\.ts$/, /^src\/alerts\//, /^\.env/, /^scripts\/loop-guard\.ts$/, /^scripts\/watchdog\.ts$/, /^\.claude\//, /^src\/datasets\/.*SOURCES/, /^docs\/page-contracts\.md$/, /^tests\/unit\/page-contracts\.test\.ts$/];
 
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'window') {

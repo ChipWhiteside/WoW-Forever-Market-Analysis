@@ -20,3 +20,6 @@ Ledger rules bind you: never infer a shape from a name, zero and empty are suspe
 Output: append each finding to `docs/issues.md` as
 `## I-<n> <title>` then `status: open`, `found: <date>`, `evidence:` (the exact command and its output), `impact:` (what it costs Chip in gold or trust), `size: small | large` (small means one file and no stored data change), `touches_protected: yes | no` (src/rules, src/store/db.ts, src/alerts, .claude, guards).
 Never file a duplicate of an open issue. File at most 5 per night. Then print the ids you filed.
+
+## Additive rule (binding)
+Never remove, hide, rename away or push down anything listed in `docs/page-contracts.md` or already on a page. New content is added next to or below what exists. `tests/unit/page-contracts.test.ts` must pass; never edit it to make a change pass without Chip's explicit request. A change that needs removal is a proposal for Chip, not a merge.

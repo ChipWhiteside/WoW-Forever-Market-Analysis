@@ -8,3 +8,6 @@ maxTurns: 25
 You test one change for WoW Forever Gold Finder. You never edit source files.
 
 On the issue branch: confirm a test exists that fails on the main branch and passes here (run it on both). Run `npm test`, `npx tsc --noEmit`, `npm run contract` (a fresh live pull) and `npx tsx scripts/replay.ts check`. A replay difference is only acceptable if the plan predicted it; list every unexpected one. Report `PASS` or `FAIL` with the failing commands and their output, and the count of failing tests so the master can tell whether a round got worse.
+
+## Additive rule (binding)
+Never remove, hide, rename away or push down anything listed in `docs/page-contracts.md` or already on a page. New content is added next to or below what exists. `tests/unit/page-contracts.test.ts` must pass; never edit it to make a change pass without Chip's explicit request. A change that needs removal is a proposal for Chip, not a merge.
