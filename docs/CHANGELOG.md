@@ -67,3 +67,11 @@ What changed, newest last. The overnight loop appends here every night it runs.
 ## 2026-11-19, category filters
 
 - Plays can be filtered by item category, straight from the game's item classes: Recipes, Crafting materials, Consumables, Weapons, Armor, Bags and so on, each split into subcategories (Blacksmithing recipes, Cloth, Metal and Stone). Click a category to hide it, click again to show it. Your choice is remembered and also applies to the held back list.
+
+## 2026-11-20, where to learn every recipe
+
+- **Recipes to learn** on the Leveling plan. Every recipe and profession rank the plan needs, in order, with the skill you can learn it at, what it costs, and where. Journeyman Blacksmithing shows up at 50 because your cap stops at 75 without it.
+- **Facts from Forever trainer records:** costs and learn skill. 33 to 150 takes 43s in recipes and ranks. Every guide recipe up to 200 comes from a trainer; none are plans you have to find.
+- **Unconfirmed places.** No Alliance blacksmith trainer is in the Forever records yet, so Stormwind (Therum Deepforge) and Ironforge (the Great Forge) are marked unconfirmed. Recipes with no record get a guide note and a lookup link.
+- Plans sold by vendors and plans that drop are found the same way for any profession once the records have them. Horde only vendors and trainers are never shown.
+

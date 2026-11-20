@@ -55,13 +55,11 @@ export interface MergedVendorItem {
   minStanding: number;
 }
 
-export function mergeVendors(
-  builds: Array<{ build: string; vendors: Record<string, EgVendor>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>,
-): MergedVendorItem[] {
-  const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
+/** Reactions and sides seen per NPC across builds, for vendorFaction. */
+export function factionIndex(builds: Array<{ npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>): { reactions: Map<string, Record<string, Set<number>>>; sides: Map<string, Set<string>> } {
   const reactions = new Map<string, Record<string, Set<number>>>();
   const sides = new Map<string, Set<string>>();
-  for (const b of sorted) {
+  for (const b of builds) {
     for (const [id, c] of Object.entries(b.creatures)) {
       const r = reactions.get(id) ?? {};
       for (const [f, vals] of Object.entries(c.reactions ?? {})) {
@@ -77,6 +75,53 @@ export function mergeVendors(
       sides.set(id, s);
     }
   }
+  return { reactions, sides };
+}
+
+export interface EgTrainerService { spellId?: number; name?: string; skill?: string; skillRank?: number; costs?: Record<string, number> }
+export interface EgTrainer { name?: string; tradeskill?: boolean; trainerType?: number; positions?: Pos[]; services?: Record<string, EgTrainerService> }
+export interface MergedTrainerSpell {
+  npcId: number; npcName: string; faction: VendorFaction; zone: string | null; x: number | null; y: number | null; uiMap: number | null;
+  spellId: number; name: string; skill: string | null; skillRank: number | null; cost: number | null;
+}
+
+/**
+ * Profession trainers and what they teach. A trainer list is the union of what players saw, so services merge
+ * across builds with the newest build winning per spell. Cost is the base price (Friendly), backed out of any
+ * discounted standing. Class trainers are left out.
+ */
+export function mergeTrainers(builds: Array<{ build: string; trainers: Record<string, EgTrainer>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>): MergedTrainerSpell[] {
+  const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
+  const { reactions, sides } = factionIndex(sorted);
+  const out = new Map<string, MergedTrainerSpell>();
+  for (const b of sorted) {
+    for (const [npcId, t] of Object.entries(b.trainers)) {
+      if (!t.tradeskill && t.trainerType !== 2) continue;
+      const pos = t.positions?.[0];
+      for (const sv of Object.values(t.services ?? {})) {
+        if (sv.spellId == null || !sv.name) continue;
+        const costs = sv.costs && Object.keys(sv.costs).length ? sv.costs : null;
+        out.set(`${npcId}:${sv.spellId}`, {
+          npcId: Number(npcId), npcName: t.name ?? `NPC ${npcId}`,
+          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set()),
+          zone: zoneName(pos?.uiMap),
+          x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
+          y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
+          uiMap: pos?.uiMap ?? null,
+          spellId: sv.spellId, name: sv.name, skill: sv.skill ?? null, skillRank: sv.skillRank ?? null,
+          cost: costs ? vendorUnitPrice(costs, 1) : null,
+        });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+export function mergeVendors(
+  builds: Array<{ build: string; vendors: Record<string, EgVendor>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>,
+): MergedVendorItem[] {
+  const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
+  const { reactions, sides } = factionIndex(sorted);
   // Newest build that lists an NPC with entries defines that NPC's whole inventory, so an item removed or
   // repriced by a hotfix does not linger from an older build (review finding 5).
   const newest = new Map<string, EgVendor>();
@@ -205,7 +250,7 @@ export function cmpBuild(a: string, b: string): number {
 interface EgIndex { products: Record<string, Record<string, Record<string, { records: number }>>> }
 
 /** Download (cached by ETag) and merge every live build, then write vendors, loot and names into the database. */
-export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number; questItems: number }> {
+export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number; questItems: number; trainerSpells: number }> {
   const dir = join(dataDir, 'datasets', 'eglink');
   const { data: index } = await fetchCached<EgIndex>(`${EG_BASE}/index.json`, join(dir, 'index.json'));
   const builds = Object.keys(index.products[EG_PRODUCT] ?? {}).sort(cmpBuild);
@@ -216,19 +261,22 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     return data;
   };
   const vendorBuilds: Parameters<typeof mergeVendors>[0] = [];
+  const trainerBuilds: Parameters<typeof mergeTrainers>[0] = [];
   const lootBuilds: Parameters<typeof mergeLoot>[0] = [];
   const creatureInfo = new Map<number, { name: string; minL: number; maxL: number; cls: string; zone: string | null }>();
   const names = new Map<number, string>();
   const objectNames = new Map<number, string>();
   for (const b of builds) {
     log(`eglink ${b}`);
-    const [v, n, c, l, h] = await Promise.all([
+    const [v, n, c, l, h, t] = await Promise.all([
       get<{ vendors: Record<string, EgVendor> }>(b, 'vendors'),
       get<EgNpcFile>(b, 'npcs'),
       get<{ creatures: Record<string, EgCreature & { positions?: Pos[] }> }>(b, 'creatures'),
       get<{ sources: Record<string, EgLootSource>; kills: Record<string, EgKills> }>(b, 'loot'),
       get<{ items: Record<string, { name?: string; status?: string }> }>(b, 'item_hotfixes.enUS'),
+      get<{ trainers: Record<string, EgTrainer> }>(b, 'trainers'),
     ]);
+    trainerBuilds.push({ build: b, trainers: t?.trainers ?? {}, npcs: n?.npcs ?? {}, creatures: c?.creatures ?? {} });
     vendorBuilds.push({ build: b, vendors: v?.vendors ?? {}, npcs: n?.npcs ?? {}, creatures: c?.creatures ?? {} });
     for (const [id, o] of [...Object.entries(n?.objects ?? {}), ...Object.entries(n?.approached ?? {})]) if (o.name) objectNames.set(Number(id), o.name);
     if (l) lootBuilds.push({ sources: l.sources ?? {}, kills: l.kills ?? {} });
@@ -257,7 +305,12 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
   }
   const vendors = mergeVendors(vendorBuilds);
   const loot = mergeLoot(lootBuilds);
+  const trainers = mergeTrainers(trainerBuilds);
   tx(db, () => {
+    db.exec('DELETE FROM trainer_spells');
+    const it = db.prepare(`INSERT OR REPLACE INTO trainer_spells (npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const t of trainers) it.run(t.npcId, t.npcName, t.faction, t.zone, t.x, t.y, t.uiMap, t.spellId, t.name, t.skill, t.skillRank, t.cost);
     db.exec('DELETE FROM vendor_items');
     const iv = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, zone, x, y, map_id, item_id, price, price_by_standing, units_per_purchase, limited, standing_required)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -281,5 +334,5 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('eglink', ?, ?, ?, ?)`)
       .run(builds[builds.length - 1]!, Date.now(), vendors.length + loot.length, EG_ATTRIBUTION);
   });
-  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size };
+  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size, trainerSpells: trainers.length };
 }

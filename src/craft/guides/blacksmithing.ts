@@ -5,6 +5,16 @@
  */
 export interface GuideStep { from: number; to: number; recipe: string; alt?: string; note?: string }
 
+/**
+ * Where the guide says to get recipes that no Forever record covers yet. Unconfirmed until EG Link or Chip sees it.
+ * Trainer taught recipes need nothing here: trainer_spells answers them.
+ */
+export const GUIDE_LEARN: Record<string, string> = {
+  'Rough Sharpening Stone': 'Known as soon as you learn Blacksmithing',
+  'Ebon Shiv': 'Plans from Magnus Frostwake, Caer Darrow (Western Plaguelands), per the guide',
+  'Bold Dirk': 'New in Forever, needs Azerothium; source not recorded yet',
+};
+
 export const BLACKSMITHING: GuideStep[] = [
   { from: 1, to: 30, recipe: 'Rough Sharpening Stone' },
   { from: 30, to: 65, recipe: 'Rough Grinding Stone', note: 'Keep 6 for the Silver Skeleton Keys' },

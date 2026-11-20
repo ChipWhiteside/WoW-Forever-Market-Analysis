@@ -2,7 +2,8 @@ import type { DB } from '../store/db.ts';
 import type { PriceBook } from '../analysis/prices.ts';
 import { Crafter, skillUpChance, avgQty, type RecipeRow } from './makeOrBuy.ts';
 import { netPerUnit } from '../rules/fees.ts';
-import { GUIDES, type GuideStep } from './guides/blacksmithing.ts';
+import { GUIDES, GUIDE_LEARN, type GuideStep } from './guides/blacksmithing.ts';
+import { recipeSources, KNOWN_TRAINERS, type RecipeLearn } from './recipeSources.ts';
 
 /**
  * The leveling planner. Walks the guide from the current skill to the target, estimates crafts per step from the
@@ -21,7 +22,16 @@ export interface StepPlan {
 }
 export interface Need { itemId: number; name: string; need: number; fromBags: number; craftedFromBags: number; buy: number; unitCost: number | null; source: string; buyCost: number | null }
 export interface SellInstead { itemId: number; name: string; units: number; saleValue: number; replacementCost: number; saves: number; replacement: string }
-export interface LevelingPlan { profession: string; from: number; to: number; steps: StepPlan[]; needs: Need[]; totalBuyCost: number; sellInstead: SellInstead[]; missing: string[];
+/** A recipe to learn for this range, in the order the plan first needs it. */
+export interface RecipeToLearn extends RecipeLearn { firstAt: number }
+/** A profession rank to train (Journeyman, Expert, Artisan) so the skill cap does not stop the plan. */
+export interface RankTraining { name: string; learnAt: number; capBefore: number; cost: number | null; where: string }
+export interface LevelingPlan { profession: string; from: number; to: number; steps: StepPlan[];
+  recipes: RecipeToLearn[]; ranks: RankTraining[];
+  /** Alliance usable trainers for this profession, for recipes a trainer teaches */
+  trainerPlaces: Array<{ who: string; zone: string; note: string; minRank?: number }>;
+  /** trainer and vendor costs for every recipe and rank in range; drops are not counted */
+  learnCost: number; needs: Need[]; totalBuyCost: number; sellInstead: SellInstead[]; missing: string[];
   /** true when a step's crafts or a material's price is unknown, so totals are a floor, not the full cost */
   partial: boolean; partialWhy: string[] }
 
@@ -155,10 +165,33 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
     }
   }
 
+  // Recipes to learn, in the order they are first used, and where to get each.
+  const recipes: RecipeToLearn[] = [];
+  for (const st of steps) {
+    if (recipes.some(r => r.recipe.toLowerCase() === st.recipe.toLowerCase())) continue;
+    const row = byName.get(st.recipe.toLowerCase());
+    recipes.push({ ...recipeSources(db, st.recipe, profession, { learnSkill: row?.learn_skill, guideNote: GUIDE_LEARN[st.recipe] }), firstAt: st.from });
+  }
+  // Profession ranks: each raises the cap by 75 and is learned 25 points below the old cap.
+  const stem = ({ Blacksmithing: 'Blacksmith', Alchemy: 'Alchemist', Tailoring: 'Tailor', Engineering: 'Engineer' } as Record<string, string>)[profession] ?? profession;
+  const ranks: RankTraining[] = [];
+  const rankRows = db.prepare(`SELECT name, MIN(skill_rank) AS rank, MIN(cost) AS cost FROM trainer_spells WHERE name IN (?, ?, ?) GROUP BY name`)
+    .all(`Journeyman ${stem}`, `Expert ${stem}`, `Artisan ${stem}`) as Array<{ name: string; rank: number | null; cost: number | null }>;
+  const known = KNOWN_TRAINERS[profession] ?? [];
+  const placeList = (artisan: boolean) => known.filter(k => artisan ? k.minRank != null : k.minRank == null).map(k => `${k.who}, ${k.zone}`).join('; ') || `any ${profession} trainer`;
+  for (const [title, learnAt] of [['Journeyman', 50], ['Expert', 125], ['Artisan', 200]] as const) {
+    const capBefore = learnAt + 25;
+    if (from >= capBefore || to <= capBefore) continue; // already past this cap, or the plan stops before it
+    const row = rankRows.find(r => r.name === `${title} ${stem}`);
+    ranks.push({ name: `${title} ${profession}`, learnAt: row?.rank ?? learnAt, capBefore, cost: row?.cost ?? null,
+      where: placeList(title === 'Artisan') });
+  }
+  const learnCost = recipes.reduce((s, r) => s + (r.cost ?? 0), 0) + ranks.reduce((s, r) => s + (r.cost ?? 0), 0);
+
   const partialWhy = [
     ...steps.filter(s => s.found && s.crafts == null).map(s => `${s.recipe} (${s.from} to ${s.to}) has no skill up chance in that range, so its crafts are not counted`),
     ...missing.map(m => `${m} is not loaded yet`),
     ...needs.filter(n => n.buy > 0 && n.buyCost == null).map(n => `no price or source for ${n.buy} ${n.name}`),
   ];
-  return { profession, from, to, steps, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing, partial: partialWhy.length > 0, partialWhy };
+  return { profession, from, to, steps, recipes, ranks, learnCost, trainerPlaces: known, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing, partial: partialWhy.length > 0, partialWhy };
 }

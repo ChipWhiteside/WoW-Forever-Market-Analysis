@@ -173,6 +173,15 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX quest_items_item ON quest_items (item_id);
   `,
+  // 10. Where recipes are learned: every profession trainer's list (EG Link trainers)
+  `
+  CREATE TABLE trainer_spells (
+    npc_id INTEGER NOT NULL, npc_name TEXT, faction TEXT, zone TEXT, x REAL, y REAL, map_id INTEGER,
+    spell_id INTEGER NOT NULL, name TEXT NOT NULL, skill TEXT, skill_rank INTEGER, cost INTEGER,
+    PRIMARY KEY (npc_id, spell_id)
+  );
+  CREATE INDEX trainer_spells_name ON trainer_spells (name);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

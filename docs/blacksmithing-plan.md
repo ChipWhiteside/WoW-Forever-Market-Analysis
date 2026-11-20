@@ -78,6 +78,31 @@ Steps that start below 33 count only from 33, and the step that runs past 150 co
 | Heavy Stone | 6 |
 | Green Dye | 3 |
 
+## Where to learn each recipe
+
+From Forever trainer records (EG Link, November 20). Costs and learn skill are facts. Every recipe here comes from a trainer. No Alliance blacksmith trainer is recorded yet, so the places are unconfirmed: Therum Deepforge in the Stormwind Dwarven District, the Great Forge in Ironforge, and Brikk Keencraft in Booty Bay for Artisan.
+
+| Learn at | Recipe | Cost |
+| --- | --- | --- |
+| 1 | Rough Sharpening Stone | known with the profession |
+| 25 | Rough Grinding Stone | 1s |
+| 30 | Copper Chain Belt | 1s |
+| 45 | Runed Copper Belt | 2s |
+| 50 | **Journeyman Blacksmithing** (cap 75 to 150) | 5s |
+| 75 | Silver Skeleton Key | 1s |
+| 80 | Rough Bronze Leggings | 3s |
+| 95 | Patterned Bronze Bracers | 5s |
+| 100 | Heavy Sharpening Stone | 10s |
+| 100 | Bronze Warhammer | 2s 50c |
+| 125 | **Expert Blacksmithing** (cap 150 to 225) | 50s |
+| 125 | Iron Buckle | 2s 50c |
+| 130 | Green Iron Leggings | 50s |
+| 140 | Green Iron Bracers | 10s |
+| 160 | Golden Scale Bracers | 10s |
+| 180 | Heavy Mithril Gauntlet | 50s |
+
+33 to 150 costs 43s in recipes and Journeyman. Going on to 200 adds Expert (50s), Green Iron Leggings (50s), Golden Scale Bracers (10s) and Heavy Mithril Gauntlet (50s): 1g 60s more. Recipes above 200 (Heavy Mithril Pants and up) are not in any Forever record yet; the app links each to a lookup.
+
 ## Where the data changes the guide
 
 1. **Silver Skeleton Key** takes 1 Silver Bar *and* 1 Rough Grinding Stone per key. That is why the guide says to keep some Rough Grinding Stones.

@@ -3,6 +3,7 @@ import { useState, Fragment } from 'react';
 import { api, post, put } from '../lib/api';
 import { PageHeader, Card, Money, Chip, Empty, ItemIcon, ItemName } from '../components/ui';
 import { useNav } from '../nav';
+import { mapHref } from '../lib/zones';
 
 const th = 'px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted';
 const td = 'px-3 py-2 align-top';
@@ -36,7 +37,7 @@ function Leveling() {
         <label className="flex items-center gap-2">from <input value={from ?? String(data.current)} onChange={e => setFrom(e.target.value)} className="w-16 rounded border border-line bg-page px-2 py-1" /></label>
         <label className="flex items-center gap-2">to <input value={to} onChange={e => setTo(e.target.value)} className="w-16 rounded border border-line bg-page px-2 py-1" /></label>
         <span className="text-muted">Your skill comes from Settings. Owned materials are free.</span>
-        <span className="ml-auto">Still to buy: {data.partial ? 'at least ' : ''}<Money c={data.totalBuyCost} /></span>
+        <span className="ml-auto">Materials to buy: {data.partial ? 'at least ' : ''}<Money c={data.totalBuyCost} /> · Recipes: <Money c={data.learnCost ?? 0} /></span>
       </Card>
       {data.partial && <Card className="mb-4 border-warn/40 bg-warn/5 p-3 text-sm">
         <p className="font-semibold">Some prices are not available yet, so the total leaves them out.</p>
@@ -48,6 +49,8 @@ function Leveling() {
           {data.sellInstead.map((s: any) => <p key={s.itemId}>Your {s.units} {s.name} sell for <Money c={s.saleValue} size="sm" />; buying {s.replacement} costs <Money c={s.replacementCost} size="sm" />. Saves <Money c={s.saves} size="sm" />.</p>)}
         </Card>
       )}
+      <RecipesToLearn data={data} />
+      <h3 className="mb-2 font-display text-sm font-bold text-gold">What to make</h3>
       <Card className="mb-5 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="border-b border-line"><tr><th className={th}>Skill</th><th className={th}>Make</th><th className={th}>Crafts</th><th className={th}>Each craft takes</th><th className={th}>Colors</th></tr></thead>
@@ -79,6 +82,60 @@ function Leveling() {
       {buying.length === 0 && <p className="mt-3 text-sm text-good">Everything for this range is covered by what you own.</p>}
       <p className="mt-4 text-xs text-muted">Full written plan with every correction to the guide: docs/blacksmithing-plan.md.</p>
     </>
+  );
+}
+
+const pct = (c: number) => `${c >= 0.1 ? Math.round(c * 100) : Math.round(c * 1000) / 10}%`;
+
+/** Every recipe and rank the plan needs, when to learn it, what it costs and where. */
+function RecipesToLearn({ data }: { data: any }) {
+  const recipes: any[] = data.recipes ?? [];
+  const ranks: any[] = data.ranks ?? [];
+  if (!recipes.length && !ranks.length) return null;
+  const rows = [
+    ...ranks.map(r => ({ key: `rank:${r.name}`, at: r.learnAt, rank: true, name: r.name, why: `Your cap stops at ${r.capBefore} without it`, cost: r.cost, where: <span>{r.where}</span> })),
+    ...recipes.map(r => ({ key: r.recipe, at: r.skillRank ?? r.firstAt, rank: false, name: r.recipe, why: `First used at ${r.firstAt}`, cost: r.cost, where: <Where r={r} /> })),
+  ].sort((a, b) => a.at - b.at || Number(b.rank) - Number(a.rank));
+  return (
+    <>
+      <h3 className="mb-2 flex items-baseline gap-3 font-display text-sm font-bold text-gold">Recipes to learn <span className="font-sans text-xs font-normal text-muted">{rows.length} to get, <Money c={data.learnCost} size="sm" /> at trainers and vendors</span></h3>
+      <Card className="mb-5 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="border-b border-line"><tr><th className={th}>Learn at</th><th className={th}>Recipe</th><th className={th}>Cost</th><th className={th}>Where</th></tr></thead>
+          <tbody>{rows.map(r => (
+            <tr key={r.key} className={`border-b border-line/60 ${r.rank ? 'bg-gold/5' : ''}`}>
+              <td className={`${td} num font-semibold`}>{r.at || 1}</td>
+              <td className={td}><span className="font-semibold">{r.name}</span><div className="text-xs text-muted">{r.why}</div></td>
+              <td className={td}>{r.cost != null ? <Money c={r.cost} size="sm" /> : <span className="text-xs text-muted">{r.rank ? 'unknown' : ''}</span>}</td>
+              <td className={`${td} text-xs`}>{r.where}</td>
+            </tr>))}</tbody>
+        </table>
+      </Card>
+      <p className="-mt-3 mb-5 text-xs text-muted">
+        {(data.trainerPlaces ?? []).length > 0 && <>Trainers: {data.trainerPlaces.map((t: any) => `${t.who}, ${t.zone} (${t.note})`).join(' · ')}. <Chip tone="warn">unconfirmed</Chip> </>}
+        Costs and learn skill come from Forever trainer records. Trainer places come from the guide and Classic, because no Alliance blacksmith trainer is in the Forever records yet.</p>
+    </>
+  );
+}
+
+function Where({ r }: { r: any }) {
+  if (r.how === 'start') return <span className="text-good">Known when you learn the profession</span>;
+  if (r.sources.length && r.sources.every((s: any) => s.kind === 'trainer' && s.unconfirmed)) return <span>Any Blacksmithing trainer{r.skillRank >= 200 ? ' who teaches Artisan' : ''}</span>;
+  if (!r.sources.length) return <span>{r.note ? <span className="text-muted">{r.note}. </span> : <span className="text-warn">Not in the Forever records yet. </span>}{/^Known/.test(r.note ?? '') ? null : <a href={r.lookup} target="_blank" rel="noreferrer" className="underline">Look it up</a>}</span>;
+  return (
+    <ul className="space-y-0.5">{r.sources.slice(0, 4).map((s: any, i: number) => {
+      const href = mapHref({ label: s.who, zone: s.zone, uiMap: s.mapId, x: s.x, y: s.y });
+      const place = s.zone ? `${s.zone}${s.x != null ? ` (${s.x}, ${s.y})` : ''}` : '';
+      return (
+        <li key={i}>
+          <span className="font-semibold">{s.kind === 'trainer' ? 'Trainer' : s.kind === 'vendor' ? 'Vendor' : 'Drops from'}</span> {s.who}{place ? `, ${place}` : ''}
+          {s.note ? <span className="text-muted">, {s.note}</span> : null}
+          {s.kind === 'drop' && s.chance != null ? <span className="text-muted">, {pct(s.chance)}{s.kills ? ` of ${s.kills} kills` : ''}</span> : null}
+          {s.kind === 'vendor' && s.cost != null ? <span className="text-muted">, <Money c={s.cost} size="sm" /></span> : null}
+          {s.unconfirmed && <> <Chip tone="warn">unconfirmed</Chip></>}
+          {href && <a href={href} className="ml-1 underline">map</a>}
+        </li>);
+    })}</ul>
   );
 }
 
