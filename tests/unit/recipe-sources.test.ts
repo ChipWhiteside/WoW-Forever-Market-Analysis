@@ -64,7 +64,9 @@ describe('recipe sources', () => {
     expect(r.how).toBe('unknown');
     expect(r.note).toBe('New in Forever');
     expect(r.lookup).toContain('Bold%20Dirk');
-    expect(recipeSources(d, 'Rough Sharpening Stone', 'Blacksmithing', { learnSkill: 1 }).how).toBe('start');
+    expect(recipeSources(d, 'Rough Sharpening Stone', 'Blacksmithing', { guideNote: 'Known as soon as you learn Blacksmithing' }).how).toBe('start');
+    // A low minimum rank in the game tables is not proof: Silver Skeleton Key is learned at 75.
+    expect(recipeSources(d, 'Silver Skeleton Key', 'Blacksmithing').how).toBe('unknown');
   });
   it('the leveling plan lists recipes in order, the Journeyman rank when the plan crosses 75, and the learn cost', () => {
     const { d } = db();

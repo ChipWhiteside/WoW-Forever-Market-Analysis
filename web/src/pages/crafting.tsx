@@ -49,11 +49,9 @@ function Leveling() {
           {data.sellInstead.map((s: any) => <p key={s.itemId}>Your {s.units} {s.name} sell for <Money c={s.saleValue} size="sm" />; buying {s.replacement} costs <Money c={s.replacementCost} size="sm" />. Saves <Money c={s.saves} size="sm" />.</p>)}
         </Card>
       )}
-      <RecipesToLearn data={data} />
-      <h3 className="mb-2 font-display text-sm font-bold text-gold">What to make</h3>
       <Card className="mb-5 overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="border-b border-line"><tr><th className={th}>Skill</th><th className={th}>Make</th><th className={th}>Crafts</th><th className={th}>Each craft takes</th><th className={th}>Colors</th></tr></thead>
+          <thead className="border-b border-line"><tr><th className={th}>Skill</th><th className={th}>Make</th><th className={th}>Crafts</th><th className={th}>Each craft takes</th><th className={th}>Learn</th><th className={th}>Colors</th></tr></thead>
           <tbody>{data.steps.map((s: any, i: number) => (
             <tr key={i} className="border-b border-line/60">
               <td className={`${td} num whitespace-nowrap font-semibold`}>{s.from} to {s.to}</td>
@@ -62,6 +60,7 @@ function Leveling() {
                 {s.note && <div className="text-xs text-muted">{s.note}</div>}</td>
               <td className={`${td} num`}>{s.crafts ?? '?'}</td>
               <td className={`${td} text-xs`}>{s.reagents.map((r: any) => <button key={r.itemId} onClick={() => openItem(r.itemId)} className="mr-2 hover:underline">{r.perCraft} {r.name}</button>)}</td>
+              <td className={`${td} text-xs`}><LearnCell r={(data.recipes ?? []).find((x: any) => x.recipe.toLowerCase() === s.recipe.toLowerCase())} loaded={data.trainersLoaded} /></td>
               <td className={`${td} num text-xs text-muted`}>{s.colors.yellow != null ? `yellow ${s.colors.yellow}, green ${s.colors.green}, grey ${s.colors.grey}` : ''}</td>
             </tr>))}</tbody>
         </table>
@@ -80,12 +79,24 @@ function Leveling() {
         </table>
       </Card>
       {buying.length === 0 && <p className="mt-3 text-sm text-good">Everything for this range is covered by what you own.</p>}
+      <div className="mt-6"><RecipesToLearn data={data} /></div>
       <p className="mt-4 text-xs text-muted">Full written plan with every correction to the guide: docs/blacksmithing-plan.md.</p>
     </>
   );
 }
 
 const pct = (c: number) => `${c >= 0.1 ? Math.round(c * 100) : Math.round(c * 1000) / 10}%`;
+
+/** The short learn note on each step: where and for how much, or why it is not known yet. */
+function LearnCell({ r, loaded }: { r: any; loaded: boolean }) {
+  if (!r) return null;
+  if (r.how === 'start') return <span className="text-good">Known with the profession</span>;
+  if (r.how === 'trainer') return <span>Trainer{r.skillRank ? ` at ${r.skillRank}` : ''}{r.cost != null ? <>, <Money c={r.cost} size="sm" /></> : null}</span>;
+  if (r.how === 'vendor') return <span>Vendor {r.sources[0]?.who}{r.cost != null ? <>, <Money c={r.cost} size="sm" /></> : null}</span>;
+  if (r.how === 'drop') return <span>Drops from {r.sources[0]?.who}</span>;
+  if (!loaded) return <span className="text-warn">Trainer records not loaded yet</span>;
+  return <a href={r.lookup} target="_blank" rel="noreferrer" className="underline">{r.note ? 'See note' : 'Look it up'}</a>;
+}
 
 /** Every recipe and rank the plan needs, when to learn it, what it costs and where. */
 function RecipesToLearn({ data }: { data: any }) {
@@ -94,7 +105,7 @@ function RecipesToLearn({ data }: { data: any }) {
   if (!recipes.length && !ranks.length) return null;
   const rows = [
     ...ranks.map(r => ({ key: `rank:${r.name}`, at: r.learnAt, rank: true, name: r.name, why: `Your cap stops at ${r.capBefore} without it`, cost: r.cost, where: <span>{r.where}</span> })),
-    ...recipes.map(r => ({ key: r.recipe, at: r.skillRank ?? r.firstAt, rank: false, name: r.recipe, why: `First used at ${r.firstAt}`, cost: r.cost, where: <Where r={r} /> })),
+    ...recipes.map(r => ({ key: r.recipe, at: r.skillRank ?? r.firstAt, rank: false, name: r.recipe, why: `First used at ${r.firstAt}`, cost: r.cost, where: <Where r={r} loaded={data.trainersLoaded} /> })),
   ].sort((a, b) => a.at - b.at || Number(b.rank) - Number(a.rank));
   return (
     <>
@@ -118,10 +129,10 @@ function RecipesToLearn({ data }: { data: any }) {
   );
 }
 
-function Where({ r }: { r: any }) {
+function Where({ r, loaded }: { r: any; loaded: boolean }) {
   if (r.how === 'start') return <span className="text-good">Known when you learn the profession</span>;
   if (r.sources.length && r.sources.every((s: any) => s.kind === 'trainer' && s.unconfirmed)) return <span>Any Blacksmithing trainer{r.skillRank >= 200 ? ' who teaches Artisan' : ''}</span>;
-  if (!r.sources.length) return <span>{r.note ? <span className="text-muted">{r.note}. </span> : <span className="text-warn">Not in the Forever records yet. </span>}{/^Known/.test(r.note ?? '') ? null : <a href={r.lookup} target="_blank" rel="noreferrer" className="underline">Look it up</a>}</span>;
+  if (!r.sources.length) return <span>{r.note ? <span className="text-muted">{r.note}. </span> : <span className="text-warn">Not in the Forever records yet{loaded ? '' : ' (trainer records still downloading)'}. </span>}{/^Known/.test(r.note ?? '') ? null : <a href={r.lookup} target="_blank" rel="noreferrer" className="underline">Look it up</a>}</span>;
   return (
     <ul className="space-y-0.5">{r.sources.slice(0, 4).map((s: any, i: number) => {
       const href = mapHref({ label: s.who, zone: s.zone, uiMap: s.mapId, x: s.x, y: s.y });

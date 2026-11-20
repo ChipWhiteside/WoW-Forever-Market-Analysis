@@ -40,7 +40,7 @@ const RECIPE_ITEM_PREFIXES = ['Plans', 'Pattern', 'Recipe', 'Schematic', 'Formul
 
 export const wowheadLookup = (recipe: string) => `https://www.wowhead.com/classic/search?q=${encodeURIComponent(recipe)}`;
 
-export function recipeSources(db: DB, recipe: string, profession: string, opts: { learnSkill?: number | null; guideNote?: string } = {}): RecipeLearn {
+export function recipeSources(db: DB, recipe: string, profession: string, opts: { guideNote?: string } = {}): RecipeLearn {
   const sources: RecipeSource[] = [];
 
   const taught = db.prepare(`SELECT npc_name, faction, zone, x, y, map_id, skill_rank, cost FROM trainer_spells WHERE name = ? COLLATE NOCASE`).all(recipe) as
@@ -72,7 +72,9 @@ export function recipeSources(db: DB, recipe: string, profession: string, opts: 
   }
 
   const first = sources.find(s => s.kind === 'trainer') ?? sources.find(s => s.kind === 'vendor') ?? sources[0];
-  const start = !first && opts.learnSkill != null && opts.learnSkill <= 1;
+  // Only the guide can say a recipe comes with the profession. The game's minimum rank is 0 or 1 for most
+  // trainer recipes too, so it proves nothing (Silver Skeleton Key read as known, Chip caught it November 20).
+  const start = !first && /^Known/.test(opts.guideNote ?? '');
   return {
     recipe, how: first?.kind ?? (start ? 'start' : 'unknown'), note: first ? undefined : opts.guideNote,
     cost: first?.kind === 'trainer' || first?.kind === 'vendor' ? first.cost : null,

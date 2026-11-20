@@ -30,6 +30,8 @@ export interface LevelingPlan { profession: string; from: number; to: number; st
   recipes: RecipeToLearn[]; ranks: RankTraining[];
   /** Alliance usable trainers for this profession, for recipes a trainer teaches */
   trainerPlaces: Array<{ who: string; zone: string; note: string; minRank?: number }>;
+  /** false until the trainer records have downloaded; then no recipe can be called unknown for lack of them */
+  trainersLoaded: boolean;
   /** trainer and vendor costs for every recipe and rank in range; drops are not counted */
   learnCost: number; needs: Need[]; totalBuyCost: number; sellInstead: SellInstead[]; missing: string[];
   /** true when a step's crafts or a material's price is unknown, so totals are a floor, not the full cost */
@@ -169,8 +171,7 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
   const recipes: RecipeToLearn[] = [];
   for (const st of steps) {
     if (recipes.some(r => r.recipe.toLowerCase() === st.recipe.toLowerCase())) continue;
-    const row = byName.get(st.recipe.toLowerCase());
-    recipes.push({ ...recipeSources(db, st.recipe, profession, { learnSkill: row?.learn_skill, guideNote: GUIDE_LEARN[st.recipe] }), firstAt: st.from });
+    recipes.push({ ...recipeSources(db, st.recipe, profession, { guideNote: GUIDE_LEARN[st.recipe] }), firstAt: st.from });
   }
   // Profession ranks: each raises the cap by 75 and is learned 25 points below the old cap.
   const stem = ({ Blacksmithing: 'Blacksmith', Alchemy: 'Alchemist', Tailoring: 'Tailor', Engineering: 'Engineer' } as Record<string, string>)[profession] ?? profession;
@@ -193,5 +194,5 @@ export function levelingPlan(db: DB, book: PriceBook, profession: string, from: 
     ...missing.map(m => `${m} is not loaded yet`),
     ...needs.filter(n => n.buy > 0 && n.buyCost == null).map(n => `no price or source for ${n.buy} ${n.name}`),
   ];
-  return { profession, from, to, steps, recipes, ranks, learnCost, trainerPlaces: known, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing, partial: partialWhy.length > 0, partialWhy };
+  return { profession, from, to, steps, recipes, ranks, learnCost, trainerPlaces: known, trainersLoaded: (db.prepare('SELECT COUNT(*) AS n FROM trainer_spells').get() as { n: number }).n > 0, needs: needs.sort((x, y) => (y.buyCost ?? 0) - (x.buyCost ?? 0)), totalBuyCost: needs.reduce((s, n) => s + (n.buyCost ?? 0), 0), sellInstead, missing, partial: partialWhy.length > 0, partialWhy };
 }

@@ -74,4 +74,5 @@ What changed, newest last. The overnight loop appends here every night it runs.
 - **Facts from Forever trainer records:** costs and learn skill. 33 to 150 takes 43s in recipes and ranks. Every guide recipe up to 200 comes from a trainer; none are plans you have to find.
 - **Unconfirmed places.** No Alliance blacksmith trainer is in the Forever records yet, so Stormwind (Therum Deepforge) and Ironforge (the Great Forge) are marked unconfirmed. Recipes with no record get a guide note and a lookup link.
 - Plans sold by vendors and plans that drop are found the same way for any profession once the records have them. Horde only vendors and trainers are never shown.
+- **Fix, same day.** The steps table is back on top, unchanged, with a new Learn column on each step. The full recipe list moved below the materials. Silver Skeleton Key no longer reads as known with the profession: the game's minimum rank is 0 or 1 for most trainer recipes, so only the guide can say a recipe comes free. Until the trainer records download, recipes say so instead of guessing.
 
