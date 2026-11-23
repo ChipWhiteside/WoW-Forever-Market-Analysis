@@ -44,6 +44,10 @@ Checked against real data this session:
 7. **Blackwater is not covered.** Chip's Blackwater house is still unconfirmed (P6), and once a house is pinned, only pinned houses make plays. The Bright Baubles flip was a Blackwater flip, so today it could not appear.
 8. **No disenchanting.** No public source has disenchant outputs for Forever (checked today). This needs hand entry and in game proof.
 9. **No conversions.** Item use crafts outside the profession tables (for example "Dust to Motes", essence combines) are not read.
+10. **Reagents are costed at the wrong price.** `makeOrBuy.ts:51` prices a reagent at the trusted *sell* price, which is the lower of the market price and what it sold for (`prices.ts:58`). If Lichen sold at 20s yesterday and the cheapest listing now is 30s, the tool thinks it costs 20s and invents a flip. Reagents with under 3 listings and no sales are dropped entirely (`prices.ts:61`), blocking crafts whose reagents can in fact be bought. The buy side must read what is actually listed.
+11. **Fast sellers are undercounted.** Every listing that vanishes while showing under 2 hours left is treated as expired (`aggregate.ts:122`). A 2 hour listing shows that from the moment it is posted, so every 2 hour listing that sold is thrown away, and those are exactly the fast movers. Sweeps that buy past 10% above the floor are dropped too (`aggregate.ts:128`), which is the very event that opens a Cerulean Dye style gap.
+12. **Undercut wars can count as sales.** A seller cancelling to undercut is only caught on markets with 5 or fewer listings (`aggregate.ts:94`).
+13. **Only 12 price levels are stored per item** (`aggregate.ts:42`). Depth walks must read the full listings, which the collector holds in memory and the raw snapshots keep on disk.
 
 LIVE RUN FINDINGS: (filled from the live end to end run)
 
@@ -73,78 +77,115 @@ Every source is fetched, validated against a data contract, compared with the se
 ### Live data, every hour
 The commodities and equipment snapshots for Alliance 111 and Chip's Blackwater house (to confirm, section 10). The collector already does this. Kept as is.
 
+
+### New data the engine must start recording
+1. **When each listing was first seen,** and its first time left reading. Then "did it expire or sell" is predicted from its age, instead of throwing away every 2 hour listing.
+2. **How Forever's 2, 8 and 24 hour listings map to SHORT, MEDIUM, LONG and VERY_LONG.** One listing of each length by Chip, read back from the API.
+3. **Equipment modifiers.** Print one real equipment auction record and check for suffix or bonus fields before treating all copies of an item as one market (ledger rule 1).
+4. **The Blackwater deposit (T7).** It now decides whether Bright Baubles was worth it: if the 5 times multiplier is real, an expired 2 hour listing loses about 1s 24c a unit.
+5. **Chip's own trades,** so his buys are not counted as market demand, and so his mailbox (sold or expired) becomes ground truth for the sales counter.
+6. **His reaction time,** roughly how long after a publish he can act. The backtest uses it.
+
 ## 5. How the engine finds every flip
 
-### The idea: one price for every item, from every source
-For every item the engine computes two things each hour:
-- **What it costs to get N of it:** the cheapest mix of buying on either house (walking the listings, so the 200th unit costs what the 200th unit really costs), buying from a usable vendor (fixed price, capped by limited stock), or crafting it from its own reagents (recursively, with the same rule at each level).
-- **What N of it nets when sold:** on either house after the cut, never above where real sales happened, or to any vendor.
+### The idea: two books, every flip a path between them
+For every item the engine builds two things each hour.
 
-Every flip is then a path from the first to the second. That one structure covers every flip type with the same math, so a Cerulean Dye and a Bright Baubles are judged by the same rules.
+**The cost book: what the next unit of it costs to get.** Not one price but a curve, cheapest unit first:
+- **Auction:** the actual listings, raw and untrimmed, on either house. The 200th Frilled Lichen costs what the 200th listing asks. Troll checks never apply here: if it is listed, it can be bought.
+- **Vendor:** a flat price from a usable vendor, in its bundle size (vials come 5 at a time), capped by limited stock.
+- **Craft:** the k th craft costs its reagents at their next units on their own curves, recursively, so smelting bars competes with buying bars on real numbers.
+- The item's curve is the cheapest mix of the three. Within one recipe tree, shared sub reagents are allocated once (Copper Bar used directly and inside Bronze Bar does not get the same cheap listings twice).
+
+**The sell book: what the next unit nets when sold.** The troll proof judged price (exists), after the cut, never above where real sales happened, on either house, or the vendor price. Plus how many units sit ahead of Chip at that price and how fast they clear (section 6).
+
+Every flip is a path from one to the other, so a Cerulean Dye and a Bright Baubles are judged by the same rules.
 
 ### Flip families, all on one list
 
 | Family | Path | Status |
 | --- | --- | --- |
-| **Craft** | Buy reagents (auction or vendor, any depth of intermediates) → craft → sell on auction or vendor | **New on the main list.** The core of this phase. Covers smelting, cooking, first aid, alchemy, tailoring and the rest |
+| **Craft to auction** | Buy reagents (any depth) → craft → sell on a house | **New on the main list.** The core of this phase. Smelting, cooking, first aid, alchemy, tailoring and the rest |
+| **Craft to vendor** | Buy reagents under the product's vendor price → craft → sell to any vendor | **New.** No cut, no competition, no limit on sales. The cleanest "tiny margin, huge volume" flip, limited only by reagent depth |
 | **Vendor to auction** | Buy from a usable vendor → sell on a house (Bright Baubles) | Exists. Extended to both houses |
 | **Auction to vendor** | Buy under vendor price → sell to any vendor | Exists |
 | **Cross house** | Buy on one house → sell on the other | Exists |
 | **Cheap listing** | Buy well under the usual price → relist on the same house | Exists |
-| **Conversion** | Item use crafts (Dust to Motes, essences) | New, after craft |
-| **Disenchant** | Buy green gear → disenchant → sell dust and essences | New, last, behind the unverified label until proven |
+| **Conversion** | Item use crafts (Dust to Motes, essences) | New, after craft. Containers such as clams only if their contents are proven in data |
+| **Disenchant** | Buy green gear → disenchant → sell dust and essences | New, last, labelled unverified until proven in game |
+
+Deliberately left out: market resets (buying out a whole market to relist higher). Too much gold at risk on hourly data.
+
+Each flip is tagged **repeatable** (a vendor or deep reagent supply that refills, like Bright Baubles) or **one opening** (cheap listings that are gone once bought). Only repeatable flips show a per day figure.
 
 ### How a craft flip is computed, step by step
-1. For each live recipe whose product can be sold (not bind on pickup, has an auction price or vendor price):
-2. **Sell side.** Judge the product's price on each house with the existing troll proof price rules. The price a flip may claim is never above where sales happened.
-3. **Volume.** Sales a day for the product on that house, from the listing id differences, with how many hours of watching are behind it.
-4. **Quantity.** Start from Chip's realistic share of daily sales (20% today, calibrated later). Cap by recipe cooldowns, vendor limited stock and gold on hand. Then find the best quantity: keep adding one more craft while the next one still makes money, using the true cost of the next unit of each reagent from the listings.
-5. **Cost side.** For that quantity, the cheapest way to get every reagent, including crafting intermediates when that is cheaper (smelt the bars, or buy them).
-6. **Fees.** Cut on the sale, deposit risk from the listing plan, vendor bundle sizes (vials come 5 at a time).
-7. **Effort.** Minutes to do it (section 6).
-8. **One time setup.** If Chip lacks the recipe or the skill: trainer cost and where, or the recipe item and its price. Shown, never hidden.
-
-Every other family runs the same steps with a different path.
+1. Take each live recipe whose product can be sold (not bind on pickup per ItemSparse, priced on a house or by a vendor).
+2. **Sell side.** Judged price per house, units ahead, sales rate, so a sell curve: how many Chip can sell within the horizon at what net.
+3. **Cost side.** The cost curve of each reagent.
+4. **Best quantity.** Add one craft at a time while the next craft's sale (times its chance of selling, minus the deposit lost if it does not) still beats the next craft's reagent cost plus its time. Stop at cooldowns, vendor stock and gold on hand.
+5. **Fixed costs** (a trip, a trainer, a recipe) are subtracted after. A flip at or under zero after them is held back.
+6. **One time setup** is shown (where to train, what it costs), never a reason to hide it.
+7. Random yield recipes (9 Engineering bombs) stay flagged and out of the ranking until their yield is proven.
 
 ## 6. How the engine ranks them: the theory
 
 What makes a flip good, in Chip's words: it makes real money, it sells, and it is worth the time. Turned into numbers:
 
-### Step 1: hard gates (a flip that fails any of these is held back, with the reason shown)
-1. **Real.** The sell price passes the existing junk checks, and real sales were seen near it. A big number on thin evidence is a red flag, never a flip.
-2. **Profitable.** Profit each after the cut, at the best quantity, is above zero with a safety margin of at least 5% of the sell price, so one undercut does not wipe it out.
-3. **Sells.** At least 1 sale a day on that house.
-4. **Possible.** Every reagent has a source. The product is not bind on pickup. Requirements Chip can train never fail this gate.
-5. **Worth the time.** Gold per hour of effort is at or above Chip's floor (section 10, the one question). This replaces the flat 1s minimum for flips on this list: a flip that makes 3c each but sells 2,000 a day in one commodity listing can pass, and 2,000 crafts for 2c each cannot. The old 1s setting stays and keeps doing what it does on the Now page.
-6. **Fresh.** Built from this hour's snapshot. When the gap closes, the flip is marked gone at the next publish.
+### The rank: expected profit if Chip acts now
+For the best quantity N, over a horizon of one listing length (24 hours by default):
 
-### Step 2: the numbers each flip carries
-- **Profit each** (the big number, as today).
-- **Units a day** worth doing: min of his share of sales, cooldowns, stock, gold, and the best quantity.
-- **Profit a day** = profit each times units a day, using the true cost of each unit.
-- **Gold per hour** = profit a day divided by hours of effort.
-- **Effort** = crafting time (cast time times crafts) + buying (one action per commodity purchase, one per equipment listing) + posting (one action per commodity stack, one per equipment item) + a trip when a vendor or trainer is not at the auction house. Each constant is written down and tuned from Chip's real times.
-- **Strength 0 to 100** (exists): days of history, listings holding the price, sales seen, sold near this price, steady price, why people buy it, junk checks. Plus two new factors: supply ahead (units listed at or under his price divided by sales a day, "days to clear") and reagent depth (whether the listings can actually supply the quantity).
-- **Opening**: how far today's gap is above the item's usual gap, so a fresh opening like Cerulean Dye's reads as new, not as an old steady flip.
+**Expected profit = for each unit: chance it sells × net sale − its cost − chance it does not sell × deposit lost, minus minutes of work × Chip's hourly rate.**
 
-### Step 3: the rank
-**Expected gold a day** = profit a day times strength as a probability (a 90 strength flip counts 90% of its gold, a 50 strength flip half). Highest first. Ties broken by gold per hour.
+Highest first. This one number does four jobs:
+- **Time is a cost, not a separate gate.** At 5g an hour each minute costs about 8s. 2,000 crafts for 2c each goes negative by itself and drops out. A 3c margin on one stack of a commodity that sells thousands a day stays positive and stays on the list.
+- **Volume is built in.** Units only count if they are likely to sell inside the horizon.
+- **Depth is built in.** Each unit carries its own real reagent cost.
+- **Listing risk is built in.** A unit that may not sell carries its lost deposit.
 
-Why this order: Chip thinks in profit each and units a day (already agreed as the sort: profit each times realistic units). Weighting by strength stops a big number on weak evidence from outranking a solid smaller one. Gold per hour is a gate, not the sort, because a flip worth 2g a day at 200g an hour is still only 2g.
+The inputs are deliberately cautious: sales a day uses a low estimate from the sales actually seen (few sales means a wide range, so a low number), and the sell price assumes one typical undercut. That stops the list from rewarding the flips whose numbers are most overestimated, which is the classic trap of sorting by noisy estimates.
+
+### How many Chip can sell: a queue, not a flat 20%
+Units Chip can sell within the horizon at price p = low estimate of sales in that time − units listed below p − new units other sellers post at or under the floor in that time (already measured hourly as new units). The card reads, for example: "180 ahead of you, about 60 sell a day, you can expect to sell 25 in 24 hours." The 20% share stays as an upper bound until the backtest proves the queue is better.
+
+### Gates (held back with the reason shown)
+1. **Real.** The sell price passes the junk checks and real sales were seen near it.
+2. **Profitable with room for an undercut.** The safety margin is this item's own typical undercut and price wobble, measured from its history, not a flat percentage. A steady commodity can pass at a few copper; a jumpy one needs more room.
+3. **Sells.** The low estimate is at least 1 a day.
+4. **Possible.** Every reagent has a source and the product is not bind on pickup. Trainable requirements never fail this.
+5. **Fresh.** Built from this hour's snapshot. Closed at the next publish when the gap is gone.
+
+The 1s minimum profit setting stays exactly as is for the Now page. The Flips list uses the hourly rate instead.
+
+### Strength stays, in a different job
+The 0 to 100 strength score keeps its breakdown on the card and works as a gate (below 40 hidden, as today). It no longer multiplies gold: it is a sum of evidence points, not a probability, and its "days of history" part would punish exactly the fresh openings Chip wants. Once the backtest has a week of results, each strength band gets a measured discount (what flips in that band really paid against what they claimed) and the rank uses that.
+
+### Catching the opening without letting trolls in
+An opening from **cheaper reagents** is safe on sight: what is listed can be bought.
+
+An opening from a **product price that just jumped** has no sales at the new level yet, so the sold price cap would hide it. The fix:
+- Record the highest price buyers actually paid in the last hour. A sweep that bought up the listings to price X is real demand at X.
+- A **rising** flip is allowed only when the sweep reached the new level, the level is within the highest price sold in 7 days or backed by that sweep, and the flip still makes money at the proven price.
+- It ranks on the proven price and shows "up to" the new one.
+- Listing counts alone never prove a price: there are no seller ids, so one troll can post three listings.
+
+### Flips that share reagents, buyers or gold
+Frilled Lichen feeds about 130 recipes, and a product can be made by several recipes or flipped several ways. Each card keeps its own standalone numbers. Then a second pass walks the list top down: each flip takes the reagent listings, sale capacity and gold it uses, and the next one is re scored on what is left. Cards show "shares Frilled Lichen with #4". Any total on the page uses the second pass numbers. Gold on hand caps each flip by its full cost to do, not just the first buy price (today's cap at `engine.ts:120` uses the buy price, which is wrong for crafts).
 
 ### Worked through on the yardstick
-- **Cerulean Dye at Ben's prices:** cost about 58s, sells 75s, net after 5% cut about 71s, about 13s each. If it sold 60 a day, his 20% share is 12 a day: about 1g 56s a day, one purchase of each reagent, 12 crafts, one post. Minutes of work, so gold per hour is high. Passes every gate. Ranks by its 1g 56s a day times its strength.
-- **Bright Baubles at Chip's prices:** 2s 50c in, 5s on Blackwater, 4s 25c net after 15%, 1s 75c each. Ranks by units a day times that, minus a trip to the docks in the effort.
-- **2,000 crafts for 2c each:** 40s for about 100 minutes of casting. Fails the gold per hour gate. Held back with "under your gold per hour floor".
-- **Today's live dye and baubles:** profit each at or below zero after the cut. Fails gate 2. Not shown.
+The fixtures state every input, so each gate passes or fails for a stated reason.
+- **Cerulean Dye at Ben's prices:** about 58s in, 75s sale, about 71s net after 5%, about 13s each. With 60 sold a day and 30 ahead of him, he can expect to sell roughly 25 within 24 hours. Two purchases, 25 crafts, one post: a few minutes. Expected profit around 3g after his time. Shows near the top.
+- **Bright Baubles at Chip's prices:** 2s 50c in, 5s on Blackwater, 4s 25c net after 15%, 1s 75c each. It shows only if Blackwater sells enough of them a day to beat the trip to the docks and the deposit risk. That depends on the unverified Blackwater deposit (T7). The fixture states its sales a day, and the test will say honestly which way it goes.
+- **2,000 crafts for 2c each:** 40s of profit, about 100 minutes of casting worth over 8g of time. Negative. Held back: "not worth your time at 5g an hour".
+- **Today's live dye and baubles:** no profit after the cut. Held back: "no profit after the cut".
 
 ## 7. The hourly loop
-1. Publish detected (about :25). Snapshot stored, sales counted (exists).
-2. Build the price book for both houses: every item's ladder, judged price, sales a day, steadiness.
-3. Build the cost book: cheapest way to get each item, computed once per item and reused by every recipe that needs it (memoized, exists in part).
-4. Run every family over every item and recipe. Gate, score, rank.
-5. Store the ranked list, mark flips new, live, fading or gone (lifecycle exists).
-6. Write a run report: items read, recipes tried, flips found, held back by reason, time taken, and anything that looked like a bug (a zero, an empty, a missing source).
+1. Publish detected (about :25). Snapshot stored, listing ages updated, sales counted.
+2. Sell book for both houses: judged prices, sales, units ahead, sweep highs, steadiness.
+3. Cost book: every item's cost curve from raw listings, vendors and recipes, built once and shared by every recipe.
+4. Every family over every item and recipe. Best quantity, gates, expected profit.
+5. Second pass for shared reagents, buyers and gold.
+6. Store the ranked list, lifecycle (new, live, fading, gone) keyed per recipe.
+7. Run report: items read, recipes tried, flips found, held back by reason, time taken, and every zero, empty or missing source flagged as a suspected bug.
 
 **Correctness over speed.** No time limit ever cuts a run short. Every run covers every item, every recipe and every vendor. Run time is logged so slowness can be investigated, never trimmed. A run that cannot finish properly shows "incomplete" and why, never a partial list as if it were whole.
 
@@ -152,49 +193,52 @@ Why this order: Chip thinks in profit each and units a day (already agreed as th
 
 | Area | Verdict | Change |
 | --- | --- | --- |
-| Collector, snapshots, sale inference (`src/engine`, `src/analysis/aggregate.ts`, `history.ts`) | **Stays** | Read both houses for flips, not only pinned Alliance |
-| Price rules, fees (`src/rules`) | **Stays** | Protected. New gates and weights proposed here, added as new constants with Chip's approval on this plan |
+| Collector and snapshots (`src/engine`) | **Stays** | Record listing first seen time. Read both houses for flips |
+| Sale counting (`src/analysis/aggregate.ts`, `history.ts`) | **Changes** | Expiry from listing age, not the SHORT or MEDIUM label. Count commodity sweeps past +10%. Catch undercut cancels on deep markets. Hourly sanity bound: sold never more than old units plus new minus current. Leave out Chip's own trades |
+| Price rules, fees (`src/rules`) | **Stays, grows** | Protected. New constants for horizon, hourly rate, effort times, undercut margin, added with Chip's approval of this plan |
 | Item catalog (`src/catalog/items.ts`) | **Changes** | Binding, stack size and vendor bundle from ItemSparse. Live item filter |
 | Recipes (`src/datasets/recipes.ts`) | **Changes** | Primary source wago tables, Blizzard as cross check and union, disagreements flagged, cast times and cooldowns added |
-| Make or buy (`src/craft/makeOrBuy.ts`) | **Changes** | Depth aware cost for N units, both houses, vendor bundles and stock. Profit board keeps its columns (page contract) |
-| Detectors (`src/detectors`) | **Stays and grows** | New `craft` and `conversion` families. All families share one gate and scoring module |
-| Ranking | **New** | `src/flips/` : cost book, sell book, effort model, gates, score, rank. Pure functions, fully unit tested |
-| App | **Grows** | A new **Flips** page with the ranked list, first in the menu. Nothing on Now, Crafting or the play card is removed or moved (additive rule). Page contract and its test gain the Flips page |
+| Make or buy (`src/craft/makeOrBuy.ts`) | **Changes** | Cost curves from raw listings instead of one trusted price. Profit board keeps every column (page contract) |
+| Detectors (`src/detectors`) | **Stays and grows** | Existing families move onto the shared books and scoring. New craft, craft to vendor and conversion families |
+| Ranking | **New** | `src/flips/`: cost book, sell book, queue, effort, gates, expected profit, second pass. Pure functions, fully tested |
+| App | **Grows** | A new **Flips** page, first in the menu. Nothing on Now, Crafting or the play card is removed or moved (additive rule). Page contract and its test gain the Flips page |
 | Leveling, map, alerts, overnight loop | **Untouched** | Out of scope this phase |
 
 ## 9. How every piece gets checked, at least three times
 
-Each layer has three independent checks: a test with hand calculated numbers, a check against live data, and a fresh agent that reviews the code and the output with no stake in it. Then every layer is checked again together.
+Each layer gets three independent checks: a test with hand calculated numbers, a check against live data, and a fresh agent with no stake in the code that reviews it and recomputes its output its own way. Then all layers are checked together the same way.
 
-| Layer | Check 1: tests | Check 2: live | Check 3: independent review |
+| Layer | Check 1: tests | Check 2: live | Check 3: independent |
 | --- | --- | --- | --- |
-| Static data | Data contracts on every file; 20 known recipes by hand (Copper Bar, Minor Healing Potion, Linen Bandage, Cerulean Dye...) | wago and Blizzard compared recipe by recipe; every disagreement listed | Agent picks 30 random recipes and checks each against the raw files |
-| Prices and volume | Ladder walk costs by hand; a market simulator with known buys, cancels, expiries and relists, scoring how close sale inference gets to the truth | Real snapshots: inferred sales a day for 20 items against what the ladders show | Agent recomputes 20 items' prices and sales from raw snapshots by its own code path |
-| Flip finding | Golden tests: Cerulean Dye and Bright Baubles at Chip's numbers must appear; at today's numbers must not; bind on pickup never appears; a blocked reagent never appears | Full live run over every recipe and item | A separate script, written by a different agent, recomputes the top 25 flips from raw JSON and must agree |
-| Ranking | Scenario tests: high volume low margin, low volume high margin, 2,000 crafts for 2c (rejected), a troll price (rejected), a thin market (weak strength) | Top 25 on live data, each traced to its evidence | Agent argues against each of the top 10 ("why is this a bad flip?"), and any it wins becomes a test |
-| Whole loop | `npm test`, typecheck, replay of stored snapshots, page contract test | The engine runs here on live data across several publishes | A final fresh reviewer reads the whole diff and the run reports |
+| Static data | Data contracts; 20 known recipes by hand (Copper Bar, Minor Healing Potion, Linen Bandage, Cerulean Dye...) | wago against Blizzard, recipe by recipe, every disagreement listed | Agent checks 30 random recipes against the raw files |
+| Sale counting | A small simulator for the sale counter only: synthetic posts, 2/8/24 hour listings, sweeps, undercut cancels, expiries, post and sell inside one hour, all with known truth. Bias and error reported per market type, with pass marks | Real snapshots: the hourly sanity bound never breached; Chip's own listings counted correctly | Agent recomputes 20 items' sales from raw snapshots by its own code |
+| Cost and sell books | Ladder walks by hand. Properties: a higher reagent price never raises profit; a listing above the floor never raises the claimed price; splitting a listing changes nothing | Every item on both houses has a book entry or a stated reason | Agent recomputes 20 cost curves from raw JSON |
+| Flip finding and ranking | **End to end goldens**: real recorded snapshot sequences with Chip's prices injected, run through the sale counter and the whole engine (nothing stubbed). Cerulean Dye in the top 10; Bright Baubles judged by its stated inputs. **Near misses**: Lichen at 36s (gone), the dye selling 1 a day (weak or gone), one troll dye at 5g and a three listing troll (price unchanged), today's prices (held back, "no profit after the cut"). **Scenarios**: huge volume tiny margin (shown), 2,000 crafts for 2c (held back). Properties: the second pass never hands out more units than are listed; rank rises with volume | Full run over every recipe and item; top 25 each traced to its evidence | A separate script by a different agent recomputes the top 25 from raw JSON and must agree. A second agent argues against each of the top 10, and any argument it wins becomes a test |
+| Whole loop | `npm test`, typecheck, replay, page contract test | The engine runs here on live data across many publishes | A final fresh reviewer reads the whole change and the run reports |
 
-**Backtest, the strongest check.** As hours of history build up, every flip shown at hour T is checked at T+1 to T+6: did the gap still exist, and did the product actually sell near the claimed price? That hit rate is the tool's real score and goes in the run report.
+**Paper trade backtest, the real score.** For every flip shown at hour T: Chip acts 30 to 60 minutes later and pays the next snapshot's prices; his units sell only after the units ahead of him clear. Report what it would have really paid against what it claimed, per strength band. Also track flips that were held back and turned out good, the misses. **Rank stability:** how much the top 25 churns hour to hour on quiet markets, which exposes noise driven ranking. Once Chip trades from the list, his mailbox is the final truth.
 
 ## 10. What I need from Chip
 
 One question now. The rest can wait.
 
-**The question: what is an hour of your play time worth in gold right now?** That becomes the gold per hour floor in gate 5. My proposed default is 5g an hour for phase 1, where most trades are in silver. Both of your yardstick flips clear that easily, and 2,000 crafts for 2c each does not.
+**The question: what is an hour of your play time worth in gold right now?** It is the price of time in every flip's expected profit. My proposed default is 5g an hour for phase 1, where most trades are in silver. At 5g, Cerulean Dye at Ben's prices clears easily and 2,000 crafts for 2c each does not.
 
 Later, not blocking:
-1. Your Blackwater house id. Without it, Blackwater flips (like Bright Baubles) cannot be shown. A few Booty Bay screenshots with prices settle it, as they did for 111.
-2. Craft one random yield bomb a few times (Coarse Dynamite), to settle the yield formula.
-3. Time yourself on one craft batch and one posting session, to tune the effort model.
+1. Your Blackwater house id. Without it, Blackwater flips like Bright Baubles cannot be shown. A few Booty Bay screenshots with prices settle it, as they did for 111.
+2. One listing each at 2, 8 and 24 hours on Alliance, and one on Blackwater, with the deposit you paid. Settles the time left mapping and T7.
+3. Craft Coarse Dynamite a few times and note how many each gives.
+4. Time one craft batch and one posting session, to tune the effort model.
 
 ## 11. Build order after approval
-Each step runs the full check loop in section 9 before the next starts. Agents work in parallel where steps do not depend on each other.
+Each step runs its full check loop (section 9) before the next starts. Agents work in parallel where steps do not depend on each other: one on static data, one on sale counting and its simulator, one on the books, then one on families and ranking, with fresh reviewer and recompute agents on each.
 
-1. Static database from wago and EG Link, with binding fix and live filter. Cross check against Blizzard.
-2. Cost book and sell book with depth aware ladders, both houses.
-3. Craft family, then the other families moved onto the shared gate and score module.
-4. Effort model, gates, score, rank, run report.
-5. Flips page, page contract updated.
-6. Backtest harness on collected history, run the engine here on live data, golden and scenario tests, independent recomputation.
-7. Conversion family, then disenchant behind the unverified label.
-8. Tutorial walkthrough for Chip.
+1. Static database from wago and EG Link, binding fix, live filter, cross check against Blizzard.
+2. Sale counting fixes with the simulator, listing ages. Start the live collector here immediately so real history builds while the rest is built.
+3. Cost book and sell book from raw listings, both houses.
+4. Craft and craft to vendor families, then the existing families moved onto the shared books.
+5. Queue, effort, gates, expected profit, second pass, run report.
+6. Flips page, page contract and its test updated.
+7. End to end goldens, near misses, scenarios, independent recompute, paper trade backtest on the history collected here.
+8. Conversion family, then disenchant behind the unverified label.
+9. Tutorial walkthrough for Chip.
