@@ -14,8 +14,8 @@ Chip gave two flips that clear the bar. Both have since closed, which is the poi
 
 | Flip | What it was | What it must do in tests |
 | --- | --- | --- |
-| **Cerulean Dye** (Ben's) | Alchemy. 2 Frilled Lichen at 25 to 30s each plus 1 Empty Vial (4c from a vendor), about 50 to 61s all in. The dye sold for 70 to 80s and moved fast. About 9 to 19s profit each | A recorded market at those prices **must** produce this flip, near the top |
-| **Bright Baubles** (Chip's) | Old Man Heming on the Booty Bay docks sells them for 2s 50c (verified in EG Link). They sold near 5s on the Booty Bay (Blackwater) house. After the 15% cut, about 1s 75c profit each | A recorded market at those prices **must** produce this flip |
+| **Cerulean Dye** (Ben's) | Alchemy. 2 Frilled Lichen at 25 to 30s each plus 1 Empty Vial (4c from a vendor), about 50 to 61s all in. The dye sold for 70 to 80s and moved fast. About 9 to 19s profit each | A recorded market at those prices **must** produce this flip, in the top 10 |
+| **Bright Baubles** (Chip's) | Old Man Heming on the Booty Bay docks sells them for 2s 50c (verified in EG Link). They sold near 5s on the Booty Bay (Blackwater) house. After the 15% cut, about 1s 75c profit each | A recorded market at those prices **must** produce this flip when Blackwater sells enough a day to beat the trip and the deposit risk. The fixture states its sales a day, so the test passes or fails for a stated reason |
 | **Both, today** | The prices have fallen to match cost | Today's live listings **must not** produce either one |
 
 Checked against real data this session:
@@ -27,7 +27,7 @@ Checked against real data this session:
 
 ### What already serves the goal (keep)
 1. **Live collection works.** The engine polls every house every 2 minutes, stores each hourly publish, and keeps raw snapshots for replay. Live from this session today: house 111 has about 120,000 equipment listings over 5,593 items and 92,000 commodity listings over 1,345 items.
-2. **Sales are inferred carefully.** Blizzard publishes no sales. The collector compares each hour's listing ids with the last hour's, and leaves out expiries, cancels, relists and mass cancels (B17, B18). This is the only possible source of "how fast does it sell", and it is already built well.
+2. **Sales are inferred carefully.** Blizzard publishes no sales. The collector compares each hour's listing ids with the last hour's, and leaves out expiries, cancels, relists and mass cancels (B17, B18). This is the only possible source of "how fast does it sell". The base is sound; holes 11 and 12 below need fixing.
 3. **Prices resist trolls.** A TSM style market price (cheapest 15 to 30% of units, outliers trimmed), sold price caps, and junk gates.
 4. **Vendors are right.** EG Link vendors filtered to what an Alliance character can use (Nerrist excluded, verified).
 5. **Fees are verified.** 5% Alliance cut, 15% Blackwater, deposit measured from Chip's own listing.
