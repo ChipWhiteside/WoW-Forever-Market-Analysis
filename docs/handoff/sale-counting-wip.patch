@@ -1,0 +1,1854 @@
+diff --git a/docs/verification.md b/docs/verification.md
+index 912370d..a68a8f5 100644
+--- a/docs/verification.md
++++ b/docs/verification.md
+@@ -28,6 +28,11 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
+ | B10 | Dead house 112 answers the commodities endpoint with 200 and no `auctions` key at all, not an empty list. The contract now reads a missing key as zero listings and flags it | Chip's live run of match-house crashed on it, November 19 |
+ | B9 | This cloud container reaches Blizzard, GitHub raw, wago.tools and Discord | curl from the session |
+ | B21 | **Trainer lists match across factions.** Alliance and Horde trainers of the same tier teach the same spells at the same skill and cost: Gelman Stonehand and Makaru (Mining, 16 of 16), Lawrence Schneider and Bowen Brisboise (Tailoring, 25 of 25), Simon Tanner and Karolek (Leatherworking, 48 of 48). EG Link has no Alliance Blacksmithing trainer opened yet, so Blacksmithing costs and learn skills come from Snarl and Saru Steelfury (Orgrimmar) and the Alliance trainer places (Therum Deepforge, Stormwind; the Great Forge, Ironforge; Brikk Keencraft, Booty Bay for Artisan) stay **unconfirmed** in the app. None of the guide's recipes up to Golden Scale Bracers is sold as plans or dropped in any build: all are trainer taught. Recipes above 200 are not in any Forever record yet. | Proven 2026-11-20 on EG Link trainers, 14 builds | `tests/unit/recipe-sources.test.ts`; confirmed fully when an Alliance blacksmith trainer appears in EG Link or Chip checks Therum Deepforge |
++| B22 | **Time left buckets on Forever.** A new listing never shows SHORT. A 2 hour listing shows MEDIUM when first seen, an 8 hour listing LONG, a 24 hour listing VERY_LONG. SHORT means under 30 minutes left, MEDIUM 30 minutes to 2 hours. Where LONG ends and VERY_LONG starts (8 or 12 hours) is **not measured yet** (P10); the code allows both. | Real raw snapshots of 8 houses, November 23 and 24 (read only). 127,737 listings new between hourly publishes: first seen MEDIUM 22,067, LONG 82,359, VERY_LONG 23,311, SHORT 0. Seven hours later: first MEDIUM all gone (22,067 of 22,067); first LONG 20,422 MEDIUM, 19,827 SHORT, 42,110 gone, 0 still LONG; first VERY_LONG 12,320 still VERY_LONG, 10,991 gone, 0 LONG. Over one hour, SHORT never stayed (23,491 of 23,491 gone); MEDIUM went to MEDIUM 28,115 times and to SHORT 25,538. Code: `FRESH_HOURS` and `BUCKET_HOURS` in `src/analysis/aggregate.ts`; `tests/unit/aggregate.test.ts` |
++| B23 | **Commodity buy order: cheapest first, and at one price the newest listing first.** So a stack that vanished behind a survivor in that order was cancelled or expired, never bought. It also means a seller can jump the queue by cancelling and posting again at the same price. | 3,373 partly bought stacks (a certain buy) on 8 houses: every cheaper listing was gone (25,555 of 25,555). At the same price, newer listings were gone 9,112 times and up once; older ones were up 29,739 times and gone 3,424 (the usual cancel and expiry rate, 10%). Holds whatever the time left or quantity. Empty Vial on 111: the newest 6c stack was partly bought (560 to 332) while older 6c stacks stayed. Code: `buysFirst`; test "newest first at one price" |
++| B24 | **On deep commodity markets a cancel to undercut cannot be told from restocking.** A same quantity post 0 to 20% cheaper, with a cheaper new post beside it, shows up for 31.2% of stacks that were certainly bought (ahead of a partly bought stack) and 26.8% of undecided ones, so the match is coincidence and would erase about 30% of real sales. The counter matches only on thin markets (5 listings or fewer) and on deep equipment markets, and relies on buy order (B23) for deep commodities. On deep equipment no signal was found either: a repost in the price window kept the old listing's length 60.2% of the time against 61.6% for any new post (58.4% when only one repost fits), so equipment matching is kept as the cautious side and stays provisional (P12). | Placebo runs on the real snapshots of houses 110 and 111, November 23 and 24. Test: "deep commodities: a same size stack posted cheaper is not taken as an undercut" |
++| B25 | **Simulator: the new sale rules cut the error substantially.** Synthetic hourly snapshots with known truth (posts of 2, 8 and 24 hour listings, buyers filling cheapest and newest first or picking a copy, sweeps, cancels to undercut, plain cancels, expiries and reposts). 5 seeds, 6 items, 7 days each. Daily error old to new: deep commodities 31.7% to 4.7% (bias -31.7% to +4.7%), thin commodities 12.1% to 6.8% (bias -9.4% to +0.6%), equipment 15.2% to 9.6% (bias -11.5% to -5.6%). The same with LONG ending at 8 hours, with no undercutting, and with twice as much: new beats old every time. Sales posted and bought inside one hour are invisible by design (on the busy simulated market about 1.7 times the visible ones). The equipment band moved from 1.1 to 1.25 times the floor on this evidence. | `tests/sim/simulator.test.ts` asserts the pass marks; `npx tsx tests/sim/report.ts` prints the table |
++| B26 | **Real snapshots, old rules against new, house 111.** Commodities: 151,905 to 135,614 units (21:25 to 22:25) and 163,746 to 210,581 (05:25 to 06:25). Copper Ore 1,136 to 2,879 (a sweep to 110, floor 100) and 31 to 31; Linen Cloth 76 to 3,315 and 1,270 to 3,470; Frilled Lichen 125 to 135 and 302 to 329; Empty Vial 2,707 to 228 (B23: older 6c stacks were cancelled, not bought) and 271 to 291. Equipment: 6,801 to 6,714 and 7,069 to 7,192. Sweeps past 1.1 times the floor: about 145 commodity items an hour. Bound breaches 0, age conflicts 0. A rebuild of a copy of the live database re-counted 64 publishes in 8.5 seconds with 0 breaches and handed listing ages to the collector. | Read only runs on scratchpad raw files and a copy of the live database, November 24 |
+ 
+ ## Not yet proven, blocking or provisional
+ 
+@@ -41,6 +46,11 @@ Every fact the code relies on, how it was checked, and when. Extends the origina
+ | P9 | Strength weights (history 21, listings 12, sales 20, sold near price 15, steady price 12, quest 12 or recipe 6, junk checks 8) reflect what makes a play real | Starting values | Calibration: strength of plays Chip acts on and how they paid |
+ | P8 | The thresholds in src/rules/price.ts (15 to 30% of units, 1.2 jump, 1.5 SD trim from TSM; 20x outlier gates; score cut offs 40 and 60) are right for an early silver economy | Starting values, unverified | Calibration report after a week: share of shown plays Chip finds real |
+ | P6 | Chip's Blackwater house (Alliance is 111, B11) | Candidates 116, 117, 121, 125 | Booty Bay ladders into match-house |
++| P10 | Where LONG ends and VERY_LONG starts: 8 or 12 hours left | Not measured. The sale rules work for both (B25 runs both) | Follow 24 hour listings first seen fresh until they turn LONG, 12 to 16 hours later |
++| P11 | Chip's own trades are left out of sales | Hook only: settings key `own_trade_listing_ids` (JSON list of auction ids) is read by the collector and the rebuild; nothing fills it yet | A mailbox or addon import, then Chip's sold and expired mail as ground truth for the counter |
++| P12 | How often sellers cancel and post cheaper on deep equipment markets | No signal found (B24). Matching is kept, the cautious side: if undercutting is rare it undercounts equipment sales by up to about 10% on house 111 | Chip cancels and reposts one item and the counter is read; or his mailbox over a week |
++| P14 | The low estimate of sales counts sale events (listings bought), not units | The counter counts events per item and hour, but item_stats has no `sold_events` column yet. Until a migration adds it (protected `src/store/db.ts`), demand falls back to units for equipment (exact) and one event per commodity hour with sales (never more than the real count, so more cautious). The collector and the rebuild write the column as soon as it exists | Migration 12: `ALTER TABLE item_stats ADD COLUMN sold_events INTEGER`, the next start re-counts history once and fills it (no version bump needed) |
++| P13 | Sales of listings posted and bought inside one hour | Invisible by design. Demand counts only listings seen at a publish | No source; the flip queue model should treat demand as a floor, not a total |
+ 
+ ## Hand calculated checks in the test suite
+ O1 vendor dump, O2 Bright Baubles at 4s 80c, O7 Wool Cloth Alliance to Blackwater, O3 Copper Ore 40 percent under typical,
+diff --git a/src/analysis/aggregate.ts b/src/analysis/aggregate.ts
+index 4fcbe31..d487263 100644
+--- a/src/analysis/aggregate.ts
++++ b/src/analysis/aggregate.ts
+@@ -7,15 +7,28 @@
+  *  - Commodities: unit_price is already per unit (V4).
+  *  - Bid only listings never set a floor.
+  *  - Sell through comes from strict listing id set differences, never row counts (rule 4).
++ *
++ * How a vanished listing is judged (docs/flip-plan.md holes 11 and 12, verification B22 to B25):
++ *  - Its age decides whether it could have run out of time. Forever listings last 2, 8 or 24 hours, and the
++ *    time left a listing shows when first seen tells which (B22). A 2 hour listing first seen this hour cannot
++ *    expire before the next publish, so if it vanished it was bought or cancelled, never expired.
++ *  - Commodities fill cheapest first, and at one price newest first (B23). A stack that vanished while one ahead
++ *    of it in that order survived was cancelled or expired. A stack ahead of a point buyers provably reached (a
++ *    partly bought stack, or a vanished stack that could not have expired) was bought, even if it could have expired.
++ *  - A seller who cancels and posts the same quantity a little cheaper is undercutting, not selling. Matched on thin
++ *    markets and on deep equipment markets (stricter terms there). Not on deep commodity markets, where the match
++ *    is pure coincidence with restocking (B24) and buy order already catches cancels behind a survivor.
+  */
+ 
++export type TimeLeft = 'SHORT' | 'MEDIUM' | 'LONG' | 'VERY_LONG';
++
+ export interface Listing {
+   id: number;
+   itemId: number;
+   quantity: number;
+   /** copper per unit, null for bid only */
+   unitPrice: number | null;
+-  timeLeft: 'SHORT' | 'MEDIUM' | 'LONG' | 'VERY_LONG';
++  timeLeft: TimeLeft;
+ }
+ 
+ export interface ItemStat {
+@@ -29,19 +42,106 @@ export interface ItemStat {
+   ladder: Array<[number, number]>;
+   goneListings: number | null;
+   goneUnits: number | null;
++  /** units of vanished listings that could have run out of time (from their age) and were not judged bought */
+   goneUnitsExpiring: number | null;
+   goneUnitsNearFloor: number | null;
+-  /** of goneUnitsNearFloor, ones that were most likely NOT sales: they could have expired (SHORT or MEDIUM time
+-   * left, since snapshots are about an hour apart), or a matching listing reappeared (cancel and relist) */
++  /** of goneUnitsNearFloor, ones judged NOT sold (expired, cancelled, cancelled to undercut, or priced over a
++   * cheaper survivor). goneUnitsNearFloor minus this is near floor sales under the current rules. */
+   goneUnitsExpiringNearFloor: number | null;
+-  /** copper value of the near floor units judged sold, so demand carries the price it happened at */
++  /** copper value of every unit judged sold (soldUnits), so demand carries the price it happened at */
+   soldValue: number | null;
+   newUnits: number | null;
++  /** units judged sold since the last publish, current rules, sweeps past the floor included */
++  soldUnits: number | null;
++  /** sale events behind soldUnits: listings judged bought, whole (vanished) or in part (a stack that shrank). One
++   * buyer taking several stacks counts once per stack, so this is an upper count of buyers. */
++  soldEvents: number | null;
++  /** highest unit price judged bought since the last publish, null when nothing was bought */
++  sweepHigh: number | null;
++  /** new units other sellers posted at or under 1.1 times the floor: the higher of the previous and the current floor, so
++   * posts at a floor a sweep just raised count, and one cheap new post cannot shrink the line */
++  newNearFloor: number | null;
++  /** units judged sold beyond the hourly bound (previous units + new units - current units). Always 0 unless a
++   * bug: the collector logs any breach as a suspected bug and soldUnits is capped at the bound. */
++  boundBreach: number | null;
+ }
+ 
+ export const LADDER_POINTS = 12;
+ 
+-export function fromAuctionRows(rows: Array<{ id: number; item: { id: number }; buyout?: number; quantity: number; time_left: Listing['timeLeft'] }>): Listing[] {
++const H = 3600_000;
++
++/** Forever listing lengths in hours (B15: Chip's own listings). */
++export const LISTING_HOURS = [2, 8, 24] as const;
++
++/**
++ * The listing length a time_left reading means when the listing is under 1.6 hours old (B22, measured on 127,737
++ * new listings: none showed SHORT, every MEDIUM was gone within 7 hours, every LONG was SHORT, MEDIUM or gone 7 hours
++ * later, every VERY_LONG still up 7 hours later was still VERY_LONG).
++ */
++export const FRESH_HOURS: Partial<Record<TimeLeft, number>> = { MEDIUM: 2, LONG: 8, VERY_LONG: 24 };
++
++/**
++ * Hours left each bucket can mean. SHORT under 30 minutes and MEDIUM 30 minutes to 2 hours are measured (B22).
++ * Where LONG ends and VERY_LONG starts (8 or 12 hours) is not measured yet, so both ranges are kept wide enough
++ * for either; only the lower end of each matters for "could it expire within the hour".
++ */
++export const BUCKET_HOURS: Record<TimeLeft, readonly [number, number]> = {
++  SHORT: [0, 0.5], MEDIUM: [0.5, 2], LONG: [2, 12], VERY_LONG: [8, 24],
++};
++
++/** A vanished listing whose chance of having run out of time exceeds this is treated as possibly expired. */
++export const EXPIRY_CHANCE = 0.05;
++/** Equipment buyers pick a listing: one priced over 1.25 times a cheaper copy that is still up was not bought. */
++export const EQUIP_SURVIVOR_MARGIN = 1.25;
++/** Equipment sales count only up to 1.25 times the previous floor: a pricey copy vanishing is too often a cancel or a
++ * troll (B18). It was 1.1; buyers also take a copy a little over the cheapest (a better suffix), and the simulator
++ * read 1.25 as the better line (B25). */
++export const EQUIP_SOLD_BAND = 1.25;
++/** A market with this many listings or fewer last hour is thin: cancel and relist matching is looser there. */
++export const THIN_LISTINGS = 5;
++
++/**
++ * Commodity buy order: the buy window takes the cheapest listing first and, at one price, the newest listing (highest
++ * id) first. Measured on 3,373 partly bought stacks (B23): every cheaper listing was gone, and at the same price
++ * 9,112 newer listings were gone against 1 still up, while older ones stayed up about 90 percent of the time.
++ */
++export function buysFirst(a: Listing, b: Listing): boolean {
++  return a.unitPrice! < b.unitPrice! || (a.unitPrice === b.unitPrice && a.id > b.id);
++}
++
++/** First sight of a listing, as kept in table listing_seen. */
++export interface Seen {
++  firstSeen: number;
++  firstTimeLeft: TimeLeft;
++  /** the publish before first sight, when it was differenced (gap of 1.6 hours or less): the listing was posted
++   * after it. null when the listing was already up when tracking started, or first seen after a gap. */
++  postedAfter: number | null;
++}
++
++/** Chip's own trades, so they never count as market demand or competing posts. No data source feeds this yet. */
++export interface OwnTrades { listingIds: Set<number> }
++
++export interface AggregateOpts {
++  /** stackables fill cheapest first through a buy window; equipment buyers pick a listing */
++  commodity?: boolean;
++  /** publish times of the previous and current snapshot, ms. Default one hour apart. */
++  prevAt?: number;
++  curAt?: number;
++  /** first sight of the previous snapshot's listings. Missing entries are listings of unknown age. */
++  seen?: Map<number, Seen>;
++  own?: OwnTrades;
++  /** filled in when given: bucket readings that disagree with a listing's age, and sanity bound breaches */
++  diag?: Diagnostics;
++}
++
++export interface Diagnostics {
++  ageConflicts: number;
++  breaches: string[];
++  /** when given, the verdict on every listing that lost units: sold, expired, cancelled, undercut, above, own */
++  verdicts?: Map<number, string>;
++}
++
++export function fromAuctionRows(rows: Array<{ id: number; item: { id: number }; buyout?: number; quantity: number; time_left: TimeLeft }>): Listing[] {
+   return rows.map(r => ({
+     id: r.id,
+     itemId: r.item.id,
+@@ -51,89 +151,104 @@ export function fromAuctionRows(rows: Array<{ id: number; item: { id: number };
+   }));
+ }
+ 
+-export function fromCommodityRows(rows: Array<{ id: number; item: { id: number }; unit_price: number; quantity: number; time_left: Listing['timeLeft'] }>): Listing[] {
++export function fromCommodityRows(rows: Array<{ id: number; item: { id: number }; unit_price: number; quantity: number; time_left: TimeLeft }>): Listing[] {
+   return rows.map(r => ({ id: r.id, itemId: r.item.id, quantity: r.quantity, unitPrice: r.unit_price, timeLeft: r.time_left }));
+ }
+ 
++/** Listing length in hours, when it can be known: from a fresh first reading, or VERY_LONG at any age (only 24 hour listings show it). */
++export function listingHours(s: Seen | undefined): number | null {
++  if (!s) return null;
++  if (s.postedAfter != null && s.firstSeen - s.postedAfter <= 1.6 * H) return FRESH_HOURS[s.firstTimeLeft] ?? null;
++  return s.firstTimeLeft === 'VERY_LONG' ? 24 : null;
++}
++
++/**
++ * Chance that a listing seen at `prevAt` had run out of time by `curAt`, if nobody bought it. Works out the window
++ * its expiry must fall in from every reading of it (its time left now, its time left and age when first seen) and
++ * returns the share of that window before `curAt`. `conflict` is true when the readings disagree (a suspected bug
++ * in the bucket mapping); the time left at `prevAt` alone is used then.
++ */
++export function expiryChance(l: Listing, seen: Seen | undefined, prevAt: number, curAt: number): { chance: number; conflict: boolean; beforeBuy: number } {
++  const slack = 0.05 * H; // publish times wobble by seconds; bucket edges are not exact to the second
++  const b = BUCKET_HOURS[l.timeLeft];
++  const own: [number, number] = [prevAt + b[0] * H - slack, prevAt + b[1] * H + slack];
++  let [lo, hi] = own;
++  if (seen) {
++    const fb = BUCKET_HOURS[seen.firstTimeLeft];
++    lo = Math.max(lo, seen.firstSeen + fb[0] * H - slack);
++    hi = Math.min(hi, seen.firstSeen + fb[1] * H + slack);
++    const d = listingHours(seen);
++    if (d != null && seen.postedAfter != null && seen.firstSeen - seen.postedAfter <= 1.6 * H) {
++      lo = Math.max(lo, seen.postedAfter + d * H);
++      hi = Math.min(hi, seen.firstSeen + d * H);
++    }
++  }
++  let conflict = false;
++  if (hi < lo) { conflict = true; [lo, hi] = own; }
++  // Chance it ran out before a buyer who came at a random moment of the hour: expiry and the buy both uniform.
++  const ranOutBy = (t: number) => t <= lo ? 0 : t >= hi || hi === lo ? 1 : (t - lo) / (hi - lo);
++  let beforeBuy = 0;
++  for (let i = 0; i < 12; i++) beforeBuy += ranOutBy(prevAt + ((i + 0.5) / 12) * (curAt - prevAt)) / 12;
++  return { chance: ranOutBy(curAt), conflict, beforeBuy };
++}
++
+ /**
+- * `commodity`: stackables are bought through a window that always fills from the cheapest listing first, so a
+- * stack that vanished while a cheaper one is still up was cancelled, never bought. Equipment buyers pick a
+- * listing, so there a 25 percent margin applies.
++ * First sight of every current listing: kept from `seen` when already known, otherwise this publish. A listing
++ * that was in the previous snapshot but is unknown to `seen` (first run after an update) gets the previous
++ * publish as its first sight and an unknown age.
+  */
+-export function aggregate(current: Listing[], previous: Listing[] | null, opts: { commodity?: boolean } = {}): ItemStat[] {
+-  const survivorMargin = opts.commodity ? 1 : 1.25;
++export function nextSeen(seen: Map<number, Seen> | null, current: Listing[], curAt: number,
++  previous: { listings: Listing[]; at: number } | null, differenced: boolean): Map<number, Seen> {
++  const out = new Map<number, Seen>();
++  const prevById = previous ? new Map(previous.listings.map(l => [l.id, l])) : null;
++  // One shared object per kind of first sight: hundreds of thousands of listings, only a handful of distinct values.
++  const shared = new Map<string, Seen>();
++  const make = (firstSeen: number, firstTimeLeft: TimeLeft, postedAfter: number | null): Seen => {
++    const key = `${firstSeen}:${firstTimeLeft}:${postedAfter}`;
++    let s = shared.get(key);
++    if (!s) shared.set(key, (s = { firstSeen, firstTimeLeft, postedAfter }));
++    return s;
++  };
++  for (const l of current) {
++    const known = seen?.get(l.id);
++    if (known) { out.set(l.id, known); continue; }
++    const before = prevById?.get(l.id);
++    if (before) out.set(l.id, make(previous!.at, before.timeLeft, null));
++    else out.set(l.id, make(curAt, l.timeLeft, differenced && previous ? previous.at : null));
++  }
++  return out;
++}
++
++type Verdict = 'sold' | 'expired' | 'cancelled' | 'undercut' | 'above' | 'own';
++
++interface Lost { l: Listing; lost: number; vanished: boolean; verdict: Verdict; expiring: boolean; beforeBuy: number }
++
++/**
++ * `commodity`: stackables are bought through a window that always fills from the cheapest listing first.
++ * Equipment buyers pick a listing, so there a 25 percent margin applies.
++ */
++export function aggregate(current: Listing[], previous: Listing[] | null, opts: AggregateOpts = {}): ItemStat[] {
++  const commodity = !!opts.commodity;
++  const curAt = opts.curAt ?? (opts.prevAt != null ? opts.prevAt + H : H);
++  const prevAt = opts.prevAt ?? curAt - H;
++  const own = opts.own?.listingIds;
+   const byItem = new Map<number, Listing[]>();
+   for (const l of current) {
+     let arr = byItem.get(l.itemId);
+     if (!arr) byItem.set(l.itemId, (arr = []));
+     arr.push(l);
+   }
+-
+-  // Previous snapshot, indexed for the strict id set difference.
+-  let prevById: Map<number, Listing> | null = null;
+-  let prevFloor: Map<number, number> | null = null;
+-  const curIds = new Set(current.map(l => l.id));
+-  if (previous) {
+-    prevById = new Map(previous.map(l => [l.id, l]));
+-    prevFloor = new Map();
+-    for (const l of previous) {
+-      if (l.unitPrice == null) continue;
+-      const f = prevFloor.get(l.itemId);
+-      if (f == null || l.unitPrice < f) prevFloor.set(l.itemId, l.unitPrice);
+-    }
+-  }
+-
+-  const gone = new Map<number, { listings: number; units: number; expiring: number; nearFloor: number; expiringNear: number; soldValue: number }>();
+   const curById = new Map(current.map(l => [l.id, l]));
+-  // Thin markets only (5 listings or fewer last time): a vanished listing with a new one of the same size and
+-  // about the same price is a cancel and relist, not a sale. Deep markets restock constantly, so matching there
+-  // would erase real sales.
+-  const prevCount = new Map<number, number>();
+-  if (prevById) for (const l of prevById.values()) prevCount.set(l.itemId, (prevCount.get(l.itemId) ?? 0) + 1);
+-  const relistPool = new Map<number, Listing[]>();
+-  if (prevById) for (const l of current) if (!prevById.has(l.id) && (prevCount.get(l.itemId) ?? 0) <= 5) {
+-    const a = relistPool.get(l.itemId) ?? []; a.push(l); relistPool.set(l.itemId, a);
+-  }
+-  const takeRelist = (l: Listing): boolean => {
+-    const pool = relistPool.get(l.itemId);
+-    if (!pool || l.unitPrice == null) return false;
+-    const i = pool.findIndex(n => n.quantity === l.quantity && n.unitPrice != null && Math.abs(n.unitPrice - l.unitPrice!) <= l.unitPrice! * 0.25);
+-    if (i < 0) return false;
+-    pool.splice(i, 1);
+-    return true;
+-  };
+-  // Cheapest listing that is still up now, per item. Buyers take the cheapest first, so a listing that vanished
+-  // while it was priced over 1.25 times a cheaper surviving one was most likely cancelled, not bought.
+-  const curFloor = new Map<number, number>();
+-  for (const l of current) if (l.unitPrice != null && (prevById?.has(l.id) ?? false)) {
+-    const f = curFloor.get(l.itemId); if (f == null || l.unitPrice < f) curFloor.set(l.itemId, l.unitPrice);
+-  }
+-  if (prevById) {
+-    for (const [id, l] of prevById) {
+-      // A listing that vanished, or a stack that shrank (a partial buy of a commodity listing), lost units.
+-      const still = curIds.has(id) ? curById.get(id)! : null;
+-      const lost = still ? Math.max(0, l.quantity - still.quantity) : l.quantity;
+-      if (lost === 0) continue;
+-      let g = gone.get(l.itemId);
+-      if (!g) gone.set(l.itemId, (g = { listings: 0, units: 0, expiring: 0, nearFloor: 0, expiringNear: 0, soldValue: 0 }));
+-      if (!still) g.listings++;
+-      g.units += lost;
+-      // Snapshots are about an hour apart, so anything that showed under 2 hours left may simply have expired.
+-      const expiring = !still && (l.timeLeft === 'SHORT' || l.timeLeft === 'MEDIUM');
+-      if (expiring) g.expiring += lost;
+-      const survivor = curFloor.get(l.itemId);
+-      const pricedAboveSurvivor = !still && survivor != null && l.unitPrice != null && l.unitPrice > survivor * survivorMargin;
+-      const notSale = expiring || pricedAboveSurvivor || (!still && takeRelist(l));
+-      const pf = prevFloor!.get(l.itemId);
+-      if (pf != null && l.unitPrice != null && l.unitPrice <= pf * 1.1) {
+-        g.nearFloor += lost;
+-        if (notSale) g.expiringNear += lost; else g.soldValue += lost * l.unitPrice;
+-      }
+-    }
++  const prevById = previous ? new Map(previous.map(l => [l.id, l])) : null;
++  const prevByItem = new Map<number, Listing[]>();
++  if (previous) for (const l of previous) {
++    let arr = prevByItem.get(l.itemId);
++    if (!arr) prevByItem.set(l.itemId, (arr = []));
++    arr.push(l);
+   }
+ 
+   const out: ItemStat[] = [];
+-  const itemIds = new Set<number>([...byItem.keys(), ...gone.keys()]);
++  const itemIds = new Set<number>([...byItem.keys(), ...prevByItem.keys()]);
+   for (const itemId of itemIds) {
+     const ls = byItem.get(itemId) ?? [];
+     let floor: number | null = null;
+@@ -148,28 +263,133 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts:
+     const ladder = [...points.entries()].sort((a, b) => a[0] - b[0]);
+     let unitsWithin5 = 0;
+     if (floor != null) for (const [p, u] of ladder) if (p <= floor * 1.05) unitsWithin5 += u;
+-    let newUnits: number | null = null;
+-    if (prevById) {
+-      newUnits = 0;
+-      for (const l of ls) if (!prevById.has(l.id)) newUnits += l.quantity;
++    const base = { itemId, floor, unitsAtFloor: floor == null ? 0 : points.get(floor) ?? 0, unitsWithin5, totalUnits, listings: ls.length, ladder: ladder.slice(0, LADDER_POINTS) };
++    if (!prevById) {
++      // A listing-less item can only come from the previous snapshot, so without one every item here has listings.
++      out.push({ ...base, goneListings: null, goneUnits: null, goneUnitsExpiring: null, goneUnitsNearFloor: null, goneUnitsExpiringNearFloor: null,
++        soldValue: null, newUnits: null, soldUnits: null, soldEvents: null, sweepHigh: null, newNearFloor: null, boundBreach: null });
++      continue;
+     }
+-    const g = gone.get(itemId);
+-    out.push({
+-      itemId,
+-      floor,
+-      unitsAtFloor: floor == null ? 0 : points.get(floor) ?? 0,
+-      unitsWithin5,
+-      totalUnits,
+-      listings: ls.length,
+-      ladder: ladder.slice(0, LADDER_POINTS),
+-      goneListings: prevById ? g?.listings ?? 0 : null,
+-      goneUnits: prevById ? g?.units ?? 0 : null,
+-      goneUnitsExpiring: prevById ? g?.expiring ?? 0 : null,
+-      goneUnitsNearFloor: prevById ? g?.nearFloor ?? 0 : null,
+-      goneUnitsExpiringNearFloor: prevById ? g?.expiringNear ?? 0 : null,
+-      soldValue: prevById ? g?.soldValue ?? 0 : null,
+-      newUnits,
+-    });
++    out.push({ ...base, ...difference(itemId, prevByItem.get(itemId) ?? [], ls, floor) });
+   }
+   return out;
++
++  function difference(itemId: number, prevL: Listing[], curL: Listing[], curFloor: number | null) {
++    let prevFloor: number | null = null;
++    for (const l of prevL) if (l.unitPrice != null && (prevFloor == null || l.unitPrice < prevFloor)) prevFloor = l.unitPrice;
++    // The first previous listing still up now (whole or partly bought), in buy order. Commodities: the buy window
++    // takes the cheapest first and, at one price, the newest first (B23), so nothing after it in that order was
++    // bought. Equipment: the cheapest copy still up.
++    let survivor: Listing | null = null;
++    for (const l of prevL) if (l.unitPrice != null && curById.has(l.id) && (!survivor || (commodity ? buysFirst(l, survivor) : l.unitPrice < survivor.unitPrice!))) survivor = l;
++
++    const lostList: Lost[] = [];
++    for (const l of prevL) {
++      const still = curById.get(l.id) ?? null;
++      const lost = still ? Math.max(0, l.quantity - still.quantity) : l.quantity;
++      if (lost === 0) continue;
++      const e: Lost = { l, lost, vanished: !still, verdict: 'sold', expiring: false, beforeBuy: 0 };
++      lostList.push(e);
++      if (own?.has(l.id)) { e.verdict = 'own'; continue; }
++      if (!still) {
++        const ex = expiryChance(l, opts.seen?.get(l.id), prevAt, curAt);
++        e.expiring = ex.chance > EXPIRY_CHANCE;
++        e.beforeBuy = ex.beforeBuy;
++        if (ex.conflict && opts.diag) opts.diag.ageConflicts++;
++        if (l.unitPrice == null) e.verdict = 'cancelled';
++        else if (survivor && (commodity ? buysFirst(survivor, l) : l.unitPrice > survivor.unitPrice! * EQUIP_SURVIVOR_MARGIN)) e.verdict = 'above';
++        else if (e.expiring) e.verdict = 'expired';
++      }
++    }
++
++    // Commodities: the furthest point in buy order buyers provably reached. First a stack that was partly bought
++    // (only buyers shrink a stack); every listing before it in buy order was consumed.
++    let reached: Listing | null = null;
++    const reach = (l: Listing) => { if (!reached || buysFirst(reached, l)) reached = l; };
++    if (commodity) for (const e of lostList) if (!e.vanished && e.verdict === 'sold') reach(e.l);
++
++    // Cancel to undercut: a vanished listing replaced by a new one of the same quantity at a lower or similar price.
++    const fresh = curL.filter(n => !prevById!.has(n.id) && n.unitPrice != null && !own?.has(n.id));
++    // Not on deep commodity markets: there a same quantity, cheaper post shows up for 31 percent of stacks that were
++    // certainly bought and 27 percent of undecided ones (B24), so a match says nothing and would erase real sales.
++    // Buy order already rules out cancels of every stack behind a survivor there.
++    const thin = prevL.length <= THIN_LISTINGS;
++    const matchable = thin || !commodity;
++    const candidates = lostList.filter(e => matchable && e.vanished && e.verdict === 'sold' && (!commodity || !reached || buysFirst(reached, e.l)))
++      .sort((a, b) => b.l.unitPrice! - a.l.unitPrice!);
++    const used = new Set<number>();
++    for (const e of candidates) {
++      const old = e.l.unitPrice!;
++      const dOld = listingHours(opts.seen?.get(e.l.id));
++      let best: Listing | null = null;
++      for (const n of fresh) {
++        if (used.has(n.id) || n.quantity !== e.l.quantity) continue;
++        const p = n.unitPrice!;
++        if (thin) {
++          if (Math.abs(p - old) > old * 0.25) continue;
++        } else {
++          // Deep equipment market: an undercut (same or lower, at most 20 percent lower), the same listing length when
++          // known, and what provoked it: a cheaper copy that was already up last hour.
++          if (p > old || p < old * 0.8) continue;
++          const dNew = FRESH_HOURS[n.timeLeft] ?? null;
++          if (dOld != null && dNew != null && dOld !== dNew) continue;
++          if (!curL.some(o => o.id !== n.id && o.unitPrice != null && o.unitPrice < old && prevById!.has(o.id))) continue;
++        }
++        if (!best || Math.abs(p - old) < Math.abs(best.unitPrice! - old)) best = n;
++      }
++      if (best) { used.add(best.id); e.verdict = 'undercut'; }
++    }
++
++    if (commodity) {
++      // Vanished stacks that could not have expired and were not reposted were bought: buyers reached them.
++      for (const e of lostList) if (e.vanished && e.verdict === 'sold') reach(e.l);
++      // Anything before that point in buy order was consumed by the buy window when the buyer got there, unless it
++      // had already run out of time: a stack more likely to have expired before a buyer at a random moment of the
++      // hour than after stays expired.
++      const r = reached as Listing | null;
++      for (const e of lostList) if (r && buysFirst(e.l, r) && (e.verdict === 'undercut' || (e.verdict === 'expired' && e.beforeBuy < 0.5))) e.verdict = 'sold';
++    } else {
++      for (const e of lostList) if (e.verdict === 'sold' && (prevFloor == null || e.l.unitPrice! > prevFloor * EQUIP_SOLD_BAND)) e.verdict = 'above';
++    }
++
++    if (opts.diag?.verdicts) for (const e of lostList) opts.diag.verdicts.set(e.l.id, e.verdict);
++    let goneListings = 0, goneUnits = 0, expiring = 0, nearFloor = 0, notSoldNear = 0, soldUnits = 0, soldValue = 0, soldEvents = 0;
++    let sweepHigh: number | null = null;
++    for (const e of lostList) {
++      if (e.vanished) goneListings++;
++      goneUnits += e.lost;
++      const sold = e.verdict === 'sold';
++      if (e.vanished && e.expiring && !sold) expiring += e.lost;
++      const near = prevFloor != null && e.l.unitPrice != null && e.l.unitPrice <= prevFloor * 1.1;
++      if (near) { nearFloor += e.lost; if (!sold) notSoldNear += e.lost; }
++      if (sold) {
++        soldUnits += e.lost;
++        soldEvents++;
++        soldValue += e.lost * e.l.unitPrice!;
++        if (sweepHigh == null || e.l.unitPrice! > sweepHigh) sweepHigh = e.l.unitPrice!;
++      }
++    }
++    let newUnits = 0, newNearFloor = 0;
++    const ref = prevFloor == null ? curFloor : curFloor == null ? prevFloor : Math.max(prevFloor, curFloor);
++    let curUnits = 0;
++    for (const l of curL) {
++      curUnits += l.quantity;
++      if (prevById!.has(l.id)) continue;
++      newUnits += l.quantity;
++      if (!own?.has(l.id) && ref != null && l.unitPrice != null && l.unitPrice <= ref * 1.1) newNearFloor += l.quantity;
++    }
++    // Hourly sanity bound, computed from totals only: nothing can be sold that did not leave the house.
++    const prevUnits = prevL.reduce((s, l) => s + l.quantity, 0);
++    const bound = Math.max(0, prevUnits + newUnits - curUnits);
++    let boundBreach = 0;
++    if (soldUnits > bound) {
++      boundBreach = soldUnits - bound;
++      opts.diag?.breaches.push(`item ${itemId}: ${soldUnits} judged sold, only ${bound} left the house`);
++      soldValue = Math.round(soldValue * (bound / soldUnits));
++      soldUnits = bound;
++      soldEvents = Math.min(soldEvents, bound);
++    }
++    return { goneListings, goneUnits, goneUnitsExpiring: expiring, goneUnitsNearFloor: nearFloor, goneUnitsExpiringNearFloor: notSoldNear,
++      soldValue, newUnits, soldUnits, soldEvents, sweepHigh, newNearFloor, boundBreach };
++  }
+ }
+diff --git a/src/analysis/history.ts b/src/analysis/history.ts
+index 4a191ab..12b822c 100644
+--- a/src/analysis/history.ts
++++ b/src/analysis/history.ts
+@@ -1,11 +1,75 @@
+ import type { DB } from '../store/db.ts';
+ import type { Demand } from '../detectors/types.ts';
+ 
++/** Units judged sold in one item_stats row: the current rules' count, or near floor sales for rows written before it. */
++const SOLD = `COALESCE(sold_units, MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0)))`;
+ /**
+- * Estimated units sold per day near the floor, per item, for one house.
+- * A listing that vanished between publishes, priced within 10 percent of the floor and not about to expire,
+- * most likely sold. Cancellations still leak in, so this is provisional by nature (spec 12.1).
++ * Sale events in one row: listings judged bought (sold_events, written when that column exists). Without the column
++ * (it needs a migration, not made yet): equipment is one unit per listing, so units are events; for commodities one
++ * hour with sales counts as one event, which is never more than the listings bought, so the bound only gets more cautious.
++ */
++const FALLBACK_EVENTS = `CASE WHEN s.kind = 'commodities' THEN (${SOLD} > 0) ELSE ${SOLD} END`;
++const hasSoldEvents = (db: DB) =>
++  (db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('item_stats') WHERE name = 'sold_events'`).get() as { n: number }).n > 0;
++
++/** Cautious level for the low estimate of sales: the true rate is above it 95 percent of the time. */
++export const LOW_CONFIDENCE = 0.95;
++/** Under this many hours watched, the low estimate is not projected to a day at all. */
++export const MIN_HOURS_LOW = 6;
++
++/**
++ * One sided lower confidence bound of a Poisson mean from `k` observed events: the mean m for which seeing k or
++ * more events has chance 1 - conf. Exact (bisection on the Poisson tail) up to 60 events, Wilson and Hilferty above.
++ * At 95 percent: 0 events give 0, 1 gives 0.051, 3 give 0.82, 10 give 5.4, 100 give 84.
++ */
++export function poissonLower(k: number, conf = LOW_CONFIDENCE): number {
++  if (k <= 0) return 0;
++  const alpha = 1 - conf;
++  if (k > 60) {
++    const z = normalQuantile(conf);
++    return k * Math.pow(1 - 1 / (9 * k) - z / (3 * Math.sqrt(k)), 3);
++  }
++  // P(X >= k | m) = 1 - sum_{i<k} e^-m m^i / i!, rising in m. Find where it equals alpha.
++  const tail = (m: number) => {
++    let term = Math.exp(-m), sum = term;
++    for (let i = 1; i < k; i++) { term *= m / i; sum += term; }
++    return 1 - sum;
++  };
++  let lo = 0, hi = k;
++  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (tail(mid) < alpha) lo = mid; else hi = mid; }
++  return (lo + hi) / 2;
++}
++
++/** Standard normal quantile (Acklam's rational approximation, error under 1.2e-9). */
++function normalQuantile(p: number): number {
++  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
++  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
++  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
++  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
++  const q = p < 0.5 ? p : 1 - p;
++  let x: number;
++  if (q < 0.02425) {
++    const r = Math.sqrt(-2 * Math.log(q));
++    x = (((((c[0]! * r + c[1]!) * r + c[2]!) * r + c[3]!) * r + c[4]!) * r + c[5]!) / ((((d[0]! * r + d[1]!) * r + d[2]!) * r + d[3]!) * r + 1);
++    x = -x;
++  } else {
++    const r = q - 0.5, t = r * r;
++    x = (((((a[0]! * t + a[1]!) * t + a[2]!) * t + a[3]!) * t + a[4]!) * t + a[5]!) * r / (((((b[0]! * t + b[1]!) * t + b[2]!) * t + b[3]!) * t + b[4]!) * t + 1);
++  }
++  return p < 0.5 ? x : -x;
++}
++
++/**
++ * Estimated units sold per day, per item, for one house, under the current sale rules (src/analysis/aggregate.ts):
++ * listing age decides expiry, commodity sweeps count, cancels to undercut do not. Plain cancels of the cheapest
++ * listing still leak in, so this is provisional by nature (spec 12.1).
+  * The window stretches backward after a gap: it always looks at the last `snapshots` differenced publishes.
++ *
++ * Two estimates. `unitsPerDay` is the middle one: units sold over hours watched, never projected from under
++ * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses:
++ * the 95 percent one sided lower bound of the number of sale EVENTS (listings bought, not units: three stacks of
++ * 221, 48 and 15 are 3 sales, not 284), times the average units per event, over hours watched. Under 6 hours
++ * watched it is null, never projected.
+  */
+ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; now?: number } = {}): Map<number, Demand> {
+   const now = opts.now ?? Date.now();
+@@ -13,7 +77,7 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
+   const since = now - hours * 3600_000;
+   // Hours actually covered by differencing, per kind: the sum of the gaps between consecutive publishes
+   // that were differenced. Gaps over 1.6 hours are never differenced, so outages cannot inflate demand.
+-  // Only rows counted with the current method (they carry sold_value). Rows from before it counted expiries and
++  // Only rows counted with a sold price (they carry sold_value). Rows from before it counted expiries and
+   // relists as sales, so they are left out rather than mixed in.
+   const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND diff_hours IS NOT NULL
+      AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND sold_value IS NOT NULL) GROUP BY kind`)
+@@ -21,20 +85,37 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
+   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
+   const out = new Map<number, Demand>();
+   if (covered <= 0) return out;
+-  const rows = db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold,
+-     SUM(COALESCE(sold_value, 0)) value, COUNT(*) n
+-     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number }>;
+-  const recent = new Map((db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold, SUM(COALESCE(sold_value, 0)) value
++  const events = hasSoldEvents(db) ? `COALESCE(sold_events, ${FALLBACK_EVENTS})` : FALLBACK_EVENTS;
++  // New units other sellers posted near the floor; rows written before that was measured fall back to all new units.
++  const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
++     SUM(COALESCE(new_near_floor, new_units, 0)) fresh
++     FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
++     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
++    .all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null }>;
++  const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
+      FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000) as Array<{ item_id: number; sold: number; value: number }>)
+     .map(r => [r.item_id, r]));
+   // Steadiness: how far the hourly floor wanders over the window (standard deviation over mean).
+   const steady = new Map((db.prepare(`SELECT item_id, AVG(floor) m, AVG(floor * floor) m2, COUNT(*) n FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
+     .all(houseId, since) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
++  // The bad case price: the lowest hourly floor in the last 3 days, whatever the demand window.
++  const low3d = new Map((db.prepare(`SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
++    .all(houseId, now - 72 * 3600_000) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f]));
++  // The last hour's sweep: the latest differenced publish of each kind, if it is under 2 hours old.
++  const sweep = new Map((db.prepare(`SELECT item_id, sweep_high FROM item_stats WHERE sweep_high IS NOT NULL AND snapshot_id IN
++     (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? GROUP BY kind)`)
++    .all(houseId, now - 2 * 3600_000) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
++  const hoursWatched = Math.round(covered * 10) / 10;
+   for (const r of rows) {
+     const rc = recent.get(r.item_id);
++    const ev = r.events ?? 0;
++    const unitsPerEvent = ev > 0 ? r.sold / ev : null;
+     // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
+-    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(covered, 6)) * 24, hours: Math.round(covered * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
+-      recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null });
++    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(covered, 6)) * 24, hours: hoursWatched, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
++      recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,
++      lowPerDay: covered < MIN_HOURS_LOW ? null : ((poissonLower(ev) * (unitsPerEvent ?? 0)) / covered) * 24,
++      newPerDay: ((r.fresh ?? 0) / covered) * 24,
++      sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched });
+   }
+   return out;
+ }
+diff --git a/src/detectors/types.ts b/src/detectors/types.ts
+index 8e81e46..e9e6914 100644
+--- a/src/detectors/types.ts
++++ b/src/detectors/types.ts
+@@ -31,7 +31,22 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
+   /** average sold price over the last 24 hours only, so a market that moved is read at today's level */
+   recentSoldPrice?: number | null; recentSales?: number;
+   /** hourly floor's standard deviation over its mean, 3 days */
+-  floorCv?: number | null }
++  floorCv?: number | null;
++  /** cautious units sold a day: the 95 percent one sided lower bound of the sale event count, times units per event,
++   * over hours watched, so few sales give a low number. null under 6 hours watched (never projected). */
++  lowPerDay?: number | null;
++  /** new units other sellers posted at or under 1.1 times the floor, per day (all new units for older rows) */
++  newPerDay?: number;
++  /** highest unit price judged bought at the latest publish (the last hour), null when nothing was bought */
++  sweepHigh?: number | null;
++  /** lowest hourly floor in the last 3 days */
++  low3d?: number | null;
++  /** units judged sold in the window, the sale events behind them (listings bought), and units per event */
++  soldUnits?: number;
++  saleEvents?: number;
++  unitsPerEvent?: number | null;
++  /** hours of differenced publishes behind these numbers (the same as `hours`) */
++  hoursWatched?: number }
+ 
+ /** Why people buy an item: quests that require it and recipes that use it. */
+ export interface Driver { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] }
+diff --git a/src/engine/collector.ts b/src/engine/collector.ts
+index a800a4c..9c4942c 100644
+--- a/src/engine/collector.ts
++++ b/src/engine/collector.ts
+@@ -1,7 +1,7 @@
+ import type { BlizzardClient } from '../blizzard/client.ts';
+ import { HouseResponse, CommoditiesResponse } from '../blizzard/contracts.ts';
+-import { aggregate, fromAuctionRows, fromCommodityRows, type Listing, type ItemStat } from '../analysis/aggregate.ts';
+-import { type DB, tx } from '../store/db.ts';
++import { aggregate, fromAuctionRows, fromCommodityRows, nextSeen, type Listing, type ItemStat, type Seen, type TimeLeft, type OwnTrades, type Diagnostics } from '../analysis/aggregate.ts';
++import { type DB, tx, getKv, setKv } from '../store/db.ts';
+ import { rawPath, writeRaw, readRaw } from './rawstore.ts';
+ import { RULESET, type HouseRow } from './houses.ts';
+ import { existsSync } from 'node:fs';
+@@ -21,7 +21,98 @@ export interface SnapshotEvent {
+   suspect: string[];
+ }
+ 
+-interface Cursor { lastModified: string | null; listings: Listing[] | null }
++/** `seen`: first sight of every listing in `listings`; undefined until loaded from listing_seen on the first poll. */
++interface Cursor { lastModified: string | null; listings: Listing[] | null; seen?: Map<number, Seen> }
++
++const H = 3600_000;
++
++/**
++ * Chip's own trades, so his buys never count as market demand and his posts never as competing ones.
++ * HOOK: no data source fills this yet. Settings key `own_trade_listing_ids` holds a JSON array of auction ids
++ * (listings Chip posted or bought). A mailbox or addon import can write it later.
++ */
++export function ownTrades(db: DB): OwnTrades | undefined {
++  const r = db.prepare(`SELECT value FROM settings WHERE key = 'own_trade_listing_ids'`).get() as { value: string } | undefined;
++  if (!r) return undefined;
++  try {
++    const ids = JSON.parse(r.value) as unknown;
++    return Array.isArray(ids) ? { listingIds: new Set(ids.map(Number).filter(Number.isFinite)) } : undefined;
++  } catch { return undefined; }
++}
++
++/** kv key: first sights at or before this publish time are of unknown age (they were seeded, not seen appear). */
++const seenSinceKey = (houseId: number, kind: string) => `listing_seen_since:${houseId}:${kind}`;
++
++/**
++ * Listing first sights for one house and kind, from table listing_seen. Whether the age is known is not stored:
++ * it is known when the first sight came from a differenced publish (diff_hours set) after the seeding time.
++ */
++export function loadSeen(db: DB, houseId: number, kind: string): Map<number, Seen> {
++  const since = Number(getKv(db, seenSinceKey(houseId, kind)) ?? 0);
++  const diff = new Map((db.prepare('SELECT published_at, diff_hours FROM snapshots WHERE house_id = ? AND kind = ?').all(houseId, kind) as Array<{ published_at: number; diff_hours: number | null }>)
++    .map(r => [r.published_at, r.diff_hours]));
++  const rows = db.prepare('SELECT listing_id, first_seen, first_time_left FROM listing_seen WHERE house_id = ? AND kind = ?').all(houseId, kind) as Array<{ listing_id: number; first_seen: number; first_time_left: string }>;
++  const shared = new Map<string, Seen>();
++  const out = new Map<number, Seen>();
++  for (const r of rows) {
++    const d = diff.get(r.first_seen);
++    const postedAfter = r.first_seen > since && d != null ? r.first_seen - Math.round(d * H) : null;
++    const key = `${r.first_seen}:${r.first_time_left}:${postedAfter}`;
++    let s = shared.get(key);
++    if (!s) shared.set(key, (s = { firstSeen: r.first_seen, firstTimeLeft: r.first_time_left as TimeLeft, postedAfter }));
++    out.set(r.listing_id, s);
++  }
++  return out;
++}
++
++/** Write the change between two first sight maps (or the whole map when `before` is null). Call inside a transaction. */
++export function saveSeen(db: DB, houseId: number, kind: string, before: Map<number, Seen> | null, after: Map<number, Seen>, items: Map<number, number>): void {
++  const ins = db.prepare('INSERT OR REPLACE INTO listing_seen (house_id, kind, listing_id, item_id, first_seen, first_time_left) VALUES (?, ?, ?, ?, ?, ?)');
++  if (!before) {
++    db.prepare('DELETE FROM listing_seen WHERE house_id = ? AND kind = ?').run(houseId, kind);
++    for (const [id, s] of after) ins.run(houseId, kind, id, items.get(id) ?? 0, s.firstSeen, s.firstTimeLeft);
++    return;
++  }
++  const del = db.prepare('DELETE FROM listing_seen WHERE house_id = ? AND kind = ? AND listing_id = ?');
++  for (const id of before.keys()) if (!after.has(id)) del.run(houseId, kind, id);
++  for (const [id, s] of after) if (before.get(id) !== s) ins.run(houseId, kind, id, items.get(id) ?? 0, s.firstSeen, s.firstTimeLeft);
++}
++
++export function markSeenSince(db: DB, houseId: number, kind: string, at: number): void {
++  setKv(db, seenSinceKey(houseId, kind), String(at));
++}
++
++/**
++ * Whether item_stats has a sold_events column. It is not in the schema yet (it needs a migration in the protected
++ * src/store/db.ts); until it is, the count of sale events is not stored and demand falls back to a cruder count.
++ */
++export function hasSoldEvents(db: DB): boolean {
++  return (db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('item_stats') WHERE name = 'sold_events'`).get() as { n: number }).n > 0;
++}
++
++/** INSERT for one item_stats row, with sold_events when the column exists. Arguments in the order of `itemStatValues`. */
++export function itemStatsInsert(db: DB): ReturnType<DB['prepare']> {
++  const ev = hasSoldEvents(db);
++  return db.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5,
++    total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor, sold_value,
++    sold_units, sweep_high, new_near_floor${ev ? ', sold_events' : ''})
++    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${ev ? ', ?' : ''})`);
++}
++export function itemStatValues(snapshotId: number, houseId: number, publishedAt: number, s: ItemStat, withEvents: boolean): Array<string | number | null> {
++  const v: Array<string | number | null> = [snapshotId, houseId, s.itemId, publishedAt, s.floor, s.unitsAtFloor, s.unitsWithin5, s.totalUnits, s.listings,
++    JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits, s.goneUnitsExpiringNearFloor, s.soldValue,
++    s.soldUnits, s.sweepHigh, s.newNearFloor];
++  if (withEvents) v.push(s.soldEvents);
++  return v;
++}
++
++/** One suspect line per publish for sale bound breaches and age readings that contradict the bucket mapping. */
++export function diagSuspects(houseId: number, kind: string, d: Diagnostics): string[] {
++  const out: string[] = [];
++  if (d.breaches.length) out.push(`house ${houseId} ${kind}: units judged sold exceeded what left the house on ${d.breaches.length} item${d.breaches.length === 1 ? '' : 's'} (${d.breaches.slice(0, 3).join('; ')})`);
++  if (d.ageConflicts) out.push(`house ${houseId} ${kind}: ${d.ageConflicts} vanished listings had a time left that contradicts their age (check the time left mapping)`);
++  return out;
++}
+ 
+ /**
+  * Polls one house and kind. A 304 costs nothing. A 200 with a new Last-Modified is a publish:
+@@ -34,7 +125,8 @@ export class Collector {
+ 
+   private key(h: number, k: Kind) { return `${h}:${k}`; }
+ 
+-  /** Restore the last publish per house and kind so differencing survives a restart. */
++  /** Restore the last publish per house and kind so differencing survives a restart. Listing ages load on the first poll,
++   * after a history rebuild at start has had the chance to rewrite them. */
+   restore(houseId: number, kind: Kind): void {
+     const row = this.db.prepare('SELECT last_modified, raw_path FROM snapshots WHERE house_id = ? AND kind = ? ORDER BY published_at DESC LIMIT 1').get(houseId, kind) as { last_modified: string; raw_path: string | null } | undefined;
+     if (!row) return;
+@@ -88,28 +180,36 @@ export class Collector {
+       for (const l of cur.listings!) if (!now.has(l.id)) vanished++;
+       if (vanished / cur.listings!.length > 0.3) { diffable = false; suspect.push(`house ${house.id} ${kind}: ${Math.round(100 * vanished / cur.listings!.length)}% of listings vanished in one hour, not counted as sales`); }
+     }
+-    const stats = aggregate(listings, diffable ? cur.listings : null, { commodity: kind === 'commodities' });
++    // Listing ages: first sight of each listing, kept in listing_seen and pruned to the current listings.
++    if (!cur.seen) cur.seen = loadSeen(this.db, house.id, kind);
++    const seenBefore = cur.seen;
++    const prevSnap = cur.listings && Number.isFinite(prevAt) ? { listings: cur.listings, at: prevAt } : null;
++    const seeded = !!prevSnap && prevSnap.listings.some(l => !seenBefore.has(l.id));
++    const seen = nextSeen(seenBefore, listings, publishedAt, prevSnap, diffable);
++    const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
++    const stats = aggregate(listings, diffable ? cur.listings : null, {
++      commodity: kind === 'commodities', prevAt: diffable ? prevAt : undefined, curAt: publishedAt, seen: seenBefore, own: ownTrades(this.db), diag,
++    });
++    suspect.push(...diagSuspects(house.id, kind, diag));
+     const raw = rawPath(this.dataDir, house.id, kind, publishedAt);
+     const bytes = writeRaw(raw, listings);
+ 
+     const snapshotId = tx(this.db, () => {
++      if (seeded) markSeenSince(this.db, house.id, kind, prevAt);
++      saveSeen(this.db, house.id, kind, seenBefore.size ? seenBefore : null, seen, new Map(listings.map(l => [l.id, l.itemId])));
+       const existing = this.db.prepare('SELECT id FROM snapshots WHERE house_id = ? AND kind = ? AND last_modified = ?').get(house.id, kind, lastModified) as { id: number } | undefined;
+       if (existing) return existing.id; // same publish already stored, e.g. Last-Modified went backwards
+       const ins = this.db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path, diff_hours)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(house.id, kind, lastModified, publishedAt, Date.now(), listings.length,
+         stats.filter(s => s.listings > 0).length, bytes, raw, diffable ? diffHours : null);
+       const id = Number(ins.lastInsertRowid);
+-      const st = this.db.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5,
+-        total_units, listings, ladder, gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor, sold_value)
+-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+-      for (const s of stats) {
+-        st.run(id, house.id, s.itemId, publishedAt, s.floor, s.unitsAtFloor, s.unitsWithin5, s.totalUnits, s.listings,
+-          JSON.stringify(s.ladder), s.goneListings, s.goneUnits, s.goneUnitsExpiring, s.goneUnitsNearFloor, s.newUnits, s.goneUnitsExpiringNearFloor, s.soldValue);
+-      }
++      const st = itemStatsInsert(this.db);
++      const ev = hasSoldEvents(this.db);
++      for (const s of stats) st.run(...itemStatValues(id, house.id, publishedAt, s, ev));
+       return id;
+     });
+ 
+-    this.cursors.set(k, { lastModified, listings });
++    this.cursors.set(k, { lastModified, listings, seen });
+     return { snapshotId, house, kind, publishedAt, rows: listings.length, stats, suspect };
+   }
+ 
+diff --git a/src/engine/rebuild.ts b/src/engine/rebuild.ts
+index 82914d5..cec0342 100644
+--- a/src/engine/rebuild.ts
++++ b/src/engine/rebuild.ts
+@@ -1,53 +1,83 @@
+ import { existsSync } from 'node:fs';
+ import type { DB } from '../store/db.ts';
+ import { tx, getKv, setKv } from '../store/db.ts';
+-import { aggregate } from '../analysis/aggregate.ts';
++import { aggregate, nextSeen, type Listing, type Seen, type Diagnostics } from '../analysis/aggregate.ts';
+ import { readRaw } from './rawstore.ts';
+-import { MAX_DIFF_HOURS } from './collector.ts';
++import { MAX_DIFF_HOURS, ownTrades, saveSeen, markSeenSince, itemStatsInsert, itemStatValues, hasSoldEvents } from './collector.ts';
+ 
+ /**
+  * Re-count stored history with the current sale rules. Blizzard only ever serves the current snapshot, so past
+  * sales cannot be downloaded; but every raw snapshot the engine kept can be differenced again. This rebuilds
+- * item_stats for every stored publish (floor, ladder, sales, sold price) and the hours each one covers.
++ * item_stats for every stored publish (floor, ladder, sales, sold price, sweeps, new posts near the floor) and the
++ * hours each one covers. Listing ages are worked out again from the raw snapshots in order (first sight of each
++ * listing id), and the ages of the latest publish per house and kind are written back to listing_seen so the
++ * collector carries on from them.
+  */
+-export function rebuildHistory(db: DB, log: (m: string) => void = () => {}): { snapshots: number; rebuilt: number; skipped: number } {
++export function rebuildHistory(db: DB, log: (m: string) => void = () => {}): { snapshots: number; rebuilt: number; skipped: number; breaches: string[]; ageConflicts: number } {
+   const snaps = db.prepare(`SELECT id, house_id, kind, published_at, raw_path FROM snapshots ORDER BY house_id, kind, published_at`).all() as Array<{ id: number; house_id: number; kind: string; published_at: number; raw_path: string | null }>;
+   let rebuilt = 0, skipped = 0;
+-  let prev: { house: number; kind: string; at: number; listings: ReturnType<typeof readRaw> } | null = null;
++  const own = ownTrades(db);
++  const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
++  const breaches: string[] = [];
++  let prev: { house: number; kind: string; at: number; listings: Listing[] } | null = null;
++  // First sight of each listing, per house and kind, carried across missing raw files (a missing file is a gap).
++  let seen: Map<number, Seen> | null = null;
++  let chain = '';
+   const del = db.prepare('DELETE FROM item_stats WHERE snapshot_id = ?');
+-  const ins = db.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder,
+-    gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor, sold_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
++  const ins = itemStatsInsert(db);
++  const withEvents = hasSoldEvents(db);
+   const setHours = db.prepare('UPDATE snapshots SET diff_hours = ? WHERE id = ?');
+-  for (const s of snaps) {
++  const finishChain = (last: typeof snaps[number] | undefined) => {
++    // Hand the ages over to the collector only when the chain ended on its latest publish, read whole.
++    if (!last || !seen || !prev || prev.at !== last.published_at || prev.house !== last.house_id || prev.kind !== last.kind) return;
++    const items = new Map(prev.listings.map(l => [l.id, l.itemId]));
++    const s = seen;
++    tx(db, () => { saveSeen(db, last.house_id, last.kind, null, s, items); markSeenSince(db, last.house_id, last.kind, 0); });
++  };
++  for (let i = 0; i < snaps.length; i++) {
++    const s = snaps[i]!;
++    const key = `${s.house_id}:${s.kind}`;
++    if (key !== chain) { chain = key; seen = null; prev = null; }
+     if (!s.raw_path || !existsSync(s.raw_path)) { prev = null; skipped++; continue; }
+     let listings;
+     try { listings = readRaw(s.raw_path); } catch { prev = null; skipped++; continue; }
+     const samePair = prev && prev.house === s.house_id && prev.kind === s.kind;
+     const hours = samePair ? (s.published_at - prev!.at) / 3600_000 : null;
+-    let diffable = samePair && hours != null && hours > 0 && hours <= MAX_DIFF_HOURS;
++    let diffable = !!samePair && hours != null && hours > 0 && hours <= MAX_DIFF_HOURS;
+     if (diffable && prev!.listings.length > 100) {
+       const now = new Set(listings.map(l => l.id));
+       const vanished = prev!.listings.filter(l => !now.has(l.id)).length;
+       if (vanished / prev!.listings.length > 0.3) diffable = false;
+     }
+-    const stats = aggregate(listings, diffable ? prev!.listings : null, { commodity: s.kind === 'commodities' });
++    const seenBefore = seen;
++    seen = nextSeen(seenBefore, listings, s.published_at, prev ? { listings: prev.listings, at: prev.at } : null, diffable);
++    diag.breaches = [];
++    const stats = aggregate(listings, diffable ? prev!.listings : null, {
++      commodity: s.kind === 'commodities', prevAt: diffable ? prev!.at : undefined, curAt: s.published_at, seen: seenBefore ?? undefined, own, diag,
++    });
++    for (const b of diag.breaches) breaches.push(`house ${s.house_id} ${s.kind} at ${new Date(s.published_at).toISOString()}: ${b}`);
+     tx(db, () => {
+       del.run(s.id);
+-      for (const r of stats) ins.run(s.id, s.house_id, r.itemId, s.published_at, r.floor, r.unitsAtFloor, r.unitsWithin5, r.totalUnits, r.listings, JSON.stringify(r.ladder),
+-        r.goneListings, r.goneUnits, r.goneUnitsExpiring, r.goneUnitsNearFloor, r.newUnits, r.goneUnitsExpiringNearFloor, r.soldValue);
++      for (const r of stats) ins.run(...itemStatValues(s.id, s.house_id, s.published_at, r, withEvents));
+       setHours.run(diffable ? hours : null, s.id);
+     });
+     rebuilt++;
+     prev = { house: s.house_id, kind: s.kind, at: s.published_at, listings };
++    const next = snaps[i + 1];
++    if (!next || `${next.house_id}:${next.kind}` !== key) finishChain(s);
+   }
+   log(`history rebuilt with current sale rules: ${rebuilt} snapshots re-counted, ${skipped} without raw data`);
+-  return { snapshots: snaps.length, rebuilt, skipped };
++  if (breaches.length) log(`suspected bug: units judged sold exceeded what left the house ${breaches.length} times (${breaches.slice(0, 3).join('; ')})`);
++  if (diag.ageConflicts) log(`suspected bug: ${diag.ageConflicts} vanished listings had a time left that contradicts their age`);
++  return { snapshots: snaps.length, rebuilt, skipped, breaches, ageConflicts: diag.ageConflicts };
+ }
+ 
+ /** Rebuild once per version of the sale rules. Bump the version whenever aggregate's sale logic changes. */
+-export const SALE_RULES_VERSION = '2026-11-19b';
++export const SALE_RULES_VERSION = '2026-11-24';
+ export function rebuildIfRulesChanged(db: DB, log: (m: string) => void): void {
+-  if (getKv(db, 'sale_rules_version') === SALE_RULES_VERSION) return;
++  // Once a migration adds item_stats.sold_events (P14), the history is re-counted once more to fill it.
++  const version = SALE_RULES_VERSION + (hasSoldEvents(db) ? '+events' : '');
++  if (getKv(db, 'sale_rules_version') === version) return;
+   rebuildHistory(db, log);
+-  setKv(db, 'sale_rules_version', SALE_RULES_VERSION);
++  setKv(db, 'sale_rules_version', version);
+ }
+diff --git a/tests/sim/evaluate.ts b/tests/sim/evaluate.ts
+new file mode 100644
+index 0000000..16272ac
+--- /dev/null
++++ b/tests/sim/evaluate.ts
+@@ -0,0 +1,79 @@
++/**
++ * Runs the sale counter over simulated snapshots, old rules (the counter as of commit 39a8dda, kept verbatim in
++ * old-aggregate.ts) against the current rules, and scores both against the simulator's truth.
++ */
++import { aggregate, nextSeen, type Seen, type Diagnostics } from '../../src/analysis/aggregate.ts';
++import { aggregate as oldAggregate } from './old-aggregate.ts';
++import { simulate, type MarketType, type SimOpts } from './market.ts';
++
++export interface Score {
++  type: MarketType;
++  hours: number;
++  /** units bought from listings visible at the previous snapshot, and inside the hour (invisible by design) */
++  truth: number;
++  invisible: number;
++  old: number;
++  new: number;
++  /** (estimate - truth) / truth */
++  oldBias: number;
++  newBias: number;
++  /** sum over item days of |estimate - truth|, over the sum of truth */
++  oldDayError: number;
++  newDayError: number;
++  /** the same per item hour */
++  oldHourError: number;
++  newHourError: number;
++  breaches: number;
++  ageConflicts: number;
++}
++
++export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts> = {}): Score {
++  let truth = 0, invisible = 0, oldSum = 0, newSum = 0, oldDay = 0, newDay = 0, oldHour = 0, newHour = 0, hours = 0;
++  const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
++  for (const seed of seeds) {
++    const run = simulate({ type, seed, ...extra });
++    let seen: Map<number, Seen> | null = null;
++    const day = new Map<string, { t: number; o: number; n: number }>();
++    for (let k = 0; k < run.snapshots.length; k++) {
++      const cur = run.snapshots[k]!;
++      const prev = k > 0 ? run.snapshots[k - 1]! : null;
++      const before = seen;
++      seen = nextSeen(before, cur.listings, cur.at, prev, !!prev);
++      if (!prev) continue;
++      hours++;
++      const n = aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag });
++      const o = oldAggregate(cur.listings, prev.listings, { commodity: run.commodity });
++      const nm = new Map(n.map(s => [s.itemId, s.soldUnits ?? 0]));
++      const om = new Map(o.map(s => [s.itemId, Math.max(0, (s.goneUnitsNearFloor ?? 0) - (s.goneUnitsExpiringNearFloor ?? 0))]));
++      const items = new Set([...nm.keys(), ...om.keys(), ...run.visible[k]!.keys()]);
++      for (const item of items) {
++        const t = run.visible[k]!.get(item) ?? 0, ov = om.get(item) ?? 0, nv = nm.get(item) ?? 0;
++        truth += t; oldSum += ov; newSum += nv;
++        oldHour += Math.abs(ov - t); newHour += Math.abs(nv - t);
++        const key = `${item}:${Math.floor(k / 24)}`;
++        const d = day.get(key) ?? { t: 0, o: 0, n: 0 };
++        d.t += t; d.o += ov; d.n += nv;
++        day.set(key, d);
++      }
++      for (const v of run.invisible[k]!.values()) invisible += v;
++    }
++    for (const d of day.values()) { oldDay += Math.abs(d.o - d.t); newDay += Math.abs(d.n - d.t); }
++  }
++  const rel = (x: number) => truth > 0 ? x / truth : 0;
++  return {
++    type, hours, truth, invisible, old: oldSum, new: newSum,
++    oldBias: rel(oldSum - truth), newBias: rel(newSum - truth),
++    oldDayError: rel(oldDay), newDayError: rel(newDay), oldHourError: rel(oldHour), newHourError: rel(newHour),
++    breaches: diag.breaches.length, ageConflicts: diag.ageConflicts,
++  };
++}
++
++const pct = (x: number) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
++export function table(scores: Score[]): string {
++  const head = ['market', 'hours', 'true sold', 'unseen', 'old est', 'new est', 'old bias', 'new bias', 'old day err', 'new day err', 'old hour err', 'new hour err', 'breaches'];
++  const rows = scores.map(s => [s.type, String(s.hours), String(s.truth), String(s.invisible), String(s.old), String(s.new), pct(s.oldBias), pct(s.newBias),
++    pct(s.oldDayError).slice(1), pct(s.newDayError).slice(1), pct(s.oldHourError).slice(1), pct(s.newHourError).slice(1), String(s.breaches)]);
++  const w = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i]!.length)));
++  const line = (r: string[]) => '| ' + r.map((c, i) => c.padEnd(w[i]!)).join(' | ') + ' |';
++  return [line(head), '|' + w.map(x => '-'.repeat(x + 2)).join('|') + '|', ...rows.map(line)].join('\n');
++}
+diff --git a/tests/sim/market.ts b/tests/sim/market.ts
+new file mode 100644
+index 0000000..35644e3
+--- /dev/null
++++ b/tests/sim/market.ts
+@@ -0,0 +1,210 @@
++/**
++ * A small auction house simulator with known ground truth, for the sale counter only (docs/flip-plan.md section 9).
++ *
++ * Minute by minute it plays sellers posting 2, 8 and 24 hour listings, buyers, big sweeps, cancels to undercut,
++ * plain cancels, expiries and expired listings posted again, then takes an hourly snapshot like Blizzard's.
++ * Commodity buyers fill cheapest first through a buy window and partial buys shrink a stack. Equipment buyers pick
++ * a listing. Truth per hour and item: units bought from listings that were up at the previous snapshot (what a
++ * snapshot counter can see) and units bought from listings posted and bought inside the hour (invisible by design).
++ */
++import type { Listing, TimeLeft } from '../../src/analysis/aggregate.ts';
++
++export type MarketType = 'deep' | 'thin' | 'equipment';
++
++export function rng(seed: number): () => number {
++  let a = seed >>> 0;
++  return () => {
++    a = (a + 0x6d2b79f5) >>> 0;
++    let t = a;
++    t = Math.imul(t ^ (t >>> 15), t | 1);
++    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
++    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
++  };
++}
++
++interface Spec {
++  commodity: boolean;
++  ref: [number, number];
++  postsPerHour: number;
++  postQty: (r: () => number) => number;
++  buyersPerHour: number;
++  buyQty: (r: () => number) => number;
++  sweepsPerHour: number;
++  undercutsPerHour: number;
++  cancelPerListingHour: number;
++  relistShare: number;
++}
++
++const pickWeighted = <T,>(r: () => number, items: Array<[T, number]>): T => {
++  const total = items.reduce((s, [, w]) => s + w, 0);
++  let x = r() * total;
++  for (const [v, w] of items) { x -= w; if (x <= 0) return v; }
++  return items[items.length - 1]![0];
++};
++
++/** Listing lengths as measured on Forever's new listings (B22): 17% 2 hour, 64% 8 hour, 18% 24 hour. */
++const duration = (r: () => number) => pickWeighted(r, [[120, 17], [480, 64], [1440, 18]]);
++
++export const SPECS: Record<MarketType, Spec> = {
++  // Copper Ore like, sized to house 111's commodity markets of 50 to 500 listings (about 150 listings, 33 new posts
++  // and 21 listings bought an hour): stacks of 1 to 20, many buyers, a sweep every day or so.
++  deep: {
++    commodity: true, ref: [80, 400], postsPerHour: 30,
++    postQty: r => pickWeighted(r, [[1, 30], [2, 10], [3, 8], [5, 10], [10, 12], [20, 25], [1 + Math.floor(r() * 19), 5]]),
++    buyersPerHour: 14, buyQty: r => 1 + Math.floor(-Math.log(1 - r()) * 10),
++    sweepsPerHour: 0.04, undercutsPerHour: 1, cancelPerListingHour: 0.003, relistShare: 0.4,
++  },
++  // A dye or a rare reagent: a handful of listings (house 111 thin markets: about 3 up, a sale every 3 hours).
++  thin: {
++    commodity: true, ref: [500, 5000], postsPerHour: 0.5,
++    postQty: r => pickWeighted(r, [[1, 50], [2, 20], [5, 20], [10, 10]]),
++    buyersPerHour: 0.35, buyQty: r => pickWeighted(r, [[1, 60], [2, 20], [5, 20]]),
++    sweepsPerHour: 0.01, undercutsPerHour: 0.08, cancelPerListingHour: 0.004, relistShare: 0.5,
++  },
++  // A green with a few dozen copies up (house 111 equipment markets of 10 to 60 copies: about 24 up, 4 new posts and
++  // 1 bought an hour): quantity 1, buyers pick one.
++  equipment: {
++    commodity: false, ref: [2000, 50000], postsPerHour: 3,
++    postQty: () => 1,
++    buyersPerHour: 1.2, buyQty: () => 1,
++    sweepsPerHour: 0, undercutsPerHour: 0.15, cancelPerListingHour: 0.004, relistShare: 0.4,
++  },
++};
++
++interface Live { id: number; item: number; qty: number; price: number; posted: number; ends: number; dur: number }
++
++export interface SimOpts {
++  type: MarketType; seed: number; items?: number; hours?: number; warmupHours?: number; longEndsAt?: number;
++  /** override how often a seller cancels to undercut, per item per hour (sensitivity runs) */
++  undercutsPerHour?: number;
++}
++
++export interface SimRun {
++  type: MarketType;
++  commodity: boolean;
++  /** hourly snapshots, `at` in ms */
++  snapshots: Array<{ at: number; listings: Listing[] }>;
++  /** truth[k] for the hour ending at snapshot k (k >= 1): item -> units */
++  visible: Array<Map<number, number>>;
++  invisible: Array<Map<number, number>>;
++  /** what really ended each listing that vanished: bought, expired, undercut (cancelled and posted cheaper), cancelled */
++  fate: Map<number, 'bought' | 'expired' | 'undercut' | 'cancelled'>;
++}
++
++/** Bucket for minutes left. `longEndsAt` is where LONG gives way to VERY_LONG, 720 (12 hours) or 480 (8 hours): not yet measured on Forever. */
++export function bucket(minutesLeft: number, longEndsAt = 720): TimeLeft {
++  if (minutesLeft < 30) return 'SHORT';
++  if (minutesLeft < 120) return 'MEDIUM';
++  if (minutesLeft < longEndsAt) return 'LONG';
++  return 'VERY_LONG';
++}
++
++export function simulate(o: SimOpts): SimRun {
++  const spec = { ...SPECS[o.type], ...(o.undercutsPerHour != null ? { undercutsPerHour: o.undercutsPerHour } : {}) };
++  const r = rng(o.seed);
++  const nItems = o.items ?? 6;
++  const hours = o.hours ?? 24 * 7;
++  const warm = (o.warmupHours ?? 36) * 60;
++  const refs = new Map<number, number>();
++  for (let i = 0; i < nItems; i++) refs.set(1000 + i, Math.round(spec.ref[0] + r() * (spec.ref[1] - spec.ref[0])));
++  const live = new Map<number, Live[]>();
++  for (const id of refs.keys()) live.set(id, []);
++  let nextId = 1;
++  const fate: SimRun['fate'] = new Map();
++  const pending: Array<{ at: number; item: number; qty: number; dur: number }> = [];
++  const snapshots: SimRun['snapshots'] = [];
++  const visible: SimRun['visible'] = [];
++  const invisible: SimRun['invisible'] = [];
++  let lastSnap = -Infinity;
++  const poisson = (lambda: number) => { let k = 0, p = Math.exp(-lambda), s = p; const u = r(); while (u > s && k < 50) { k++; p *= lambda / k; s += p; } return k; };
++  const floorOf = (ls: Live[]) => ls.reduce((m, l) => Math.min(m, l.price), Infinity);
++
++  const post = (t: number, item: number, qty: number, dur: number, at?: number) => {
++    const ls = live.get(item)!;
++    const ref = refs.get(item)!;
++    let price: number;
++    if (at != null) price = at;
++    else {
++      const floor = floorOf(ls);
++      const reserve = ref * (0.8 + r() * 0.2);
++      if (r() < 0.2) price = ref * (1.1 + r() * 0.7); // a lazy seller far up the ladder
++      else if (floor !== Infinity && floor >= reserve) price = floor - Math.max(1, floor * r() * 0.02);
++      else price = reserve * (1 + r() * 0.25);
++    }
++    ls.push({ id: nextId++, item, qty, price: Math.max(1, Math.round(price)), posted: t, ends: t + dur, dur });
++  };
++  // Trades of the hour now running; handed over at the snapshot that closes it.
++  let hourVisible = new Map<number, number>(), hourInvisible = new Map<number, number>();
++  const record = (l: Live, units: number) => {
++    const m = l.posted < lastSnap ? hourVisible : hourInvisible; // posted before the last snapshot: it was in it
++    m.set(l.item, (m.get(l.item) ?? 0) + units);
++  };
++  const buy = (item: number, want: number, maxPrice: number) => {
++    const ls = live.get(item)!;
++    if (spec.commodity) {
++      ls.sort((a, b) => a.price - b.price || b.id - a.id); // cheapest first, newest first at one price (B23)
++      while (want > 0 && ls.length && ls[0]!.price <= maxPrice) {
++        const l = ls[0]!;
++        const take = Math.min(want, l.qty);
++        l.qty -= take; want -= take;
++        record(l, take);
++        if (l.qty === 0) { ls.shift(); fate.set(l.id, 'bought'); }
++      }
++    } else {
++      const ok = ls.filter(l => l.price <= maxPrice).sort((a, b) => a.price - b.price);
++      if (!ok.length) return;
++      // Most buyers take the cheapest; some pick another copy within 20 percent of it (a better suffix).
++      const near = ok.filter(l => l.price <= ok[0]!.price * 1.2);
++      const pick = r() < 0.75 ? ok[0]! : near[Math.floor(r() * near.length)]!;
++      ls.splice(ls.indexOf(pick), 1);
++      fate.set(pick.id, 'bought');
++      record(pick, 1);
++    }
++  };
++
++  const end = warm + hours * 60;
++  for (let t = 0; t <= end; t++) {
++    // Hourly snapshot, taken before this minute's trading.
++    if (t >= warm && (t - warm) % 60 === 0) {
++      const listings: Listing[] = [];
++      for (const ls of live.values()) for (const l of ls) listings.push({ id: l.id, itemId: l.item, quantity: l.qty, unitPrice: l.price, timeLeft: bucket(l.ends - t, o.longEndsAt) });
++      snapshots.push({ at: t * 60_000, listings });
++      visible.push(snapshots.length === 1 ? new Map() : hourVisible);
++      invisible.push(snapshots.length === 1 ? new Map() : hourInvisible);
++      hourVisible = new Map(); hourInvisible = new Map();
++      lastSnap = t;
++    }
++    for (const [item, ls] of live) {
++      const ref = refs.get(item)!;
++      // Expiries, some posted again within the hour at the going price.
++      for (let i = ls.length - 1; i >= 0; i--) if (ls[i]!.ends <= t) {
++        const l = ls[i]!;
++        ls.splice(i, 1);
++        fate.set(l.id, 'expired');
++        if (r() < spec.relistShare) pending.push({ at: t + 5 + Math.floor(r() * 55), item, qty: l.qty, dur: l.dur });
++      }
++      for (let i = pending.length - 1; i >= 0; i--) if (pending[i]!.at <= t && pending[i]!.item === item) { const p = pending.splice(i, 1)[0]!; post(t, item, p.qty, p.dur); }
++      for (let n = poisson(spec.postsPerHour / 60); n > 0; n--) post(t, item, spec.postQty(r), duration(r));
++      for (let n = poisson(spec.buyersPerHour / 60); n > 0; n--) buy(item, spec.buyQty(r), ref * (1.05 + r() * 0.55));
++      // A sweep: one buyer takes a third of everything up to three times the usual price.
++      if (r() < spec.sweepsPerHour / 60) buy(item, Math.ceil(ls.reduce((s, l) => s + l.qty, 0) * (0.25 + r() * 0.2)), ref * 3);
++      // Cancel to undercut: a seller near the front who is not the cheapest pulls the listing and posts the same
++      // quantity and length just under the floor.
++      if (ls.length > 1 && r() < spec.undercutsPerHour / 60) {
++        const sorted = [...ls].sort((a, b) => a.price - b.price);
++        const front = sorted.slice(1, 6).filter(l => t - l.posted >= 10);
++        if (front.length) {
++          const l = front[Math.floor(r() * front.length)]!;
++          const floor = sorted[0]!.price;
++          const price = Math.round(floor - Math.max(1, floor * r() * 0.02));
++          ls.splice(ls.indexOf(l), 1);
++          fate.set(l.id, price >= l.price * 0.8 ? 'undercut' : 'cancelled');
++          if (price >= l.price * 0.8) post(t, item, l.qty, l.dur, price);
++        }
++      }
++      // Plain cancels.
++      for (let i = ls.length - 1; i >= 0; i--) if (r() < spec.cancelPerListingHour / 60) { fate.set(ls[i]!.id, 'cancelled'); ls.splice(i, 1); }
++    }
++  }
++  return { type: o.type, commodity: spec.commodity, snapshots, visible, invisible, fate };
++}
+diff --git a/tests/sim/old-aggregate.ts b/tests/sim/old-aggregate.ts
+new file mode 100644
+index 0000000..4fcbe31
+--- /dev/null
++++ b/tests/sim/old-aggregate.ts
+@@ -0,0 +1,175 @@
++/**
++ * Turn one snapshot of listings into per item market stats, and difference it
++ * against the previous snapshot of the same house and kind.
++ *
++ * Ledger rules applied here:
++ *  - Equipment: buyout is the unit price (quantity is always 1, V13). Divided anyway, defensively.
++ *  - Commodities: unit_price is already per unit (V4).
++ *  - Bid only listings never set a floor.
++ *  - Sell through comes from strict listing id set differences, never row counts (rule 4).
++ */
++
++export interface Listing {
++  id: number;
++  itemId: number;
++  quantity: number;
++  /** copper per unit, null for bid only */
++  unitPrice: number | null;
++  timeLeft: 'SHORT' | 'MEDIUM' | 'LONG' | 'VERY_LONG';
++}
++
++export interface ItemStat {
++  itemId: number;
++  floor: number | null;
++  unitsAtFloor: number;
++  unitsWithin5: number;
++  totalUnits: number;
++  listings: number;
++  /** cheapest price points, [unitPrice, units] */
++  ladder: Array<[number, number]>;
++  goneListings: number | null;
++  goneUnits: number | null;
++  goneUnitsExpiring: number | null;
++  goneUnitsNearFloor: number | null;
++  /** of goneUnitsNearFloor, ones that were most likely NOT sales: they could have expired (SHORT or MEDIUM time
++   * left, since snapshots are about an hour apart), or a matching listing reappeared (cancel and relist) */
++  goneUnitsExpiringNearFloor: number | null;
++  /** copper value of the near floor units judged sold, so demand carries the price it happened at */
++  soldValue: number | null;
++  newUnits: number | null;
++}
++
++export const LADDER_POINTS = 12;
++
++export function fromAuctionRows(rows: Array<{ id: number; item: { id: number }; buyout?: number; quantity: number; time_left: Listing['timeLeft'] }>): Listing[] {
++  return rows.map(r => ({
++    id: r.id,
++    itemId: r.item.id,
++    quantity: r.quantity,
++    unitPrice: r.buyout != null && r.buyout > 0 ? Math.floor(r.buyout / r.quantity) : null,
++    timeLeft: r.time_left,
++  }));
++}
++
++export function fromCommodityRows(rows: Array<{ id: number; item: { id: number }; unit_price: number; quantity: number; time_left: Listing['timeLeft'] }>): Listing[] {
++  return rows.map(r => ({ id: r.id, itemId: r.item.id, quantity: r.quantity, unitPrice: r.unit_price, timeLeft: r.time_left }));
++}
++
++/**
++ * `commodity`: stackables are bought through a window that always fills from the cheapest listing first, so a
++ * stack that vanished while a cheaper one is still up was cancelled, never bought. Equipment buyers pick a
++ * listing, so there a 25 percent margin applies.
++ */
++export function aggregate(current: Listing[], previous: Listing[] | null, opts: { commodity?: boolean } = {}): ItemStat[] {
++  const survivorMargin = opts.commodity ? 1 : 1.25;
++  const byItem = new Map<number, Listing[]>();
++  for (const l of current) {
++    let arr = byItem.get(l.itemId);
++    if (!arr) byItem.set(l.itemId, (arr = []));
++    arr.push(l);
++  }
++
++  // Previous snapshot, indexed for the strict id set difference.
++  let prevById: Map<number, Listing> | null = null;
++  let prevFloor: Map<number, number> | null = null;
++  const curIds = new Set(current.map(l => l.id));
++  if (previous) {
++    prevById = new Map(previous.map(l => [l.id, l]));
++    prevFloor = new Map();
++    for (const l of previous) {
++      if (l.unitPrice == null) continue;
++      const f = prevFloor.get(l.itemId);
++      if (f == null || l.unitPrice < f) prevFloor.set(l.itemId, l.unitPrice);
++    }
++  }
++
++  const gone = new Map<number, { listings: number; units: number; expiring: number; nearFloor: number; expiringNear: number; soldValue: number }>();
++  const curById = new Map(current.map(l => [l.id, l]));
++  // Thin markets only (5 listings or fewer last time): a vanished listing with a new one of the same size and
++  // about the same price is a cancel and relist, not a sale. Deep markets restock constantly, so matching there
++  // would erase real sales.
++  const prevCount = new Map<number, number>();
++  if (prevById) for (const l of prevById.values()) prevCount.set(l.itemId, (prevCount.get(l.itemId) ?? 0) + 1);
++  const relistPool = new Map<number, Listing[]>();
++  if (prevById) for (const l of current) if (!prevById.has(l.id) && (prevCount.get(l.itemId) ?? 0) <= 5) {
++    const a = relistPool.get(l.itemId) ?? []; a.push(l); relistPool.set(l.itemId, a);
++  }
++  const takeRelist = (l: Listing): boolean => {
++    const pool = relistPool.get(l.itemId);
++    if (!pool || l.unitPrice == null) return false;
++    const i = pool.findIndex(n => n.quantity === l.quantity && n.unitPrice != null && Math.abs(n.unitPrice - l.unitPrice!) <= l.unitPrice! * 0.25);
++    if (i < 0) return false;
++    pool.splice(i, 1);
++    return true;
++  };
++  // Cheapest listing that is still up now, per item. Buyers take the cheapest first, so a listing that vanished
++  // while it was priced over 1.25 times a cheaper surviving one was most likely cancelled, not bought.
++  const curFloor = new Map<number, number>();
++  for (const l of current) if (l.unitPrice != null && (prevById?.has(l.id) ?? false)) {
++    const f = curFloor.get(l.itemId); if (f == null || l.unitPrice < f) curFloor.set(l.itemId, l.unitPrice);
++  }
++  if (prevById) {
++    for (const [id, l] of prevById) {
++      // A listing that vanished, or a stack that shrank (a partial buy of a commodity listing), lost units.
++      const still = curIds.has(id) ? curById.get(id)! : null;
++      const lost = still ? Math.max(0, l.quantity - still.quantity) : l.quantity;
++      if (lost === 0) continue;
++      let g = gone.get(l.itemId);
++      if (!g) gone.set(l.itemId, (g = { listings: 0, units: 0, expiring: 0, nearFloor: 0, expiringNear: 0, soldValue: 0 }));
++      if (!still) g.listings++;
++      g.units += lost;
++      // Snapshots are about an hour apart, so anything that showed under 2 hours left may simply have expired.
++      const expiring = !still && (l.timeLeft === 'SHORT' || l.timeLeft === 'MEDIUM');
++      if (expiring) g.expiring += lost;
++      const survivor = curFloor.get(l.itemId);
++      const pricedAboveSurvivor = !still && survivor != null && l.unitPrice != null && l.unitPrice > survivor * survivorMargin;
++      const notSale = expiring || pricedAboveSurvivor || (!still && takeRelist(l));
++      const pf = prevFloor!.get(l.itemId);
++      if (pf != null && l.unitPrice != null && l.unitPrice <= pf * 1.1) {
++        g.nearFloor += lost;
++        if (notSale) g.expiringNear += lost; else g.soldValue += lost * l.unitPrice;
++      }
++    }
++  }
++
++  const out: ItemStat[] = [];
++  const itemIds = new Set<number>([...byItem.keys(), ...gone.keys()]);
++  for (const itemId of itemIds) {
++    const ls = byItem.get(itemId) ?? [];
++    let floor: number | null = null;
++    let totalUnits = 0;
++    const points = new Map<number, number>();
++    for (const l of ls) {
++      totalUnits += l.quantity;
++      if (l.unitPrice == null) continue;
++      if (floor == null || l.unitPrice < floor) floor = l.unitPrice;
++      points.set(l.unitPrice, (points.get(l.unitPrice) ?? 0) + l.quantity);
++    }
++    const ladder = [...points.entries()].sort((a, b) => a[0] - b[0]);
++    let unitsWithin5 = 0;
++    if (floor != null) for (const [p, u] of ladder) if (p <= floor * 1.05) unitsWithin5 += u;
++    let newUnits: number | null = null;
++    if (prevById) {
++      newUnits = 0;
++      for (const l of ls) if (!prevById.has(l.id)) newUnits += l.quantity;
++    }
++    const g = gone.get(itemId);
++    out.push({
++      itemId,
++      floor,
++      unitsAtFloor: floor == null ? 0 : points.get(floor) ?? 0,
++      unitsWithin5,
++      totalUnits,
++      listings: ls.length,
++      ladder: ladder.slice(0, LADDER_POINTS),
++      goneListings: prevById ? g?.listings ?? 0 : null,
++      goneUnits: prevById ? g?.units ?? 0 : null,
++      goneUnitsExpiring: prevById ? g?.expiring ?? 0 : null,
++      goneUnitsNearFloor: prevById ? g?.nearFloor ?? 0 : null,
++      goneUnitsExpiringNearFloor: prevById ? g?.expiringNear ?? 0 : null,
++      soldValue: prevById ? g?.soldValue ?? 0 : null,
++      newUnits,
++    });
++  }
++  return out;
++}
+diff --git a/tests/sim/report.ts b/tests/sim/report.ts
+new file mode 100644
+index 0000000..c4591f0
+--- /dev/null
++++ b/tests/sim/report.ts
+@@ -0,0 +1,19 @@
++/**
++ * Prints the simulator table: npx tsx tests/sim/report.ts [number of seeds, default 5]
++ * Old rules: the counter as of commit 39a8dda (tests/sim/old-aggregate.ts). New rules: src/analysis/aggregate.ts.
++ */
++import { score, table } from './evaluate.ts';
++
++const n = Number(process.argv[2] ?? 5);
++const seeds = Array.from({ length: n }, (_, i) => 101 + i);
++const types = ['deep', 'thin', 'equipment'] as const;
++console.log(`Sale counter against simulated truth: ${n} seeds, 6 items each, 7 days, hourly snapshots.`);
++console.log('"true sold" counts units bought from listings that were up at the previous snapshot; "unseen" were posted and bought inside one hour, invisible by design.\n');
++console.log(table(types.map(t => score(t, seeds))));
++console.log('\nLONG ends at 8 hours instead of 12 (the bucket edge not yet measured on Forever):');
++console.log(table(types.map(t => score(t, seeds, { longEndsAt: 480 }))));
++console.log('\nNo undercutting at all:');
++console.log(table(types.map(t => score(t, seeds, { undercutsPerHour: 0 }))));
++const twice = { deep: 2, thin: 0.16, equipment: 0.3 };
++console.log('\nTwice as much undercutting:');
++console.log(table(types.map(t => score(t, seeds, { undercutsPerHour: twice[t] }))));
+diff --git a/tests/sim/simulator.test.ts b/tests/sim/simulator.test.ts
+new file mode 100644
+index 0000000..f349b9a
+--- /dev/null
++++ b/tests/sim/simulator.test.ts
+@@ -0,0 +1,48 @@
++/**
++ * The sale counter against a simulated auction house with known truth (docs/flip-plan.md section 9, sale counting).
++ * Print the full table with: npx tsx tests/sim/report.ts
++ *
++ * Pass marks, and why:
++ *  - Bias within 10 percent on every market type. Demand feeds a cautious lower bound, so a small steady bias is
++ *    tolerable; the old rules were 10 to 31 percent low.
++ *  - Daily error (sum over item days of |estimate - truth| over truth), set at about 1.5 times what the current
++ *    rules measure, so seed noise does not fail the build, and each mark demands a clear cut from the old rules:
++ *    deep commodities at most 8 percent and at most 0.35 times the old error (measured 4.9 against 31.5),
++ *    thin commodities at most 10 percent and 0.75 times (6.4 against 12.4),
++ *    equipment at most 12 percent and 0.75 times (8.9 against 14.7).
++ *  - The rules must still beat the old ones when the simulator's guesses change: LONG ending at 8 instead of 12
++ *    hours (the bucket edge not yet measured), no undercutting at all, and twice as much.
++ *  - The sanity bound never breaches and no listing age contradicts its time left.
++ */
++import { describe, it, expect } from 'vitest';
++import { score } from './evaluate.ts';
++
++const seeds = [101, 102, 103];
++const types = ['deep', 'thin', 'equipment'] as const;
++const marks = { deep: { day: 0.08, vsOld: 0.35 }, thin: { day: 0.1, vsOld: 0.75 }, equipment: { day: 0.12, vsOld: 0.75 } };
++
++describe('sale counter against simulated truth', () => {
++  for (const t of types) {
++    it(`${t}: bias, daily error and the cut against the old rules meet the pass marks`, () => {
++      const s = score(t, seeds);
++      expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.1);
++      expect(s.newDayError).toBeLessThanOrEqual(marks[t].day);
++      expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * marks[t].vsOld);
++      expect(s.newHourError).toBeLessThan(s.oldHourError);
++      expect(s.breaches).toBe(0);
++      expect(s.ageConflicts).toBe(0);
++    }, 60_000);
++  }
++
++  it('still beats the old rules when the bucket edge or the amount of undercutting differs', () => {
++    const undercut = { deep: [0, 2], thin: [0, 0.16], equipment: [0, 0.3] };
++    for (const t of types) {
++      const runs = [score(t, seeds, { longEndsAt: 480 }), ...undercut[t].map(u => score(t, seeds, { undercutsPerHour: u }))];
++      for (const s of runs) {
++        expect(s.newDayError).toBeLessThan(s.oldDayError);
++        expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.12);
++        expect(s.breaches).toBe(0);
++      }
++    }
++  }, 120_000);
++});
+diff --git a/tests/unit/aggregate.test.ts b/tests/unit/aggregate.test.ts
+index 66bd2b0..477eafa 100644
+--- a/tests/unit/aggregate.test.ts
++++ b/tests/unit/aggregate.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, it, expect } from 'vitest';
+-import { aggregate, fromAuctionRows, fromCommodityRows, type Listing } from '../../src/analysis/aggregate.ts';
++import { aggregate, fromAuctionRows, fromCommodityRows, expiryChance, listingHours, nextSeen, buysFirst, type Listing, type Seen } from '../../src/analysis/aggregate.ts';
+ 
+ const L = (id: number, itemId: number, quantity: number, unitPrice: number | null, timeLeft: Listing['timeLeft'] = 'LONG'): Listing =>
+   ({ id, itemId, quantity, unitPrice, timeLeft });
+@@ -96,3 +96,128 @@ describe('telling sales from expiries, relists and cancels', () => {
+     expect(a.soldValue).toBe(40 * 100);
+   });
+ });
++
++describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => {
++  const H = 3600_000;
++  const t0 = Date.parse('2026-11-24T05:25:00Z');
++  // A listing first seen at t0, posted after the publish an hour before (age known).
++  const fresh = (tl: Listing['timeLeft']): Seen => ({ firstSeen: t0, firstTimeLeft: tl, postedAfter: t0 - H });
++
++  it('reads the listing length from the time left when first seen: MEDIUM 2, LONG 8, VERY_LONG 24 hours', () => {
++    expect(listingHours(fresh('MEDIUM'))).toBe(2);
++    expect(listingHours(fresh('LONG'))).toBe(8);
++    expect(listingHours(fresh('VERY_LONG'))).toBe(24);
++    expect(listingHours({ firstSeen: t0, firstTimeLeft: 'LONG', postedAfter: null })).toBeNull(); // age unknown: 8 or an aged 24
++    expect(listingHours({ firstSeen: t0, firstTimeLeft: 'VERY_LONG', postedAfter: null })).toBe(24); // only 24 hour listings show it
++  });
++
++  it('a 2 hour listing cannot expire in its first hour, can in its second', () => {
++    const l = L(1, 7, 1, 100, 'MEDIUM');
++    expect(expiryChance(l, fresh('MEDIUM'), t0, t0 + H).chance).toBe(0);
++    expect(expiryChance({ ...l, timeLeft: 'SHORT' }, fresh('MEDIUM'), t0 + H, t0 + 2 * H).chance).toBe(1);
++    // Unknown age falls back to the time left alone: MEDIUM (30 minutes to 2 hours) may run out within the hour.
++    expect(expiryChance(l, undefined, t0, t0 + H).chance).toBeGreaterThan(0.05);
++    expect(expiryChance(L(1, 7, 1, 100, 'LONG'), undefined, t0, t0 + H).chance).toBe(0);
++  });
++
++  it('the fastest movers count again: a fresh 2 hour listing that vanished within the hour was bought (old rule: expired)', () => {
++    const prev = [L(1, 5956, 1, 100, 'MEDIUM'), L(2, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 150, 'VERY_LONG')];
++    const cur = [L(3, 5956, 1, 150, 'VERY_LONG')];
++    const seen = new Map([[1, fresh('MEDIUM')], [2, fresh('MEDIUM')], [3, fresh('VERY_LONG')]]);
++    const a = aggregate(cur, prev, { prevAt: t0, curAt: t0 + H, seen })[0]!;
++    expect(a.soldUnits).toBe(2);
++    expect(a.soldValue).toBe(200);
++    expect(a.goneUnitsExpiring).toBe(0);
++    // Without ages (the old reading) the same two are treated as expiries.
++    expect(aggregate(cur, prev, { prevAt: t0, curAt: t0 + H })[0]!.soldUnits).toBe(0);
++  });
++
++  it('the Blacksmith Hammer relists stay out: a 2 hour listing in its last hour that vanished and came back is not a sale', () => {
++    const prev = [L(1, 5956, 1, 100, 'SHORT'), L(3, 5956, 1, 900000, 'VERY_LONG')];
++    const cur = [L(4, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 900000, 'VERY_LONG')];
++    const seen = new Map([[1, { firstSeen: t0 - H, firstTimeLeft: 'MEDIUM' as const, postedAfter: t0 - 2 * H }]]);
++    const a = aggregate(cur, prev, { prevAt: t0, curAt: t0 + H, seen })[0]!;
++    expect(a.soldUnits).toBe(0);
++    expect(a.goneUnitsExpiring).toBe(1);
++  });
++
++  it('commodities: newest first at one price, so an older stack that vanished behind a survivor was not bought', () => {
++    // All at 1c. The newest (id 30) was partly bought; 20 and 10 are older. 10 vanished: cancelled or expired.
++    const prev = [L(10, 2512, 200, 1, 'SHORT'), L(20, 2512, 500, 1, 'LONG'), L(30, 2512, 100, 1, 'LONG')];
++    const cur = [L(20, 2512, 500, 1, 'LONG'), L(30, 2512, 40, 1, 'LONG')];
++    const a = aggregate(cur, prev, { commodity: true })[0]!;
++    expect(a.soldUnits).toBe(60);
++    expect(buysFirst(L(30, 1, 1, 1), L(20, 1, 1, 1))).toBe(true);
++    expect(buysFirst(L(20, 1, 1, 1), L(30, 1, 1, 2))).toBe(true);
++  });
++
++  it('commodities: a sweep past 10 percent over the floor counts in full and records how high buyers paid', () => {
++    const prev = [L(1, 2770, 20, 100), L(2, 2770, 20, 104), L(3, 2770, 20, 115), L(4, 2770, 20, 130), L(5, 2770, 20, 160)];
++    const cur = [L(4, 2770, 5, 130), L(5, 2770, 20, 160)];
++    const a = aggregate(cur, prev, { commodity: true })[0]!;
++    expect(a.soldUnits).toBe(75);
++    expect(a.soldEvents).toBe(4); // three stacks bought whole, one in part
++    expect(a.sweepHigh).toBe(130);
++    expect(a.soldValue).toBe(20 * 100 + 20 * 104 + 20 * 115 + 15 * 130);
++    expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40); // the old near floor count, kept
++  });
++
++  it('commodities: a stack that could have expired but sits ahead of a stack buyers reached was bought', () => {
++    // Stack 1 shows MEDIUM (could run out this hour); buyers took all of it and part of stack 2.
++    const prev = [L(1, 7, 10, 100, 'MEDIUM'), L(2, 7, 10, 101, 'LONG')];
++    const a = aggregate([L(2, 7, 4, 101, 'LONG')], prev, { commodity: true })[0]!;
++    expect(a.soldUnits).toBe(16);
++    // A SHORT stack (under 30 minutes left) most likely ran out before a buyer came: it stays expired.
++    const b = aggregate([L(2, 7, 4, 101, 'LONG')], [L(1, 7, 10, 100, 'SHORT'), L(2, 7, 10, 101, 'LONG')], { commodity: true })[0]!;
++    expect(b.soldUnits).toBe(6);
++  });
++
++  it('deep equipment: a copy cancelled and posted cheaper under a copy already up is an undercut, not a sale', () => {
++    const others = [10, 11, 12, 13, 14].map(id => L(id, 4251, 1, 1200, 'LONG'));
++    const prev = [L(1, 4251, 1, 950, 'LONG'), L(2, 4251, 1, 1000, 'LONG'), ...others];
++    const cur = [L(1, 4251, 1, 950, 'LONG'), L(9, 4251, 1, 940, 'LONG'), ...others];
++    const a = aggregate(cur, prev)[0]!;
++    expect(a.soldUnits).toBe(0);
++    // Bought with nothing reposted under it: a sale.
++    expect(aggregate([L(1, 4251, 1, 950, 'LONG'), ...others], prev)[0]!.soldUnits).toBe(1);
++  });
++
++  it('deep commodities: a same size stack posted cheaper is not taken as an undercut (pure coincidence there, B24)', () => {
++    const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 2589, 20, 30, 'LONG'));
++    const prev = [L(1, 2589, 20, 25, 'LONG'), ...deep];
++    const cur = [L(9, 2589, 20, 24, 'LONG'), L(8, 2589, 5, 23, 'LONG'), ...deep];
++    expect(aggregate(cur, prev, { commodity: true })[0]!.soldUnits).toBe(20);
++  });
++
++  it('counts new units posted at or under 1.1 times the floor, and leaves out the own trades hook', () => {
++    const prev = [L(1, 7, 10, 100), L(2, 7, 10, 200)];
++    const cur = [L(2, 7, 10, 200), L(3, 7, 5, 105), L(4, 7, 5, 111), L(5, 7, 7, 90)];
++    const a = aggregate(cur, prev, { commodity: true, own: { listingIds: new Set([1, 5]) } })[0]!;
++    expect(a.newNearFloor).toBe(5); // 105 counts, 111 is over, 90 is an own trade
++    expect(a.soldUnits).toBe(0); // listing 1 was an own trade
++    // Razor Arrow, seen live: the 1c stacks sold out and every new post sat at 2c, the new floor. Those compete.
++    const r = aggregate([L(9, 3030, 50, 2, 'LONG'), L(8, 3030, 30, 3, 'LONG')], [L(1, 3030, 100, 1, 'LONG')], { commodity: true })[0]!;
++    expect(r.newNearFloor).toBe(50);
++  });
++
++  it('sanity bound: units judged sold never exceed previous plus new minus current units; a breach is logged and capped', () => {
++    // A stack that grew (impossible in game) makes the totals disagree with the per listing count.
++    const diag = { ageConflicts: 0, breaches: [] as string[] };
++    const a = aggregate([L(2, 7, 15, 100)], [L(1, 7, 10, 90), L(2, 7, 5, 100)], { commodity: true, diag })[0]!;
++    expect(a.boundBreach).toBe(10);
++    expect(a.soldUnits).toBe(0);
++    expect(diag.breaches[0]).toMatch(/item 7: 10 judged sold, only 0 left/);
++  });
++
++  it('first sights carry over, new listings get this publish and its predecessor, unknown ones are seeded', () => {
++    const prev = { listings: [L(1, 7, 1, 1, 'LONG')], at: t0 - H };
++    const s = nextSeen(null, [L(1, 7, 1, 1, 'LONG'), L(2, 7, 1, 1, 'MEDIUM')], t0, prev, true);
++    expect(s.get(1)).toEqual({ firstSeen: t0 - H, firstTimeLeft: 'LONG', postedAfter: null });
++    expect(s.get(2)).toEqual({ firstSeen: t0, firstTimeLeft: 'MEDIUM', postedAfter: t0 - H });
++    const s2 = nextSeen(s, [L(2, 7, 1, 1, 'SHORT')], t0 + H, { listings: [L(1, 7, 1, 1, 'LONG'), L(2, 7, 1, 1, 'MEDIUM')], at: t0 }, true);
++    expect([...s2.keys()]).toEqual([2]);
++    expect(s2.get(2)).toBe(s.get(2));
++    // After a gap the age of a new listing is unknown.
++    expect(nextSeen(null, [L(3, 7, 1, 1, 'LONG')], t0, prev, false).get(3)!.postedAfter).toBeNull();
++  });
++});
+diff --git a/tests/unit/collector.test.ts b/tests/unit/collector.test.ts
+index b7500ae..6397d43 100644
+--- a/tests/unit/collector.test.ts
++++ b/tests/unit/collector.test.ts
+@@ -1,6 +1,6 @@
+ import { describe, it, expect } from 'vitest';
+-import { openDb } from '../../src/store/db.ts';
+-import { Collector } from '../../src/engine/collector.ts';
++import { openDb, getKv } from '../../src/store/db.ts';
++import { Collector, loadSeen, ownTrades, diagSuspects } from '../../src/engine/collector.ts';
+ import { demandByItem } from '../../src/analysis/history.ts';
+ import { fakeBlizzard, tempDir } from '../helpers.ts';
+ 
+@@ -84,6 +84,75 @@ describe('collector', () => {
+   });
+ });
+ 
++describe('listing ages in the collector', () => {
++  const route = '/data/wow/ruleset/2/auctions/110/commodities';
++  const at = (h: number) => `Wed, 18 Nov 2026 0${h}:25:00 GMT`;
++  const row = (id: number, quantity: number, unit_price: number, time_left: string) => ({ id, item: { id: 2770 }, quantity, unit_price, time_left });
++
++  it('keeps first sight per listing in listing_seen, survives a restart, and counts a fresh 2 hour listing that sold', async () => {
++    const dir = tempDir();
++    let lm = at(4);
++    let rows = [row(1, 20, 150, 'LONG')];
++    const { client } = fakeBlizzard({ [route]: () => ({ body: { _links: {}, auctions: rows }, lastModified: lm }) });
++    const db = openDb(dir, ':memory:');
++    await new Collector(client, db, dir).poll(house, 'commodities');
++    lm = at(5);
++    rows = [row(1, 20, 150, 'LONG'), row(2, 5, 140, 'MEDIUM')]; // a new 2 hour listing
++    const second = await new Collector(client, db, dir).poll(house, 'commodities');
++    expect(second?.stats[0]?.newNearFloor).toBe(5);
++    const seen = db.prepare('SELECT listing_id, first_seen, first_time_left FROM listing_seen ORDER BY listing_id').all() as Array<{ listing_id: number; first_seen: number; first_time_left: string }>;
++    expect(seen.map(s => [s.listing_id, s.first_time_left])).toEqual([[1, 'LONG'], [2, 'MEDIUM']]);
++    expect(seen[1]!.first_seen).toBe(Date.parse(at(5)));
++
++    // Restart: a fresh collector reads the ages back. The 2 hour listing vanished in its first hour: it sold.
++    lm = at(6);
++    rows = [row(1, 20, 150, 'LONG')];
++    const third = await new Collector(client, db, dir).poll(house, 'commodities');
++    expect(third?.stats[0]?.soldUnits).toBe(5);
++    expect(third?.stats[0]?.goneUnitsExpiring).toBe(0);
++    expect(third?.suspect).toEqual([]);
++    const stored = db.prepare(`SELECT sold_units, sweep_high, sold_value FROM item_stats WHERE published_at = ?`).get(Date.parse(at(6))) as { sold_units: number; sweep_high: number; sold_value: number };
++    expect(stored).toEqual({ sold_units: 5, sweep_high: 140, sold_value: 700 });
++    // Pruned to the current listings.
++    expect((db.prepare('SELECT listing_id FROM listing_seen').all() as Array<{ listing_id: number }>).map(r => r.listing_id)).toEqual([1]);
++  });
++
++  it('after an update with no ages stored, listings already up get an unknown age, never a fresh one', async () => {
++    const dir = tempDir();
++    let lm = at(4);
++    let rows = [row(1, 20, 150, 'LONG')];
++    const { client } = fakeBlizzard({ [route]: () => ({ body: { _links: {}, auctions: rows }, lastModified: lm }) });
++    const db = openDb(dir, ':memory:');
++    await new Collector(client, db, dir).poll(house, 'commodities');
++    lm = at(5);
++    rows = [row(1, 20, 150, 'LONG'), row(2, 5, 140, 'MEDIUM')];
++    await new Collector(client, db, dir).poll(house, 'commodities');
++    db.exec('DELETE FROM listing_seen'); // as if the engine ran before ages were recorded
++    lm = at(6);
++    rows = [row(1, 20, 150, 'LONG')];
++    const third = await new Collector(client, db, dir).poll(house, 'commodities');
++    // Age unknown and MEDIUM: it may have run out, so it is not counted as a sale.
++    expect(third?.stats[0]?.soldUnits).toBe(0);
++    expect(getKv(db, 'listing_seen_since:110:commodities')).toBe(String(Date.parse(at(5))));
++    const restored = loadSeen(db, 110, 'commodities').get(1)!;
++    expect(restored.postedAfter).toBeNull(); // seeded at 05:25, so unknown age even after a restart
++  });
++
++  it('own trades hook: settings key own_trade_listing_ids keeps listings out of sales', async () => {
++    const db = openDb(tempDir(), ':memory:');
++    expect(ownTrades(db)).toBeUndefined();
++    db.prepare(`INSERT INTO settings (key, value) VALUES ('own_trade_listing_ids', '[5, 6]')`).run();
++    expect([...ownTrades(db)!.listingIds]).toEqual([5, 6]);
++  });
++
++  it('turns sale bound breaches and age conflicts into one suspected bug line each', () => {
++    expect(diagSuspects(111, 'commodities', { ageConflicts: 0, breaches: [] })).toEqual([]);
++    const s = diagSuspects(111, 'commodities', { ageConflicts: 3, breaches: ['item 7: 10 judged sold, only 0 left the house'] });
++    expect(s).toHaveLength(2);
++    expect(s[0]).toMatch(/exceeded what left the house on 1 item \(item 7/);
++  });
++});
++
+ describe('old history', () => {
+   it('rows counted before the sold price existed are left out of demand', async () => {
+     const db = openDb(tempDir(), ':memory:');
+diff --git a/tests/unit/rebuild.test.ts b/tests/unit/rebuild.test.ts
+index 41df853..d00300e 100644
+--- a/tests/unit/rebuild.test.ts
++++ b/tests/unit/rebuild.test.ts
+@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
+ import { openDb } from '../../src/store/db.ts';
+ import { rawPath, writeRaw } from '../../src/engine/rawstore.ts';
+ import { rebuildHistory, rebuildIfRulesChanged } from '../../src/engine/rebuild.ts';
+-import { demandByItem } from '../../src/analysis/history.ts';
++import { demandByItem, poissonLower } from '../../src/analysis/history.ts';
++import { loadSeen } from '../../src/engine/collector.ts';
+ import type { Listing } from '../../src/analysis/aggregate.ts';
+ import { tempDir } from '../helpers.ts';
+ 
+@@ -34,12 +35,83 @@ describe('rebuilding history from raw snapshots', () => {
+     expect(d.get(3857)?.unitsPerDay).toBeCloseTo(80 / 6 * 24, 0); // 80 sold, projected from at least 6 hours
+     expect(d.get(3857)?.soldPrice).toBe(810); // 40 at 800, 40 at 820
+     expect(d.get(5956)?.unitsPerDay ?? 0).toBe(0); // the expiring hammer relists are not sales
++    // The cautious estimate is not projected from 2 hours of watching. Without a sold_events column, a commodity hour
++    // with sales is one event: 2 events of 40 units.
++    const coal = d.get(3857)!;
++    expect(coal.soldUnits).toBe(80);
++    expect(coal.saleEvents).toBe(2);
++    expect(coal.unitsPerEvent).toBe(40);
++    expect(coal.hoursWatched).toBe(2);
++    expect(coal.lowPerDay).toBeNull();
++    expect(coal.sweepHigh).toBe(820);
++    expect(coal.low3d).toBe(800);
++    expect(coal.newPerDay).toBe(0);
++    expect(d.get(5956)?.newPerDay).toBe(24); // one new hammer at the floor each hour
++    // Ages handed to the collector: the last publish's listings, the hammer posted after the 09:25 publish.
++    const seen = loadSeen(db, 111, 'commodities');
++    expect([...seen.keys()].sort((a, b) => a - b)).toEqual([5, 6, 12]);
++    expect(seen.get(12)).toEqual({ firstSeen: t0 + 2 * 3600_000, firstTimeLeft: 'MEDIUM', postedAfter: t0 + 3600_000 });
++    expect(seen.get(5)!.postedAfter).toBeNull(); // up since the first publish: age unknown
+   });
++
++  it('re-counts a 2 hour listing that sold in its first hour, which the old rules threw away as expired', () => {
++    const dir = tempDir();
++    const db = openDb(dir, ':memory:');
++    const t0 = Date.parse('2026-11-19T08:25:00Z');
++    const hours = [
++      [L(1, 2589, 20, 30, 'VERY_LONG')],
++      [L(1, 2589, 20, 30, 'VERY_LONG'), L(2, 2589, 10, 28, 'MEDIUM')],
++      [L(1, 2589, 20, 30, 'VERY_LONG')],
++    ];
++    hours.forEach((ls, i) => {
++      const at = t0 + i * 3600_000;
++      const path = rawPath(dir, 111, 'commodities', at);
++      writeRaw(path, ls);
++      db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path) VALUES (111, 'commodities', ?, ?, ?, ?, 1, 1, ?)`)
++        .run(new Date(at).toUTCString(), at, at, ls.length, path);
++    });
++    const r = rebuildHistory(db);
++    expect(r.breaches).toEqual([]);
++    const row = db.prepare(`SELECT sold_units, sweep_high, gone_units_expiring FROM item_stats WHERE published_at = ?`).get(t0 + 2 * 3600_000);
++    expect(row).toEqual({ sold_units: 10, sweep_high: 28, gone_units_expiring: 0 });
++  });
++  it('the low estimate counts sale events, not units: three stacks of 221, 48 and 15 are 3 sales (Clam Linguine)', () => {
++    const dir = tempDir();
++    const db = openDb(dir, ':memory:');
++    db.exec('ALTER TABLE item_stats ADD COLUMN sold_events INTEGER'); // the migration this needs, made here for the test
++    const t0 = Date.parse('2026-11-19T08:25:00Z');
++    // Seven publishes, six differenced hours. Hour 1 the three cheapest stacks sell; nothing else sells.
++    const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 12210, 20, 900, 'VERY_LONG'));
++    const hours = [[L(1, 12210, 221, 500, 'VERY_LONG'), L(2, 12210, 48, 510, 'VERY_LONG'), L(3, 12210, 15, 520, 'VERY_LONG'), ...deep], ...Array.from({ length: 6 }, () => deep)];
++    hours.forEach((ls, i) => {
++      const at = t0 + i * 3600_000;
++      const path = rawPath(dir, 111, 'commodities', at);
++      writeRaw(path, ls);
++      db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path) VALUES (111, 'commodities', ?, ?, ?, ?, 1, 1, ?)`)
++        .run(new Date(at).toUTCString(), at, at, ls.length, path);
++    });
++    rebuildHistory(db);
++    const d = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12210)!;
++    expect(d.soldUnits).toBe(284);
++    expect(d.saleEvents).toBe(3);
++    expect(d.unitsPerEvent).toBeCloseTo(284 / 3, 6);
++    expect(d.hoursWatched).toBe(6);
++    expect(d.unitsPerDay).toBeCloseTo(284 / 6 * 24, 6);
++    // 95% lower bound of 3 events is 0.818: 0.818 * 94.7 / 6 * 24 = 310 a day, against 1,136 in the middle.
++    expect(d.lowPerDay).toBeCloseTo(poissonLower(3) * (284 / 3) / 6 * 24, 6);
++    expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
++  });
++
+   it('runs once per version of the sale rules', () => {
+     const db = openDb(tempDir(), ':memory:');
+     let runs = 0;
+     rebuildIfRulesChanged(db, () => runs++);
+     rebuildIfRulesChanged(db, () => runs++);
+     expect(runs).toBe(1);
++    // A migration adding sold_events re-counts once more so the column gets filled.
++    db.exec('ALTER TABLE item_stats ADD COLUMN sold_events INTEGER');
++    rebuildIfRulesChanged(db, () => runs++);
++    rebuildIfRulesChanged(db, () => runs++);
++    expect(runs).toBe(2);
+   });
+ });
+diff --git a/tests/unit/sales-estimate.test.ts b/tests/unit/sales-estimate.test.ts
+new file mode 100644
+index 0000000..76ca481
+--- /dev/null
++++ b/tests/unit/sales-estimate.test.ts
+@@ -0,0 +1,21 @@
++import { describe, it, expect } from 'vitest';
++import { poissonLower, LOW_CONFIDENCE } from '../../src/analysis/history.ts';
++
++describe('cautious sales estimate', () => {
++  it('one sided lower bound of a Poisson mean matches the chi square values', () => {
++    expect(LOW_CONFIDENCE).toBe(0.95);
++    expect(poissonLower(0)).toBe(0);
++    expect(poissonLower(1)).toBeCloseTo(-Math.log(0.95), 6); // 1 - e^-m = 0.05
++    expect(poissonLower(3)).toBeCloseTo(1.635 / 2, 2); // chi square 6 degrees of freedom, 5th percentile
++    expect(poissonLower(10)).toBeCloseTo(10.851 / 2, 2); // 20 degrees of freedom
++    expect(poissonLower(100)).toBeCloseTo(84.1, 0);
++    expect(poissonLower(10, 0.8)).toBeCloseTo(14.578 / 2, 2); // other levels work too
++  });
++  it('few sales give a low number, many sales come close to what was seen', () => {
++    expect(poissonLower(1) / 1).toBeLessThan(0.06);
++    expect(poissonLower(3) / 3).toBeLessThan(0.3);
++    expect(poissonLower(1000) / 1000).toBeGreaterThan(0.94);
++    let last = 0;
++    for (let k = 1; k <= 200; k++) { const v = poissonLower(k); expect(v).toBeGreaterThan(last); expect(v).toBeLessThan(k); last = v; }
++  });
++});
