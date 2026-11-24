@@ -12,7 +12,7 @@ Version 2, November 24, 2026 (version 1 November 23, revised after Chip's answer
 7. Bright Baubles not making the top 10 is fine. A flip that worked once is not proof it works every time.
 8. **Crafting minutes do not matter; overnight selling does.** Chip lists and goes to sleep. The time rate defaults to 0 (minutes still shown). The horizon is his sleep window, about 10 hours, with no relisting: units others post under his price overnight count against him, and every unsold unit loses its deposit.
 9. **Approved to build, November 24.** Blackwater house id comes later; the build runs on 111 until then.
-10. **Live on the web:** an always on small server (about $5 a month) running the engine and app as they are, behind a login, on Chip's domain. Packaged as the last build step (section 12).
+10. **Local for now.** This build runs on Chip's PC, started with one command. Hosting on chipwhiteside.com is a later phase; section 12 records the recommended route for then.
 
 ## 1. The goal, in one paragraph
 
@@ -282,11 +282,10 @@ Each step runs its full check loop (section 9) before the next starts. Agents wo
 6. Flips page with green and blue cards side by side, page contract and its test updated.
 7. End to end goldens, near misses, scenarios, independent recompute, paper trade backtest on the history collected here.
 8. Conversion family, then disenchant behind the unverified label.
-9. Web packaging (section 12).
-10. Tutorial walkthrough for Chip.
+9. Tutorial walkthrough for Chip, including how to start it locally.
 
-## 12. Live on the web
-Recommended: a small always on server (Hetzner or Fly.io, about $5 a month).
+## 12. Live on the web (later phase, not this build)
+Chip wants it on chipwhiteside.com eventually. Recommended route when that time comes: a small always on server (Hetzner or Fly.io, about $5 a month).
 1. A container image with the engine, the app and Node, plus a persistent disk for `DATA_DIR`.
 2. Secrets (Blizzard, Discord) as server environment variables, never in the repo.
 3. A login in front of the app (Cloudflare Access, or one shared password) so only Chip and his brothers see it.

@@ -182,6 +182,47 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX trainer_spells_name ON trainer_spells (name);
   `,
+  // 11. The flip engine (docs/flip-plan.md, approved by Chip November 24)
+  `
+  ALTER TABLE items ADD COLUMN bonding INTEGER;          -- game table ItemSparse.Bonding: 0 none, 1 pickup, 2 equip, 3 use, 4 quest
+  ALTER TABLE items ADD COLUMN stack_size INTEGER;       -- ItemSparse.Stackable
+  ALTER TABLE items ADD COLUMN vendor_stack INTEGER;     -- units per vendor purchase (vials come 5 at a time)
+  ALTER TABLE items ADD COLUMN data_source TEXT;         -- forever | classic1x | wago: where name, prices and binding came from
+  ALTER TABLE recipes ADD COLUMN spell_id INTEGER;
+  ALTER TABLE recipes ADD COLUMN cast_ms INTEGER;
+  ALTER TABLE recipes ADD COLUMN cooldown_ms INTEGER;
+  ALTER TABLE recipes ADD COLUMN cooldown_category INTEGER; -- shared cooldown (transmutes share one)
+  ALTER TABLE recipes ADD COLUMN random_yield INTEGER NOT NULL DEFAULT 0; -- yield not proven: kept out of the ranking
+  ALTER TABLE recipes ADD COLUMN live INTEGER NOT NULL DEFAULT 1;          -- product and every reagent exist in Forever
+  ALTER TABLE recipes ADD COLUMN kind TEXT NOT NULL DEFAULT 'profession';   -- profession | conversion
+  ALTER TABLE recipes ADD COLUMN source TEXT;            -- wago | blizzard | both
+  ALTER TABLE recipes ADD COLUMN disagreement TEXT;      -- what the two sources disagree on, null when they agree
+  ALTER TABLE item_stats ADD COLUMN sweep_high INTEGER;  -- highest unit price judged bought since the last publish
+  ALTER TABLE item_stats ADD COLUMN sold_units INTEGER;  -- units judged sold since the last publish, current rules
+  ALTER TABLE item_stats ADD COLUMN new_near_floor INTEGER; -- new units posted at or under 1.1 times the floor
+  CREATE TABLE listing_seen (
+    house_id INTEGER NOT NULL, kind TEXT NOT NULL, listing_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL, first_seen INTEGER NOT NULL, first_time_left TEXT NOT NULL,
+    PRIMARY KEY (house_id, kind, listing_id)
+  );
+  CREATE TABLE flips (
+    key TEXT PRIMARY KEY,             -- family:sellHouse:item[:recipe], stable across publishes
+    kind TEXT NOT NULL,               -- craft | flip (green or blue card)
+    family TEXT NOT NULL,
+    house_id INTEGER,                 -- the house it sells on, null when it sells to a vendor
+    item_id INTEGER NOT NULL,
+    recipe_id INTEGER,
+    state TEXT NOT NULL,              -- new | live | fading | gone
+    rank INTEGER,
+    expected_profit INTEGER NOT NULL,
+    risk TEXT NOT NULL,               -- low | medium | high
+    detail TEXT NOT NULL,             -- JSON Flip
+    first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, data_at INTEGER NOT NULL, gone_at INTEGER
+  );
+  CREATE INDEX flips_state ON flips (state, rank);
+  CREATE TABLE flip_history (at INTEGER NOT NULL, key TEXT NOT NULL, expected_profit INTEGER NOT NULL, per_item INTEGER NOT NULL, units INTEGER NOT NULL, PRIMARY KEY (at, key));
+  CREATE TABLE flip_runs (at INTEGER PRIMARY KEY, data_at INTEGER NOT NULL, ms INTEGER NOT NULL, complete INTEGER NOT NULL, report TEXT NOT NULL);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {
