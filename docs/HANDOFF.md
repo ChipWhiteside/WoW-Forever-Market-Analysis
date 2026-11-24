@@ -1,6 +1,6 @@
 # Handoff: flip engine build, paused November 24 (usage limit)
 
-Read this first when resuming. Branch `claude/gifted-albattani-10p08n`. The approved plan is `docs/flip-plan.md` (section 0 holds Chip's decisions and wins over everything). Chip's standing order: at least 3 independent check rounds per piece and 3 on the whole, using subagents; work autonomously to the end; deliver a working app plus `docs/flips-tutorial.md`.
+Read this first when resuming. The exact agent prompts to relaunch are in `docs/handoff/agent-prompts.md`. Branch `claude/gifted-albattani-10p08n`. The approved plan is `docs/flip-plan.md` (section 0 holds Chip's decisions and wins over everything). Chip's standing order: at least 3 independent check rounds per piece and 3 on the whole, using subagents; work autonomously to the end; deliver a working app plus `docs/flips-tutorial.md`.
 
 ## Done and on the branch
 1. **Plan v2, approved.** Chip's decisions: crafting is first class; one list with green crafting and blue flipping cards; only Alliance 111 and his one Blackwater house (id still unknown, P6); no gold per hour floor, time rate 0; overnight horizon 10 h with no relisting; 30 minute craft session cap on the best amount; quantity table (small, best, most); risk per flip; local only for now (chipwhiteside.com later).
