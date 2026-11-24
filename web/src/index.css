@@ -4,11 +4,11 @@
 
 :root {
   --page: 247 243 234; --card: 255 253 248; --ink: 31 36 48; --muted: 107 111 122; --line: 230 223 207;
-  --gold: 176 125 32; --good: 46 125 70; --warn: 196 128 22; --bad: 180 52 52; --alliance: 47 93 168; --blackwater: 46 125 91;
+  --gold: 176 125 32; --good: 46 125 70; --warn: 196 128 22; --bad: 180 52 52; --alliance: 47 93 168; --blackwater: 46 125 91; --craft: 34 139 70; --flip: 37 99 200;
 }
 .dark {
   --page: 22 24 30; --card: 31 34 42; --ink: 236 232 222; --muted: 150 152 160; --line: 52 56 66;
-  --gold: 226 177 60; --good: 92 180 120; --warn: 230 170 70; --bad: 230 100 100; --alliance: 110 150 230; --blackwater: 90 180 140;
+  --gold: 226 177 60; --good: 92 180 120; --warn: 230 170 70; --bad: 230 100 100; --alliance: 110 150 230; --blackwater: 90 180 140; --craft: 90 200 120; --flip: 110 160 240;
 }
 html, body, #root { height: 100%; }
 body { @apply bg-page text-ink font-sans antialiased; font-feature-settings: 'tnum' 1, 'cv11' 1; }

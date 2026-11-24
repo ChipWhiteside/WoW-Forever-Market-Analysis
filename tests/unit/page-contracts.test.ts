@@ -38,4 +38,12 @@ describe('page contracts', () => {
   it('now page keeps the held back list', () => {
     expect(src('pages/now.tsx')).toContain('Held back this hour');
   });
+  it('flips page keeps run status, filters, the list and held back', () => {
+    inOrder(src('pages/flips.tsx'), ['Data from', '>Crafting (', '>Flipping (', 'Lowest risk', '<FlipCard', 'Held back this hour']);
+  });
+  it('flip card keeps its lines in order, crafting green and flipping blue', () => {
+    const card = section(src('pages/flips.tsx'), 'export function FlipCard', '\nfunction ');
+    expect(card).toContain("craft ? 'bg-craft' : 'bg-flip'");
+    inOrder(card, ["'Crafting' : 'Flipping'", 'open ${d.openHours72} of the last 72 hours', 'expected overnight', 'per item', "'Buy'", '<Label>Make</Label>', 'label="Sell"', '<Label>Price</Label>', '<Label>Volume</Label>', '<Label>Risk</Label>', '<Label>Setup</Label>', '<Label>Shares</Label>', 'strength {q.strength}', 'an hour of work', '>Amount<', '>Units<', '>Cost<', '>Sells overnight<', '>Expected profit<', '>Per hour<', '>Risk<', '>Bad case<']);
+  });
 });

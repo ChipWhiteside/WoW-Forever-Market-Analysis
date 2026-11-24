@@ -9,6 +9,7 @@ import { PROJECT_ROOT } from '../config/env.ts';
 import { listPlays, houseFinder, itemDetail, searchItems, overview } from './queries.ts';
 import { computeHealth } from '../health/report.ts';
 import { registerExtraRoutes } from './routes-extra.ts';
+import { registerFlipRoutes } from './flips.ts';
 
 export interface ServerDeps { db: DB; engine: Engine | null; client: BlizzardClient | null; port: number; dataDir: string; log?: (m: string) => void }
 
@@ -63,6 +64,7 @@ export function buildServer(deps: ServerDeps) {
   });
 
   registerExtraRoutes(app, deps);
+  registerFlipRoutes(app, db);
 
   const dist = join(PROJECT_ROOT, 'web', 'dist');
   if (existsSync(dist)) {

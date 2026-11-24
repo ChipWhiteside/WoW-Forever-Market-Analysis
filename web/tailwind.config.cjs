@@ -17,6 +17,8 @@ module.exports = {
         bad: 'rgb(var(--bad) / <alpha-value>)',
         alliance: 'rgb(var(--alliance) / <alpha-value>)',
         blackwater: 'rgb(var(--blackwater) / <alpha-value>)',
+        craft: 'rgb(var(--craft) / <alpha-value>)',
+        flip: 'rgb(var(--flip) / <alpha-value>)',
       },
       fontFamily: {
         display: ['Cinzel', 'Georgia', 'serif'],

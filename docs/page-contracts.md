@@ -30,3 +30,8 @@ Item, Costs each, Sells each, Profit each, Sell a day, List for; profession filt
 ## Crafting, My materials
 
 Paste box, saved materials list with counts.
+
+## Flips (`web/src/pages/flips.tsx`), agreed November 24
+Run status (data time, items and recipes checked, complete or incomplete), filters (All, Crafting, Flipping, risk, sort), the ranked list, Held back this hour.
+
+Flip card, in this order: rank, Crafting (green) or Flipping (blue) badge, item, family and opening line (new or rising, hours open of the last 72, repeatable or one opening), expected profit overnight (big) with units and profit per item, Buy, Make (crafts only), Sell, Price, Volume, Risk, Setup (crafts that need training), Shares, strength chip, gold per hour, amounts table (small, best, most with units, cost, sells overnight, expected profit, per hour, risk, bad case).

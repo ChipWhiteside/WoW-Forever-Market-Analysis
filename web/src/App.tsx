@@ -9,8 +9,10 @@ import { CraftingPage } from './pages/crafting';
 import { DropsPage, FarmingPage, PositionsPage, WatchlistPage, MarketPage } from './pages/more';
 import { api } from './lib/api';
 import { MapPage } from './pages/map';
+import { FlipsPage } from './pages/flips';
 
 const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.Element | null; count?: string[] }> = [
+  { id: 'flips', label: 'Flips', group: 'Plays', el: FlipsPage },
   { id: 'now', label: 'Now', group: 'Plays', el: NowPage },
   { id: 'vendor', label: 'Vendor plays', group: 'Plays', el: VendorPage, count: ['vendor_dump', 'vendor_supply'] },
   { id: 'resale', label: 'Resale', group: 'Plays', el: ResalePage, count: ['underpriced', 'cross_house'] },
@@ -28,7 +30,7 @@ const SECTIONS: Array<{ id: string; label: string; group: string; el: () => JSX.
 ];
 
 export default function App() {
-  const pageOf = () => location.hash.slice(1).split('/')[0] || 'now';
+  const pageOf = () => location.hash.slice(1).split('/')[0] || 'flips';
   const [page, setPage] = useState(pageOf);
   const [item, setItem] = useState<number | null>(null);
   const [dark, setDark] = useState(() => { try { return localStorage.getItem('theme') === 'dark'; } catch { return false; } });
