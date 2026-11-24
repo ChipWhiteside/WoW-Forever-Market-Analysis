@@ -43,6 +43,9 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     // Bad case: the dye falls to its 3 day low of 70s, net floor(7000 x 0.95) = 6650 x 20 = 133,000, still over cost: risk low.
     expect(top.best.risk.level).toBe('low');
     expect(top.best.risk.badCaseLoss).toBe(0);
+    // New listings under him overnight: 12 a day x 10/24 = 5, stated on the card.
+    expect(top.sellQuote.newOvernight).toBeCloseTo(5, 6);
+    expect(top.notes).toContain('about 5 new listings usually appear under you overnight');
     expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 40 });
     expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 20, unitPrice: 4 });
     // 40 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
@@ -55,7 +58,7 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(spices.rank).toBeGreaterThan(1);
     expect(bandage.rank).toBeGreaterThan(1);
     // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Queue 20 x 10/24 - 4 x 10/24 = 6.67.
-    //   6 units: 6 x 280 - 6 x 160 = 720. 7 units: 6.67 x 280 - 1120 - 0.33 x 192 deposit = 683. Best 6, 7s 20c.
+    //   6 units: 6 x 280 - 6 x 160 = 720. 7 units: 6.67 x 280 - 1120 + 0.33 x (40 salvage - 192 deposit) = 696. Best 6, 7s 20c.
     expect(spices.best.units).toBe(6);
     expect(spices.best.expectedProfit).toBe(720);
   });
@@ -178,7 +181,7 @@ describe('today\'s junk stays out', () => {
 });
 
 describe('effort never buries crafting', () => {
-  it('2,000 crafts for 2c each: shown, ranked far below, with its 100 minutes of casting on the card', () => {
+  it('2,000 crafts for 2c each: shown, ranked far below; best stays in one 30 minute session, most shows all 100 minutes', () => {
     const CHEAP = 4306, KIT = 4304;
     const f = bensMarket();
     f.listings[111]!.push(...many(CHEAP, 98, 20, 100));
@@ -187,11 +190,18 @@ describe('effort never buries crafting', () => {
     const r = run(f);
     const kit = r.flips.find(x => x.itemId === KIT)!;
     expect(kit.family).toBe('craft_vendor');
-    // 2,000 units bought at 98c, sold to a vendor at 100c: 2c x 2,000 = 4,000 (40s)
-    expect(kit.best.units).toBe(2000);
-    expect(kit.best.expectedProfit).toBe(4000);
-    // 2,000 casts x 3 seconds = 100 minutes, plus buying and the vendor sale
-    expect(kit.best.minutes).toBeGreaterThanOrEqual(100);
+    // One 30 minute session at 3 seconds a cast is 600 crafts: 600 x 2c = 1,200 (12s)
+    expect(kit.best.units).toBe(600);
+    expect(kit.best.castMinutes).toBe(30);
+    expect(kit.best.expectedProfit).toBe(1200);
+    expect(kit.best.note).toBeUndefined();
+    // The most row: all 2,000 listed at 98c, sold to a vendor at 100c: 2c x 2,000 = 4,000 (40s), 100 minutes of casting
+    const most = kit.options.find(o => o.label === 'most')!;
+    expect(most.units).toBe(2000);
+    expect(most.expectedProfit).toBe(4000);
+    expect(most.minutes).toBeGreaterThanOrEqual(100);
+    expect(most.note).toBe('100 minutes of crafting, more than one 30 minute session');
+    expect(kit.notes.join(' ')).toMatch(/one 30 minute crafting session/);
     expect(kit.rank).toBeGreaterThan(r.flips.find(x => x.key === DYE_KEY)!.rank!);
   });
   it('a craft and a plain flip with equal expected profit rank side by side', () => {

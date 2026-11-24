@@ -5,7 +5,7 @@ import type { Place } from '../datasets/places.ts';
 import { demandByItem, typicalFloors, type Typical } from '../analysis/history.ts';
 import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { GOLD_SETTING, HORIZON_HOURS, OPENING, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, GOLD_SETTING, HORIZON_HOURS, OPENING, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
 import type { HouseRef } from './types.ts';
 
@@ -41,7 +41,11 @@ export interface VendorSource { npcId: number; npcName: string; zone: string | n
 
 export interface TrainerRow { npcId: number; npcName: string; faction: string; zone: string | null; x: number | null; y: number | null; mapId: number | null; spellId: number; name: string; skill: string | null; skillRank: number | null; cost: number | null }
 
-export interface FlipSettings { timeRate: number; goldOnHand: number | null; horizonHours: number }
+export interface FlipSettings {
+  timeRate: number; goldOnHand: number | null; horizonHours: number;
+  /** minutes of casting one crafting session allows; the best quantity of a craft stays inside it */
+  craftSessionMinutes?: number;
+}
 
 export interface FlipInputs {
   now: number;
@@ -172,9 +176,11 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const setting = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value;
   const rate = num(setting(TIME_RATE_SETTING));
   const gold = num(setting(GOLD_SETTING));
+  const session = num(setting(CRAFT_SESSION_SETTING));
   return {
     now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, drivers: demandDrivers(db), trainers, recipeItems,
     history: { recent, openHours },
-    settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS },
+    settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
+      craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT },
   };
 }

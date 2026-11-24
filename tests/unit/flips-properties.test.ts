@@ -88,6 +88,11 @@ describe('properties', () => {
     expect(handed).toBeLessThanOrEqual(76);
     expect(users[1]!.shares).toContain(users[0]!.key);
     expect(users[1]!.afterShared!.units).toBeLessThan(users[1]!.best.units);
+    // and sharing never makes a flip look better than it does alone
+    for (const x of r.flips) {
+      expect(x.afterShared!.units).toBeLessThanOrEqual(x.best.units);
+      expect(x.afterShared!.expectedProfit).toBeLessThanOrEqual(x.best.expectedProfit);
+    }
   });
   it('risk rises with quantity', () => {
     const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000 } })), DYE_KEY);
@@ -106,6 +111,11 @@ describe('properties', () => {
     let prev = -1;
     for (let n = 1; n <= 10; n++) { const loss = thin.at(n).risk.badCaseLoss; expect(loss).toBeGreaterThanOrEqual(prev); prev = loss; }
     expect(thin.at(10).risk.level).toBe('high');
+    // 10 crafts cost 55,440; 5 sell at 7077; the 5 unsold are worth their 75c vendor price minus the 360c deposit:
+    //   expected = 5 x 7077 - 55,440 + 5 x (75 - 360) = 35,385 - 55,440 - 1,425 = -21,480
+    //   bad case = 55,440 - (5 x 4750 + 5 x (75 - 360)) = 55,440 - 22,325 = 33,115
+    expect(thin.at(10).expectedProfit).toBe(-21480);
+    expect(thin.at(10).risk.badCaseLoss).toBe(33115);
     expect(thin.at(10).risk.drivers).toContain('more units than sell overnight');
   });
   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {
@@ -115,6 +125,12 @@ describe('properties', () => {
     expect(f.best.units).toBe(9);
     expect(f.best.cost).toBe(49640);
     expect(f.notes).toContain('capped by your gold on hand');
+  });
+  it('with no new listing count from sale counting, the card says the quarter of sales is a fallback', () => {
+    const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: undefined } })).flips.find(x => x.key === DYE_KEY)!;
+    // a quarter of 60 a day is 15 a day, x 10/24 = 6.25 overnight
+    expect(f.sellQuote.newOvernight).toBeCloseTo(6.25, 6);
+    expect(f.notes.join(' ')).toMatch(/about 6 new listings usually appear under you overnight \(a fallback: a quarter of the sales seen/);
   });
   it('a time rate charges minutes; at the default 0 minutes are shown, never charged', () => {
     const free = run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!;

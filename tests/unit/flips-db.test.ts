@@ -76,8 +76,9 @@ describe('buildFlipInputs', () => {
   });
   it('time rate and gold on hand come from settings', () => {
     const d = db();
-    d.exec(`INSERT INTO settings (key, value) VALUES ('time_rate', '5000'), ('gold_on_hand', '12.5')`);
-    expect(buildFlipInputs(d, market(), 10 * HOUR).settings).toMatchObject({ timeRate: 5000, goldOnHand: 125000, horizonHours: 10 });
+    expect(buildFlipInputs(d, market(), 10 * HOUR).settings).toMatchObject({ timeRate: 0, goldOnHand: null, horizonHours: 10, craftSessionMinutes: 30 });
+    d.exec(`INSERT INTO settings (key, value) VALUES ('time_rate', '5000'), ('gold_on_hand', '12.5'), ('craft_session_minutes', '45')`);
+    expect(buildFlipInputs(d, market(), 10 * HOUR).settings).toMatchObject({ timeRate: 5000, goldOnHand: 125000, horizonHours: 10, craftSessionMinutes: 45 });
   });
 });
 

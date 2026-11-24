@@ -118,7 +118,7 @@ export class SellBook {
       sweepHigh: sweep, low3d: d?.low3d ?? this.inputs.low3d.get(h.id)?.get(itemId) ?? null, cv: d?.floorCv ?? null,
       strength: judged.score, strengthParts: judged.parts, gates, rising,
       provenSales: judged.evidence.provenSales, undercut, upTo: rising ? Math.min(sweep!, floor) : null,
-      lowDerived: low.derived, newDerived: fresh.derived,
+      lowDerived: low.derived, newDerived: fresh.derived, newOvernight: (fresh.value / 24) * this.inputs.settings.horizonHours,
       note: rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
     };
   }
@@ -131,7 +131,7 @@ export class SellBook {
       houseId: null, claimPrice: p, netEach: p, undercutPrice: p, listed: null, basis: 'vendor', ahead: 0, salesPerDayLow: null, salesPerDayMid: null,
       hoursWatched: 0, newPerHour: 0, sweepHigh: null, low3d: p, cv: 0, strength: 100,
       strengthParts: [{ label: 'vendor price is fixed', points: 100, max: 100 }], gates: [], rising: false,
-      provenSales: 0, undercut: 0, upTo: null, lowDerived: false, newDerived: false, note: null,
+      provenSales: 0, undercut: 0, upTo: null, lowDerived: false, newDerived: false, newOvernight: 0, note: null,
     };
   }
 }

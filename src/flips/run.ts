@@ -1,4 +1,4 @@
-import { FLIP_GATES, MAX_UNITS, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, MAX_UNITS, REPEATABLE, WOBBLE } from '../rules/flips.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { Market } from './market.ts';
@@ -40,7 +40,7 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
   const heldBack = gen.heldBack;
   const flips: Flip[] = [];
   const evals = new Map<string, { c: Candidate; e: Evaluation }>();
-  const opt = { capUsed: 0, gold: inputs.settings.goldOnHand, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours };
+  const opt = { capUsed: 0, gold: inputs.settings.goldOnHand, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours, craftSessionMinutes: inputs.settings.craftSessionMinutes };
 
   for (const c of gen.candidates) {
     const e = evaluate(c, market, inputs, recipes, opt);
@@ -110,9 +110,9 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   const notes: string[] = [];
   if (q.note) notes.push(q.note);
   if (!toVendor) {
-    notes.push(`${plural(q.ahead, 'unit')} ahead of you, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate), about ${round1(q.newPerHour * 24)} new a day posted under you; you can expect to sell ${round1(e.cap)} overnight`);
+    notes.push(`${plural(q.ahead, 'unit')} listed at or under your price, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate); you can expect to sell ${round1(e.cap)} overnight`);
+    notes.push(`about ${Math.round(q.newOvernight ?? 0)} new listings usually appear under you overnight${q.newDerived ? ' (a fallback: a quarter of the sales seen, until sale counting measures new listings)' : ''}`);
     if (q.lowDerived) notes.push('the low sales estimate is worked out here from the sales seen; sale counting has not given one yet');
-    if (q.newDerived) notes.push('new posts under you are a cautious guess; sale counting has not measured them yet');
     if (h!.faction === 'blackwater') notes.push('the Blackwater deposit is not verified yet (test T7)');
   }
   if (c.recipe) {
@@ -121,6 +121,7 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   }
   if (buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'))) notes.push('a limited stock vendor is assumed to hold one bundle');
   if (e.goldCapped) notes.push('capped by your gold on hand');
+  if (e.sessionCapped) notes.push(`best amount kept to one ${inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT} minute crafting session; the most row shows what more would make`);
   if (toVendor && b.units >= MAX_UNITS) notes.push(`stopped at ${MAX_UNITS} units, the most one flip is ever walked to; more may pay`);
   // Repeatable: everything bought from vendors that refill, or auction supply deep enough to do it again.
   const auction = buy.filter(l => l.kind === 'auction');
@@ -183,7 +184,7 @@ function sharedPass(flips: Flip[], evals: Map<string, { c: Candidate; e: Evaluat
   for (const f of flips) {
     const { c, e: standalone } = evals.get(f.key)!;
     const capKey = c.sellHouse ? `${c.sellHouse.id}:${c.itemId}` : null;
-    const e = evaluate(c, market, inputs, recipes, { capUsed: capKey ? capUsed.get(capKey) ?? 0 : 0, gold, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours });
+    const e = evaluate(c, market, inputs, recipes, { capUsed: capKey ? capUsed.get(capKey) ?? 0 : 0, gold, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours, craftSessionMinutes: inputs.settings.craftSessionMinutes });
     const shares = new Set<string>(), mine = new Set<string>();
     const resources = (ev: Evaluation, end: number) => {
       for (let i = 0; i < end; i++) {
@@ -199,7 +200,8 @@ function sharedPass(flips: Flip[], evals: Map<string, { c: Candidate; e: Evaluat
     if (e.best && e.best.expectedProfit > 0) {
       const step = e.walk.steps[e.bestStep]!;
       resources(e, step.traceEnd);
-      f.afterShared = { units: e.best.units, expectedProfit: e.best.expectedProfit };
+      // Sharing never makes a flip look better than it does alone (a bundle a higher flip paid for could otherwise).
+      f.afterShared = { units: Math.min(e.best.units, f.best.units), expectedProfit: Math.min(e.best.expectedProfit, f.best.expectedProfit) };
       f.sharedUse = [...auctionUse(e.walk.trace, step.traceEnd)].map(([itemId, units]) => ({ itemId, units }));
       if (gold != null) { if (e.goldCapped) touch('gold', f.key, mine, shares); gold = Math.max(0, gold - e.best.cost); mine.add('gold'); }
       if (capKey) capUsed.set(capKey, (capUsed.get(capKey) ?? 0) + e.best.units);

@@ -66,7 +66,7 @@ export function inputsOf(f: Fixture): FlipInputs {
     now: 2_000, houses, problems: [], notes: [], listings, items: new Map(f.items.map(i => [i.id, i])), vendors, recipes: f.recipes ?? [], demand, typical,
     low3d: new Map(houses.map(h => [h.id, new Map()])), drivers: new Map(), trainers: [], recipeItems: new Map(),
     history: { recent: new Set(f.recent ?? []), openHours: new Map() },
-    settings: { timeRate: 0, goldOnHand: null, horizonHours: 10, ...f.settings },
+    settings: { timeRate: 0, goldOnHand: null, horizonHours: 10, craftSessionMinutes: 30, ...f.settings },
   };
 }
 
@@ -78,7 +78,7 @@ export function evalKey(inputs: FlipInputs, key: string) {
   const c = gen.candidates.find(x => x.key === key);
   if (!c) throw new Error(`no candidate ${key}; held back: ${gen.heldBack.filter(h => h.key === key).map(h => h.reason).join(', ')}`);
   const recipes = new Map(inputs.recipes.map(r => [r.id, r]));
-  return { e: evaluate(c, market, inputs, recipes, { capUsed: 0, gold: inputs.settings.goldOnHand, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours }), c, market };
+  return { e: evaluate(c, market, inputs, recipes, { capUsed: 0, gold: inputs.settings.goldOnHand, timeRate: inputs.settings.timeRate, horizonHours: inputs.settings.horizonHours, craftSessionMinutes: inputs.settings.craftSessionMinutes }), c, market };
 }
 
 export const run = (f: Fixture | FlipInputs) => runFlips('listings' in f && f.listings instanceof Map ? f as FlipInputs : inputsOf(f as Fixture));

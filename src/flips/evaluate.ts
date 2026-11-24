@@ -1,5 +1,5 @@
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SMALL_QUANTITY } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
 import { capacity } from './sellBook.ts';
@@ -10,7 +10,9 @@ import type { Family, FlipLeg, HouseRef, QuantityOption, Risk, SellQuote } from 
  * Expected profit if Chip acts now, at every quantity, from one walk of the cost book.
  *
  * For N units over the overnight horizon with no relisting:
- *   expected(N) = sold(N) x net each - cost(N) - (N - sold(N)) x deposit lost - minutes(N) x time rate
+ *   expected(N) = sold(N) x net each - cost(N) + (N - sold(N)) x (salvage - deposit lost) - minutes(N) x time rate
+ * where salvage is what a vendor pays for an unsold unit (0 when none does; never the reagents' value). The bad case
+ * in the risk line uses the same salvage rule.
  * where unit k sells with chance clamp(C - (k - 1), 0, 1), so sold(N) = min(N, C), and C is the queue capacity
  * (sellBook.capacity). cost(N) is the real cost of the first N units: each one walks the reagent listings further,
  * plus whatever was paid for but not used (the rest of a vendor bundle or of the last craft's yield).
@@ -30,7 +32,7 @@ export interface Candidate {
   buyHouseIds: number[];
 }
 
-interface Step { units: number; cost: number; cumUnits: number; cumCost: number; waste: number; traceEnd: number; markAfter: number; buyMinutes: number }
+interface Step { units: number; cost: number; cumUnits: number; cumCost: number; waste: number; traceEnd: number; markAfter: number; buyMinutes: number; castMinutes: number }
 
 export interface Walk { steps: Step[]; trace: TraceEntry[]; exhausted: boolean; startMark: number }
 
@@ -40,6 +42,8 @@ export interface Evaluation {
   depositEach: number;
   maxN: number;
   goldCapped: boolean;
+  /** the best quantity stopped at one crafting session; more would still pay */
+  sessionCapped: boolean;
   firstUnitCost: number | null;
   options: QuantityOption[];
   best: QuantityOption | null;
@@ -58,6 +62,8 @@ class Effort {
   private npcs = new Set<number>();
   private houses = new Set<number>();
   minutes = 0;
+  /** the casting part of minutes */
+  castMinutes = 0;
   constructor(private inputs: FlipInputs, private recipes: Map<number, FlipRecipe>, private sellHouseId: number | null) {}
   add(e: TraceEntry): void {
     if (e.source === 'auction') {
@@ -79,7 +85,8 @@ class Effort {
       if (!this.npcs.has(e.vendor!.npcId)) { this.npcs.add(e.vendor!.npcId); this.minutes += EFFORT.vendorTripMin; }
     } else {
       const r = this.recipes.get(e.recipeId!);
-      this.minutes += ((r?.castMs ?? EFFORT.castMsFallback) || EFFORT.castMsFallback) / 60000;
+      const cast = ((r?.castMs ?? EFFORT.castMsFallback) || EFFORT.castMsFallback) / 60000;
+      this.minutes += cast; this.castMinutes += cast;
     }
   }
 }
@@ -101,7 +108,7 @@ export function walk(c: Candidate, m: Market, inputs: FlipInputs, recipes: Map<n
     if (!got) { exhausted = true; break; }
     cumUnits += got.units; cumCost += got.cost;
     for (; seen < trace.length; seen++) effort.add(trace[seen]!);
-    steps.push({ units: got.units, cost: got.cost, cumUnits, cumCost, waste: m.waste - wasteStart, traceEnd: trace.length, markAfter: m.mark(), buyMinutes: effort.minutes });
+    steps.push({ units: got.units, cost: got.cost, cumUnits, cumCost, waste: m.waste - wasteStart, traceEnd: trace.length, markAfter: m.mark(), buyMinutes: effort.minutes, castMinutes: effort.castMinutes });
     if (stop(got.cost / got.units, cumUnits)) break;
   }
   return { steps, trace, exhausted, startMark };
@@ -114,7 +121,7 @@ function stepFor(w: Walk, n: number): number {
   return lo;
 }
 
-export interface EvalOptions { capUsed: number; gold: number | null; timeRate: number; horizonHours: number }
+export interface EvalOptions { capUsed: number; gold: number | null; timeRate: number; horizonHours: number; craftSessionMinutes?: number }
 
 export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: Map<number, FlipRecipe>, o: EvalOptions): Evaluation {
   const q = c.quote;
@@ -135,27 +142,38 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   }
   const nonStack = !isStackable(sellItem);
   const minutesAt = (n: number, s: Step) => s.buyMinutes + (toVendor ? EFFORT.vendorSellMin : EFFORT.postMin + (nonStack ? (n - 1) * EFFORT.postUnitMin : 0));
+  const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
+  const expectedAt = (n: number, cost: number, s: Step) => {
+    const sold = Math.min(n, cap);
+    return sold * net - cost + (n - sold) * (salvage - depositEach) - (minutesAt(n, s) / 60) * o.timeRate;
+  };
+  const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
     const { cost, s } = costAt(n);
     const sold = Math.min(n, cap);
     const minutes = minutesAt(n, s);
-    const expectedProfit = Math.round(sold * net - cost - (n - sold) * depositEach - (minutes / 60) * o.timeRate);
+    const expectedProfit = Math.round(expectedAt(n, cost, s));
+    const over = s.castMinutes > session + 1e-9;
     return { label, units: n, cost: Math.round(cost), expectedSold: Math.round(sold * 10) / 10, expectedProfit, minutes: Math.round(minutes * 10) / 10,
-      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, sold, cap, depositEach, expectedProfit, w) };
+      castMinutes: Math.round(s.castMinutes * 10) / 10,
+      note: over ? `${Math.round(s.castMinutes)} minutes of crafting, more than one ${session} minute session` : undefined,
+      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, sold, cap, depositEach, expectedProfit, w, salvage) };
   };
   const at = (n: number) => option('best', Math.max(1, Math.min(n, Math.max(1, available))));
-  if (maxN <= 0) return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0] ? w.steps[0].cost / w.steps[0].units : null, options: [], best: null, bestStep: -1, at };
-  // Best: the quantity with the most expected profit (ties go to fewer units).
-  let bestN = 1, bestE = -Infinity;
+  if (maxN <= 0) return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0] ? w.steps[0].cost / w.steps[0].units : null, sessionCapped: false, options: [], best: null, bestStep: -1, at };
+  // Best: the quantity with the most expected profit (ties go to fewer units), inside one crafting session for a
+  // craft (at least one craft). Unbounded: the same without the session, for the "most" row of a vendor sale.
+  let bestN = 1, bestE = -Infinity, freeN = 1, freeE = -Infinity;
   for (let n = 1; n <= maxN; n++) {
     const { cost, s } = costAt(n);
-    const sold = Math.min(n, cap);
-    const e = sold * net - cost - (n - sold) * depositEach - (minutesAt(n, s) / 60) * o.timeRate;
-    if (e > bestE + 1e-9) { bestE = e; bestN = n; }
+    const e = expectedAt(n, cost, s);
+    if (e > freeE + 1e-9) { freeE = e; freeN = n; }
+    if ((n === 1 || s.castMinutes <= session + 1e-9) && e > bestE + 1e-9) { bestE = e; bestN = n; }
   }
-  const mostN = toVendor ? bestN : Math.max(bestN, Math.min(maxN, Math.ceil(cap)));
+  const sessionCapped = freeN > bestN;
+  const mostN = toVendor ? Math.max(bestN, freeN) : Math.max(bestN, Math.min(maxN, Math.ceil(cap)));
   const options = [option('small', Math.min(SMALL_QUANTITY, maxN)), option('best', bestN), option('most', mostN)];
-  return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0]!.cost / w.steps[0]!.units, options, best: options[1]!, bestStep: stepFor(w, bestN), at };
+  return { walk: w, cap, depositEach, maxN, goldCapped, sessionCapped, firstUnitCost: w.steps[0]!.cost / w.steps[0]!.units, options, best: options[1]!, bestStep: stepFor(w, bestN), at };
 }
 
 /**
@@ -163,7 +181,7 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
  * units are salvaged at the vendor price and lose their deposit. High when the bad case loses more than the flip is
  * expected to make, medium when it loses anything, low when even the bad case does not lose.
  */
-function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk): Risk {
+function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk, salvage: number): Risk {
   const q = c.quote;
   const item = inputs.items.get(c.itemId);
   const drivers: string[] = [];
@@ -192,7 +210,6 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
     }
   }
   const soldBad = Math.min(n, cap);
-  const salvage = item?.sellPrice ?? 0;
   const revenue = soldBad * netBad + (n - soldBad) * (salvage - depositEach);
   const badCaseLoss = Math.max(0, Math.round(cost - revenue));
   const level: Risk['level'] = badCaseLoss <= 0 ? 'low' : badCaseLoss > expected ? 'high' : 'medium';

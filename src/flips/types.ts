@@ -77,6 +77,8 @@ export interface SellQuote {
   /** true when salesPerDayLow or newPerHour is the engine's own cautious estimate, not sale counting's */
   lowDerived?: boolean;
   newDerived?: boolean;
+  /** new listings other sellers are expected to post under Chip over the horizon (newPerHour times the hours) */
+  newOvernight?: number;
   /** one plain sentence about the price, for the card */
   note?: string | null;
 }
@@ -93,6 +95,10 @@ export interface Risk {
 
 export interface QuantityOption {
   label: 'small' | 'best' | 'most';
+  /** plain words about this row, for example that it goes past one crafting session */
+  note?: string;
+  /** minutes of casting in this row, part of minutes */
+  castMinutes?: number;
   units: number;
   cost: number;
   expectedSold: number;

@@ -21,6 +21,14 @@ export const TIME_RATE_SETTING = 'time_rate';
 /** Gold on hand, in gold, optional. Settings key gold_on_hand (the same key the Now page uses). */
 export const GOLD_SETTING = 'gold_on_hand';
 
+/**
+ * One crafting session per flip, in minutes of casting. Chip crafts, then lists and sleeps: 5,000 casts is about
+ * 4 hours, not a realistic evening. The best quantity of a craft stays inside one session; the "most" option may go
+ * past it and says so. Settings key craft_session_minutes. Coordinator decision, November 24.
+ */
+export const CRAFT_SESSION_MINUTES_DEFAULT = 30;
+export const CRAFT_SESSION_SETTING = 'craft_session_minutes';
+
 /** Plan section 6, quantity table: "for example 10, the best amount, and the most the market can take". */
 export const SMALL_QUANTITY = 10;
 
