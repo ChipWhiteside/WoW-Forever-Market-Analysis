@@ -10,6 +10,9 @@ Version 2, November 24, 2026 (version 1 November 23, revised after Chip's answer
 5. **Quantity changes everything.** Buying 10 versus 100 of the same opportunity changes the profit and the gold per hour a lot, so each flip shows its numbers at several quantities.
 6. **Risk per opportunity** is shown on every flip.
 7. Bright Baubles not making the top 10 is fine. A flip that worked once is not proof it works every time.
+8. **Crafting minutes do not matter; overnight selling does.** Chip lists and goes to sleep. The time rate defaults to 0 (minutes still shown). The horizon is his sleep window, about 10 hours, with no relisting: units others post under his price overnight count against him, and every unsold unit loses its deposit.
+9. **Approved to build, November 24.** Blackwater house id comes later; the build runs on 111 until then.
+10. **Live on the web:** an always on small server (about $5 a month) running the engine and app as they are, behind a login, on Chip's domain. Packaged as the last build step (section 12).
 
 ## 1. The goal, in one paragraph
 
@@ -151,12 +154,12 @@ Each flip is tagged **repeatable** (a vendor or deep reagent supply that refills
 What makes a flip good, in Chip's words: it makes real money, it sells, and it is worth the time. Turned into numbers:
 
 ### The rank: expected profit if Chip acts now
-For the best quantity N, over a horizon of one listing length (24 hours by default):
+For the best quantity N, over Chip's overnight window (10 hours by default, a setting), with no relisting in that time:
 
 **Expected profit = for each unit: chance it sells × net sale − its cost − chance it does not sell × deposit lost, minus minutes of work × a time rate.**
 
 Highest first. This one number does four jobs:
-- **Time counts, lightly, and the same for both kinds.** The time rate is the bottom of Chip's own range, 50s an hour (under 1c a second), a setting he can change. At that rate a craft costs a fraction of a copper per cast, so crafting is not buried: 25 Cerulean Dyes cost under 1s of time. It only bites on the truly absurd: 2,000 crafts for 2c each (40s of profit for about 100 minutes, which is 83s of time) still goes negative and drops out. A 3c margin on one commodity stack that sells thousands a day stays on the list.
+- **Time is shown, not charged, by default.** Chip crafts and lists, then sleeps, so crafting minutes do not cost him money. The time rate is a setting that defaults to 0; minutes stay on every card. 2,000 crafts for 2c each is no longer removed for effort; it simply makes 40s and ranks near the bottom by its own small profit.
 - **Volume is built in.** Units only count if they are likely to sell inside the horizon.
 - **Depth is built in.** Each unit carries its own real reagent cost.
 - **Listing risk is built in.** A unit that may not sell carries its lost deposit.
@@ -213,7 +216,7 @@ Frilled Lichen feeds about 130 recipes, and a product can be made by several rec
 The fixtures state every input, so each gate passes or fails for a stated reason.
 - **Cerulean Dye at Ben's prices:** about 58s in, 75s sale, about 71s net after 5%, about 13s each. With 60 sold a day and 30 ahead of him, he can expect to sell roughly 25 within 24 hours. Two purchases, 25 crafts, one post: a few minutes. Expected profit around 3g, gold per hour very high, risk low (the bad case still breaks about even). Green card, near the top.
 - **Bright Baubles at Chip's prices:** 2s 50c in, 5s on Blackwater, 4s 25c net after 15%, 1s 75c each. It shows only if Blackwater sells enough of them a day to beat the trip to the docks and the deposit risk. That depends on the unverified Blackwater deposit (T7). The fixture states its sales a day, and the test will say honestly which way it goes.
-- **2,000 crafts for 2c each:** 40s of profit for about 100 minutes of casting, 83s of time at 50s an hour. Negative. Held back: "less than 50s an hour".
+- **2,000 crafts for 2c each:** 40s of profit. Shown, ranked far below anything worth gold, with its 100 minutes of casting on the card.
 - **Today's live dye and baubles:** no profit after the cut. Held back: "no profit after the cut".
 
 ## 7. The hourly loop
@@ -251,7 +254,7 @@ Each layer gets three independent checks: a test with hand calculated numbers, a
 | Static data | Data contracts; 20 known recipes by hand (Copper Bar, Minor Healing Potion, Linen Bandage, Cerulean Dye...) | wago against Blizzard, recipe by recipe, every disagreement listed | Agent checks 30 random recipes against the raw files |
 | Sale counting | A small simulator for the sale counter only: synthetic posts, 2/8/24 hour listings, sweeps, undercut cancels, expiries, post and sell inside one hour, all with known truth. Bias and error reported per market type, with pass marks | Real snapshots: the hourly sanity bound never breached; Chip's own listings counted correctly | Agent recomputes 20 items' sales from raw snapshots by its own code |
 | Cost and sell books | Ladder walks by hand. Properties: a higher reagent price never raises profit; a listing above the floor never raises the claimed price; splitting a listing changes nothing | Every item on both houses has a book entry or a stated reason | Agent recomputes 20 cost curves from raw JSON |
-| Flip finding and ranking | **End to end goldens**: real recorded snapshot sequences with Chip's prices injected, run through the sale counter and the whole engine (nothing stubbed). Cerulean Dye in the top 10; Bright Baubles judged by its stated inputs. **Near misses**: Lichen at 36s (gone), the dye selling 1 a day (weak or gone), one troll dye at 5g and a three listing troll (price unchanged), today's prices (held back, "no profit after the cut"). **Today's junk must stay out**: Lionheart Helm on 3 listings, transmute chains with no cooldown, a bind on pickup product, Strange Dust blocked as a troll. **Scenarios**: huge volume tiny margin (shown), 2,000 crafts for 2c (held back), a cheap craft with a good margin ranks against an equal plain flip on profit alone (crafting never buried by its effort), a flip on any house other than Chip's two never appears, risk rises with quantity, a price that just jumped shows high risk. Properties: the second pass never hands out more units than are listed; rank rises with volume | Full run over every recipe and item; top 25 each traced to its evidence | A separate script by a different agent recomputes the top 25 from raw JSON and must agree. A second agent argues against each of the top 10, and any argument it wins becomes a test |
+| Flip finding and ranking | **End to end goldens**: real recorded snapshot sequences with Chip's prices injected, run through the sale counter and the whole engine (nothing stubbed). Cerulean Dye in the top 10; Bright Baubles judged by its stated inputs. **Near misses**: Lichen at 36s (gone), the dye selling 1 a day (weak or gone), one troll dye at 5g and a three listing troll (price unchanged), today's prices (held back, "no profit after the cut"). **Today's junk must stay out**: Lionheart Helm on 3 listings, transmute chains with no cooldown, a bind on pickup product, Strange Dust blocked as a troll. **Scenarios**: huge volume tiny margin (shown), 2,000 crafts for 2c (ranked near the bottom by its small profit), a cheap craft with a good margin ranks against an equal plain flip on profit alone (crafting never buried by its effort), a flip on any house other than Chip's two never appears, risk rises with quantity, a price that just jumped shows high risk. Properties: the second pass never hands out more units than are listed; rank rises with volume | Full run over every recipe and item; top 25 each traced to its evidence | A separate script by a different agent recomputes the top 25 from raw JSON and must agree. A second agent argues against each of the top 10, and any argument it wins becomes a test |
 | Whole loop | `npm test`, typecheck, replay, page contract test | The engine runs here on live data across many publishes | A final fresh reviewer reads the whole change and the run reports |
 
 **Paper trade backtest, the real score.** For every flip shown at hour T: Chip acts 30 to 60 minutes later and pays the next snapshot's prices; his units sell only after the units ahead of him clear. Report what it would have really paid against what it claimed, per strength band. Also track flips that were held back and turned out good, the misses. **Rank stability:** how much the top 25 churns hour to hour on quiet markets, which exposes noise driven ranking. Once Chip trades from the list, his mailbox is the final truth.
@@ -260,9 +263,7 @@ Each layer gets three independent checks: a test with hand calculated numbers, a
 
 One question now. The rest can wait.
 
-Answered November 24: time is worth 50s to 5g an hour, no hard floor. The time rate in expected profit is 50s an hour, the bottom of that range, as a setting (0 turns it off). Gold per hour is shown on every flip, not used as a cutoff.
-
-**The question now: is this plan approved to build?**
+Answered November 24: time is worth 50s to 5g an hour, no hard floor, and crafting minutes do not matter because he lists overnight. The time rate defaults to 0. Gold per hour and minutes are shown on every flip, never used as a cutoff. Plan approved to build.
 
 Later, not blocking:
 1. Your Blackwater house id. Without it, Blackwater flips like Bright Baubles cannot be shown. A few Booty Bay screenshots with prices settle it, as they did for 111.
@@ -281,4 +282,14 @@ Each step runs its full check loop (section 9) before the next starts. Agents wo
 6. Flips page with green and blue cards side by side, page contract and its test updated.
 7. End to end goldens, near misses, scenarios, independent recompute, paper trade backtest on the history collected here.
 8. Conversion family, then disenchant behind the unverified label.
-9. Tutorial walkthrough for Chip.
+9. Web packaging (section 12).
+10. Tutorial walkthrough for Chip.
+
+## 12. Live on the web
+Recommended: a small always on server (Hetzner or Fly.io, about $5 a month).
+1. A container image with the engine, the app and Node, plus a persistent disk for `DATA_DIR`.
+2. Secrets (Blizzard, Discord) as server environment variables, never in the repo.
+3. A login in front of the app (Cloudflare Access, or one shared password) so only Chip and his brothers see it.
+4. His domain or a subdomain pointed at the server, with HTTPS.
+5. A one page guide: create the server account, paste secrets, point the domain. About 15 minutes of Chip's time; account creation cannot be done for him.
+6. Why not Vercel alone: the engine polls every 2 minutes and keeps a database and raw snapshots on disk, which serverless functions cannot do. A Vercel front end with Supabase is possible later if he wants it inside an existing site, but it is a rewrite.
