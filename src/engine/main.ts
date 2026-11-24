@@ -3,7 +3,7 @@ import { openDb } from '../store/db.ts';
 import { BlizzardClient, sleep } from '../blizzard/client.ts';
 import { Engine } from './engine.ts';
 import { syncEgLink } from '../datasets/eglink.ts';
-import { syncRecipes } from '../datasets/recipes.ts';
+import { syncRecipes, summarizeRecipes } from '../datasets/recipes.ts';
 import { dailyMaintenance } from './daily.ts';
 import { startServer } from '../server/server.ts';
 import { rebuildIfRulesChanged } from './rebuild.ts';
@@ -41,7 +41,7 @@ async function main() {
     };
     const results = [
       await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names, ${r.questItems} quest items from ${r.builds} builds`; }),
-      await step('recipes', async () => { const r = await syncRecipes(client, db, cfg.dataDir, log); return `${r.recipes} recipes, ${r.withThresholds} with skill thresholds`; }),
+      await step('recipes', async () => summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))),
       await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
       await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
     ];
@@ -53,6 +53,12 @@ async function main() {
   const trainers = db.prepare('SELECT COUNT(*) AS n FROM trainer_spells').get() as { n: number };
   if (trainers.n === 0) {
     try { const r = await syncEgLink(db, cfg.dataDir); log(`eglink on start: ${r.trainerSpells} trainer recipes`); } catch (e) { log(`eglink on start failed: ${(e as Error).message}`); }
+  }
+  // The game tables and the rebuilt recipes (flip plan section 4) fill on the first start after the update too.
+  // When the daily refresh is due anyway, it does this itself right below.
+  const gamedata = db.prepare(`SELECT 1 AS ok FROM datasets WHERE name = 'gamedata'`).get();
+  if (!gamedata && !engine.dailyDue()) {
+    try { log(`recipes on start: ${summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))}`); } catch (e) { log(`recipes on start failed: ${(e as Error).message}`); }
   }
   await daily();
   for (;;) {

@@ -1,0 +1,539 @@
+{
+ "source": "Blizzard recipe API, static-forever-us, fetched November 23, cut to the test recipes",
+ "professions": [
+  {
+   "id": 129,
+   "name": "First Aid"
+  },
+  {
+   "id": 164,
+   "name": "Blacksmithing"
+  },
+  {
+   "id": 165,
+   "name": "Leatherworking"
+  },
+  {
+   "id": 171,
+   "name": "Alchemy"
+  },
+  {
+   "id": 182,
+   "name": "Herbalism"
+  },
+  {
+   "id": 185,
+   "name": "Cooking"
+  },
+  {
+   "id": 186,
+   "name": "Mining"
+  },
+  {
+   "id": 197,
+   "name": "Tailoring"
+  },
+  {
+   "id": 202,
+   "name": "Engineering"
+  },
+  {
+   "id": 333,
+   "name": "Enchanting"
+  },
+  {
+   "id": 356,
+   "name": "Fishing"
+  },
+  {
+   "id": 393,
+   "name": "Skinning"
+  },
+  {
+   "id": 2933,
+   "name": "Test Profession [DNT]"
+  }
+ ],
+ "recipes": [
+  {
+   "id": 1356,
+   "name": "Light Armor Kit",
+   "professionId": 165,
+   "profession": "Leatherworking",
+   "category": "Armor Kits",
+   "craftedItemId": 2304,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2318,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 1384,
+   "name": "Draught of Tongues",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Draughts",
+   "craftedItemId": 2460,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2449,
+     "quantity": 2
+    },
+    {
+     "itemId": 785,
+     "quantity": 2
+    },
+    {
+     "itemId": 3371,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 1600,
+   "name": "Smelt Bronze",
+   "professionId": 186,
+   "profession": "Mining",
+   "category": "Smelted Bars",
+   "craftedItemId": 2841,
+   "qtyMin": 2,
+   "qtyMax": 2,
+   "reagents": [
+    {
+     "itemId": 2840,
+     "quantity": 1
+    },
+    {
+     "itemId": 3576,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 1632,
+   "name": "Copper Chain Belt",
+   "professionId": 164,
+   "profession": "Blacksmithing",
+   "category": "Mail Belts",
+   "craftedItemId": 2851,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2840,
+     "quantity": 6
+    }
+   ]
+  },
+  {
+   "id": 1838,
+   "name": "Linen Bandage",
+   "professionId": 129,
+   "profession": "First Aid",
+   "category": "Bandages",
+   "craftedItemId": 1251,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2589,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 2359,
+   "name": "Bolt of Linen Cloth",
+   "professionId": 197,
+   "profession": "Tailoring",
+   "category": "Reagents",
+   "craftedItemId": 2996,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2589,
+     "quantity": 2
+    }
+   ]
+  },
+  {
+   "id": 2418,
+   "name": "Rough Copper Bomb",
+   "professionId": 202,
+   "profession": "Engineering",
+   "category": "Explosives",
+   "craftedItemId": 4360,
+   "qtyMin": 2,
+   "qtyMax": 2,
+   "reagents": [
+    {
+     "itemId": 2840,
+     "quantity": 1
+    },
+    {
+     "itemId": 4359,
+     "quantity": 1
+    },
+    {
+     "itemId": 4357,
+     "quantity": 2
+    },
+    {
+     "itemId": 2589,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 2427,
+   "name": "Coarse Dynamite",
+   "professionId": 202,
+   "profession": "Engineering",
+   "category": "Explosives",
+   "craftedItemId": 4365,
+   "qtyMin": 1,
+   "qtyMax": 4,
+   "reagents": [
+    {
+     "itemId": 4364,
+     "quantity": 3
+    },
+    {
+     "itemId": 2589,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 2432,
+   "name": "Large Copper Bomb",
+   "professionId": 202,
+   "profession": "Engineering",
+   "category": "Explosives",
+   "craftedItemId": 4370,
+   "qtyMin": 1,
+   "qtyMax": 5,
+   "reagents": [
+    {
+     "itemId": 2840,
+     "quantity": 3
+    },
+    {
+     "itemId": 4364,
+     "quantity": 4
+    },
+    {
+     "itemId": 4404,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 3324,
+   "name": "Smelt Copper",
+   "professionId": 186,
+   "profession": "Mining",
+   "category": "Smelted Bars",
+   "craftedItemId": 2840,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2770,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 4178,
+   "name": "Elixir of Minor Defense",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Elixirs",
+   "craftedItemId": 5997,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 765,
+     "quantity": 1
+    },
+    {
+     "itemId": 2447,
+     "quantity": 1
+    },
+    {
+     "itemId": 3371,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 4289,
+   "name": "Enchant Bracer - Inferior Stamina",
+   "professionId": 333,
+   "profession": "Enchanting",
+   "category": "Bracer Enchants",
+   "craftedItemId": null,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 247786,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 4353,
+   "name": "Brilliant Smallfish",
+   "professionId": 185,
+   "profession": "Cooking",
+   "category": "Attack Power Food",
+   "craftedItemId": 6290,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 6291,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 6020,
+   "name": "Transmute: Iron to Gold",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Lesser Transmutations",
+   "craftedItemId": 3577,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 3575,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 6622,
+   "name": "White Wedding Dress",
+   "professionId": 197,
+   "profession": "Tailoring",
+   "category": "Dressed for the Occasion",
+   "craftedItemId": 10040,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 4339,
+     "quantity": 5
+    },
+    {
+     "itemId": 8343,
+     "quantity": 3
+    }
+   ]
+  },
+  {
+   "id": 9840,
+   "name": "Transmute: Arcanite",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Greater Transmutations",
+   "craftedItemId": 12360,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 12359,
+     "quantity": 1
+    },
+    {
+     "itemId": 12363,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 9943,
+   "name": "Transmute: Air to Fire",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Lesser Transmutations",
+   "craftedItemId": 7078,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 7082,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 10401,
+   "name": "Runecloth Bag",
+   "professionId": 197,
+   "profession": "Tailoring",
+   "category": "Bags",
+   "craftedItemId": 14046,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 14048,
+     "quantity": 5
+    },
+    {
+     "itemId": 8170,
+     "quantity": 2
+    },
+    {
+     "itemId": 14341,
+     "quantity": 1
+    },
+    {
+     "itemId": 249430,
+     "quantity": 4
+    },
+    {
+     "itemId": 249409,
+     "quantity": 2
+    }
+   ]
+  },
+  {
+   "id": 10487,
+   "name": "Mooncloth",
+   "professionId": 197,
+   "profession": "Tailoring",
+   "category": "Reagents",
+   "craftedItemId": 14342,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 14256,
+     "quantity": 2
+    }
+   ]
+  },
+  {
+   "id": 49255,
+   "name": "Elixir of Coalesced Regret",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "SEASON OF DISCOVERY",
+   "craftedItemId": 210708,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 3820,
+     "quantity": 5
+    },
+    {
+     "itemId": 3372,
+     "quantity": 1
+    },
+    {
+     "itemId": 3369,
+     "quantity": 5
+    },
+    {
+     "itemId": 11083,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 53851,
+   "name": "Smelt Copper (Test)",
+   "professionId": 2933,
+   "profession": "Test Profession [DNT]",
+   "category": "Jewelcrafting (PROTOTYPE)",
+   "craftedItemId": 2840,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 2770,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 54191,
+   "name": "Minor Healing Potion",
+   "professionId": 129,
+   "profession": "First Aid",
+   "category": "Healing Potions",
+   "craftedItemId": 118,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 3371,
+     "quantity": 1
+    },
+    {
+     "itemId": 2678,
+     "quantity": 1
+    },
+    {
+     "itemId": 2447,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 54453,
+   "name": "Cerulean Dye",
+   "professionId": 171,
+   "profession": "Alchemy",
+   "category": "Reagents",
+   "craftedItemId": 249409,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 249399,
+     "quantity": 2
+    },
+    {
+     "itemId": 3371,
+     "quantity": 1
+    }
+   ]
+  },
+  {
+   "id": 60362,
+   "name": "Centaur Hoofwarmers",
+   "professionId": 165,
+   "profession": "Leatherworking",
+   "category": "Leather Boots",
+   "craftedItemId": 274490,
+   "qtyMin": 1,
+   "qtyMax": 1,
+   "reagents": [
+    {
+     "itemId": 4304,
+     "quantity": 12
+    },
+    {
+     "itemId": 8343,
+     "quantity": 2
+    }
+   ]
+  }
+ ]
+}

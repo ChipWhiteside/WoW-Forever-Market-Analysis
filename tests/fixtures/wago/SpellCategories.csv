@@ -1,0 +1,3 @@
+ID,DifficultyID,Category,DefenseType,DiminishType,DispelType,Mechanic,PreventionType,StartRecoveryCategory,ChargeCategory,SpellID
+75033,0,310,0,0,0,0,0,0,0,17187
+75051,0,310,0,0,0,0,0,0,0,17559
