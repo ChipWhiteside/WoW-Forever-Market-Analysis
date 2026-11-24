@@ -68,6 +68,17 @@ export interface SellQuote {
   /** reasons the price is not believed; empty when it passes */
   gates: string[];
   rising: boolean;
+  /** sales seen near the floor over the watched window (judgeSell's evidence) */
+  provenSales?: number;
+  /** one typical undercut in copper; Chip posts at claimPrice minus this */
+  undercut?: number;
+  /** when rising: the higher price buyers paid in the last hour, shown as "up to", never ranked on */
+  upTo?: number | null;
+  /** true when salesPerDayLow or newPerHour is the engine's own cautious estimate, not sale counting's */
+  lowDerived?: boolean;
+  newDerived?: boolean;
+  /** one plain sentence about the price, for the card */
+  note?: string | null;
 }
 
 export interface Risk {
@@ -135,10 +146,22 @@ export interface Flip {
   afterShared?: { units: number; expectedProfit: number };
   notes: string[];
   dataAt: number;
+  /** position on the list, 1 is best */
+  rank?: number;
+  /** the number ranked on: best expected profit minus minutes at the time rate */
+  score?: number;
+  /** units the shared pass handed this flip of each reagent bought at auction, for the page and the checks */
+  sharedUse?: Array<{ itemId: number; units: number }>;
 }
 
 /** A candidate that did not make the list, and why. */
-export interface HeldBack { key: string; family: Family; itemId: number; name: string; perItem: number | null; reason: string }
+export interface HeldBack {
+  key: string; family: Family; itemId: number; name: string; perItem: number | null; reason: string;
+  /** the gate that held it back, a fixed short label the run report counts by */
+  code?: string;
+  sellHouseId?: number | null;
+  recipeId?: number;
+}
 
 export interface FlipRunReport {
   at: number; dataAt: number; ms: number; complete: boolean; incompleteReason?: string;
