@@ -172,6 +172,17 @@ Expected profit divided by the minutes it takes: crafting time from each recipe'
 ### Quantity: the same flip at 10, at the best amount, and at the most
 Each flip shows a small table at three or four quantities, for example 10, the best amount, and the most the market can take: units, total cost, expected profit, gold per hour, and risk. Buying more walks up the reagent listings and pushes deeper into the sales queue, so profit per unit falls and risk rises; the table makes that trade visible. The list ranks each flip at its best amount.
 
+### Refinements from the first independent test (November 24)
+The first test round recomputed 13 flips to the copper, then showed the market model trusting too little evidence. Now:
+1. **Sales need 6 hours of watching** before an auction flip ranks. Until then it is held back as "learning".
+2. **The cautious sales estimate counts sale events, not units.** Three stacks vanishing is three events, however big the stacks.
+3. **New listings overnight are measured** from the units other sellers actually post each hour, never guessed.
+4. **The chance each unit sells falls smoothly** with how many he posts, so big deposits pull the best amount down.
+5. **Unsold units** are valued at what a vendor pays, minus the lost deposit, in both the expected and the bad case.
+6. **Bad case** = price drops to its 3 day low (25% when there is not 3 days of history) and only half the expected units sell. Deposits count in gold at stake.
+7. **Price wars are named:** a floor that fell this hour under a flood of new listings is a risk driver, not demand.
+8. **Fresh gate:** a run on data over 2 hours old is incomplete.
+
 ### How many Chip can sell: a queue, not a flat 20%
 Units Chip can sell within the horizon at price p = low estimate of sales in that time − units listed below p − new units other sellers post at or under the floor in that time (already measured hourly as new units). The card reads, for example: "180 ahead of you, about 60 sell a day, you can expect to sell 25 in 24 hours." The 20% share stays as an upper bound until the backtest proves the queue is better.
 
