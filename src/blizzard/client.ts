@@ -104,7 +104,8 @@ export class BlizzardClient {
       if ((res.status === 429 || res.status >= 500) && attempt < retries) {
         await res.text().catch(() => '');
         const retryAfter = Number(res.headers.get('retry-after'));
-        const wait = Math.max(backoff(attempt), Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0);
+        // Retry-After is honored but capped at a minute, so one odd header can never stall every caller for long.
+        const wait = Math.min(60_000, Math.max(backoff(attempt), Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0));
         if (res.status === 429) this.nextSlot = Math.max(this.nextSlot, Date.now() + wait);
         await sleep(wait);
         continue;

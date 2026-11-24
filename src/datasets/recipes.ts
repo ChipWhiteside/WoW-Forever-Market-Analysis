@@ -142,7 +142,8 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
         }
         if (craftedItemId != null && (round2(b.qtyMin) !== round2(qtyMin) || round2(b.qtyMax) !== round2(qtyMax))) {
           diffs.push(`yield: wago ${fmtQty(qtyMin, qtyMax)}, blizzard ${fmtQty(b.qtyMin, b.qtyMax)}`);
-          if (b.qtyMin !== b.qtyMax) randomYield = true;
+          // Sources disagree on a random yield: keep Blizzard's whole numbers, and keep it out of the ranking until crafted in game.
+          if (b.qtyMin !== b.qtyMax) { randomYield = true; qtyMin = b.qtyMin; qtyMax = b.qtyMax; }
         }
       }
     } else {

@@ -17,6 +17,7 @@ import { alertCycle, sendDiscord } from '../alerts/discord.ts';
 import { computeHealth, writeRunReport } from '../health/report.ts';
 import { pool } from '../catalog/items.ts';
 import type { DetectorId, Play } from '../detectors/types.ts';
+import { hourlyFlips } from '../flips/hourly.ts';
 
 export interface EngineOptions {
   dataDir: string;
@@ -145,6 +146,8 @@ export class Engine {
     const fresh = [...life.created, ...life.updated];
     const a = await alertCycle(this.db, this.opts.webhookUrl, fresh, pinned, { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null });
     this.log(`detect: ${plays.length} plays (${life.created.length} new, ${life.gone.length} gone), alert ${a.sent ? `sent ${a.sent}` : a.skipped}`);
+    // The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together.
+    hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
     return { plays, alerted: a.sent };
   }
 

@@ -41,11 +41,12 @@ describe('recipes from the game tables, checked by hand against the real rows', 
     expect(r.source).toBe('both');
     expect(r.disagreement).toBe('reagents: wago 4339x5, 8343x3, 2324x1; blizzard 4339x5, 8343x3');
   });
-  it('Coarse Dynamite (2427) has a random yield: wago 2 plus or minus 1, Blizzard 1 to 4, so flagged and the disagreement kept', () => {
-    expect(R(2427)).toMatchObject({ craftedItemId: 4365, randomYield: true, qtyMin: 1, qtyMax: 3, disagreement: 'yield: wago 1 to 3, blizzard 1 to 4' });
+  it('Coarse Dynamite (2427) has a random yield: wago 2 plus or minus 1, Blizzard 1 to 4, so flagged, the whole numbers from Blizzard stored, the disagreement kept', () => {
+    expect(R(2427)).toMatchObject({ craftedItemId: 4365, randomYield: true, qtyMin: 1, qtyMax: 4, disagreement: 'yield: wago 1 to 3, blizzard 1 to 4' });
   });
   it('Large Copper Bomb (2432) is random too (variance 0.67)', () => {
     expect(R(2432).randomYield).toBe(true);
+    expect(Number.isInteger(R(2432).qtyMin) && Number.isInteger(R(2432).qtyMax)).toBe(true);
   });
   it('Runecloth Bag (10401) needs Cerulean Dye in Forever', () => {
     expect(R(10401).reagents).toEqual([{ itemId: 14048, quantity: 5 }, { itemId: 8170, quantity: 2 }, { itemId: 14341, quantity: 1 }, { itemId: 249430, quantity: 4 }, { itemId: 249409, quantity: 2 }]);
