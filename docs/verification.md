@@ -67,3 +67,19 @@ Blackwater break even 17.6 percent. See `tests/unit/`.
 | Harmless change merged during a Blizzard outage | Watchdog: contract fails before and after, not blamed on the change, kept |
 
 Not yet drilled: a full agent run of `/nightly` on Chip's PC (needs his Claude desktop scheduled task and real run reports). First two nights are the drill; caps get tuned from the changelog.
+
+## Flip engine core, November 24 (cost book, sell book, ranking)
+Constants live in `src/rules/flips.ts`, each with where it came from. Tests: `tests/unit/flips.test.ts`, `flips-properties.test.ts`, `flips-db.test.ts`.
+
+| # | Claim | Status | Settled by |
+| --- | --- | --- | --- |
+| F1 | Cerulean Dye at Ben's prices ranks first: 20 crafts, 13s 83c each, 2g 76s 60c expected | Proven by hand calculation in the test | `flips.test.ts` yardstick 1 |
+| F2 | Bright Baubles shows or not purely from its stated sales a day | Proven both ways in the test | `flips.test.ts` yardstick 2 |
+| F3 | Three top flips on the November 23 snapshot of house 111 (Poached Sunscale Salmon, Elixir of Greater Fortitude, Clam Linguine) match a separate recompute from the raw listings to the copper | Proven on that snapshot | agent C hand traces, recompute script in the session scratchpad |
+| F4 | One typical undercut is the median gap between the cheapest 6 price levels, within 1c and 5% | First guess | Paper trade backtest |
+| F5 | The low sales estimate (seen minus 1.645 square roots of seen, over at least 6 hours) is cautious enough | First guess, used only when sale counting gives none | Backtest per strength band |
+| F6 | New units posted under Chip overnight are a quarter of middle sales when sale counting gives no figure | Guess | Sale counting's newPerDay, then the backtest |
+| F7 | Every Transmute shares one 24 hour cooldown when the catalog has no cooldowns | Classic behaviour, unverified in Forever | wago SpellCooldowns and SpellCategories in the recipe catalog |
+| F8 | Effort minutes (1 per auction item, 5 per vendor trip, 3 second cast, 15 between houses) | Guess, shown only, time rate 0 | Chip times a craft batch and a posting session |
+| F9 | A limited stock vendor holds one bundle | Guess, EG Link records no counts | In game check of one limited vendor |
+| F10 | Bind on pickup can be detected | Not yet: binding is null on every item in the November 23 catalog | Static data fix (items.bonding from ItemSparse) |
