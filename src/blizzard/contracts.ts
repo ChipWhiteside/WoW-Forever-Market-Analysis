@@ -57,7 +57,13 @@ export const ItemResponse = z.object({
   item_class: z.object({ id: z.number().int(), name: z.string() }).passthrough().optional(),
   item_subclass: z.object({ id: z.number().int(), name: z.string() }).passthrough().optional(),
   inventory_type: z.object({ type: z.string() }).passthrough().optional(),
+  /** Never seen at the top level in a real response; kept only as a fallback. */
   binding: z.object({ type: z.string() }).passthrough().optional(),
+  /**
+   * Binding lives here (B22). Seen November 24: item 5060 Thieves' Tools has preview_item.binding
+   * { type: 'ON_ACQUIRE', name: 'Binds when picked up' }; 4308 has ON_EQUIP; Linen Cloth has no binding key at all.
+   */
+  preview_item: z.object({ binding: z.object({ type: z.string() }).passthrough().optional() }).passthrough().optional(),
   purchase_price: z.number().int().nonnegative().optional(),
   purchase_quantity: z.number().int().optional(),
   sell_price: z.number().int().nonnegative().optional(),

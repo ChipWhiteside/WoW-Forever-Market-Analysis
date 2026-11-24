@@ -23,6 +23,11 @@ type FetchFn = typeof fetch;
 export class BlizzardClient {
   private token: { value: string; expiresAt: number } | null = null;
   private readonly host: string;
+  /** 429 answers seen since this client was made. At this pace a full refresh of about 13,000 requests saw none (B26). */
+  throttled = 0;
+  /** Requests are spaced at least this far apart, across every caller sharing this client. */
+  minGapMs = 20;
+  private nextSlot = 0;
 
   constructor(
     private readonly clientId: string,
@@ -31,6 +36,14 @@ export class BlizzardClient {
     private readonly fetchFn: FetchFn = fetch,
   ) {
     this.host = `https://${region}.api.blizzard.com`;
+  }
+
+  /** Wait for this request's turn. A 429 with Retry-After pushes every caller's next turn back. */
+  private async pace(): Promise<void> {
+    const now = Date.now();
+    const at = Math.max(now, this.nextSlot);
+    this.nextSlot = at + this.minGapMs;
+    if (at > now) await sleep(at - now);
   }
 
   async getToken(): Promise<string> {
@@ -54,9 +67,10 @@ export class BlizzardClient {
     return this.token.value;
   }
 
-  url(path: string, namespace: 'static' | 'dynamic' | 'profile', extra: Record<string, string> = {}): string {
+  /** `flavor` classic1x reads Blizzard's Classic item data, the fallback for old items Forever's data lacks (B25). */
+  url(path: string, namespace: 'static' | 'dynamic' | 'profile', extra: Record<string, string> = {}, flavor: 'forever' | 'classic1x' = 'forever'): string {
     const u = new URL(this.host + path);
-    u.searchParams.set('namespace', `${namespace}-forever-${this.region}`);
+    u.searchParams.set('namespace', `${namespace}-${flavor}-${this.region}`);
     u.searchParams.set('locale', 'en_US');
     for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, v);
     return u.toString();
@@ -74,6 +88,7 @@ export class BlizzardClient {
       const headers: Record<string, string> = { Authorization: `Bearer ${await this.getToken()}` };
       if (opts.ifModifiedSince) headers['If-Modified-Since'] = opts.ifModifiedSince;
       let res: Response;
+      await this.pace();
       try {
         res = await this.fetchFn(url, { headers });
       } catch (err) {
@@ -85,9 +100,13 @@ export class BlizzardClient {
       if (res.status === 304) return { status: 304, body: null, lastModified: lastModified ?? opts.ifModifiedSince ?? null, bytes: 0, ms: Date.now() - started };
       if (res.status === 404) return { status: 404, body: null, lastModified, bytes: 0, ms: Date.now() - started };
       if (res.status === 401 && attempt < retries) { this.token = null; continue; }
+      if (res.status === 429) this.throttled++;
       if ((res.status === 429 || res.status >= 500) && attempt < retries) {
         await res.text().catch(() => '');
-        await sleep(backoff(attempt));
+        const retryAfter = Number(res.headers.get('retry-after'));
+        const wait = Math.max(backoff(attempt), Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0);
+        if (res.status === 429) this.nextSlot = Math.max(this.nextSlot, Date.now() + wait);
+        await sleep(wait);
         continue;
       }
       const text = await res.text();
