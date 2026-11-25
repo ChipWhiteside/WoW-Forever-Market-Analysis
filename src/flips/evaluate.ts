@@ -1,8 +1,8 @@
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SMALL_QUANTITY } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
-import { capacity } from './sellBook.ts';
+import { overnightQueue, type Queue } from './sellBook.ts';
 import type { FlipItem, FlipRecipe, FlipInputs } from './inputs.ts';
 import type { Family, FlipLeg, HouseRef, QuantityOption, Risk, SellQuote } from './types.ts';
 
@@ -10,11 +10,13 @@ import type { Family, FlipLeg, HouseRef, QuantityOption, Risk, SellQuote } from 
  * Expected profit if Chip acts now, at every quantity, from one walk of the cost book.
  *
  * For N units over the overnight horizon with no relisting:
- *   expected(N) = sold(N) x net each - cost(N) + (N - sold(N)) x (salvage - deposit lost) - minutes(N) x time rate
+ *   expected(N) = sum over k <= N of [P_k x net each + (1 - P_k) x (salvage - deposit lost)] - cost(N) - minutes(N) x time rate
  * where salvage is what a vendor pays for an unsold unit (0 when none does; never the reagents' value). The bad case
  * in the risk line uses the same salvage rule.
- * where unit k sells with chance clamp(C - (k - 1), 0, 1), so sold(N) = min(N, C), and C is the queue capacity
- * (sellBook.capacity). cost(N) is the real cost of the first N units: each one walks the reagent listings further,
+ * P_k is the chance unit k sells overnight: sale events are Poisson and unit k sells when enough of them arrive to
+ * clear everything ahead of it and reach it (sellBook.overnightQueue, round 1 finding H4). P_k falls smoothly with k,
+ * so big deposits pull the best amount below the queue's capacity. sold(N) = sum of P_k.
+ * cost(N) is the real cost of the first N units: each one walks the reagent listings further,
  * plus whatever was paid for but not used (the rest of a vendor bundle or of the last craft's yield).
  */
 export interface Candidate {
@@ -38,6 +40,7 @@ export interface Walk { steps: Step[]; trace: TraceEntry[]; exhausted: boolean; 
 
 export interface Evaluation {
   walk: Walk;
+  /** units expected to sell overnight if Chip posted without limit (the sum of every queue position's chance) */
   cap: number;
   depositEach: number;
   maxN: number;
@@ -123,41 +126,65 @@ function stepFor(w: Walk, n: number): number {
 
 export interface EvalOptions { capUsed: number; gold: number | null; timeRate: number; horizonHours: number; craftSessionMinutes?: number }
 
+/**
+ * Expected units sold at each quantity N: the chances of the N queue positions Chip takes. Usually those are the N
+ * positions right behind the units ahead; a flip that buys some of the units ahead itself (cheap listing) leaves the
+ * rest of them in front of its own (round 1 finding M3). A vendor sells everything.
+ */
+export function soldCurve(q: SellQuote, queue: Queue, used: number, maxUnits: number): { soldAt(n: number): number; lastUseful: number; cap: number } {
+  if (q.houseId == null) return { soldAt: n => n, lastUseful: Infinity, cap: Infinity };
+  const own = Math.max(0, q.ownAhead ?? 0);
+  const baseAt = (n: number) => Math.max(0, q.ahead + used - Math.min(n, own));
+  const baseMin = baseAt(own);
+  const top = Math.max(0, Math.min(queue.lastPos, baseAt(0) + maxUnits));
+  // prefix sums of the chances over positions 1..top; past lastPos every chance is 0
+  const pre = new Float64Array(top + 1);
+  for (let p = 1; p <= top; p++) pre[p] = pre[p - 1]! + queue.at(p);
+  const sumTo = (p: number) => pre[Math.min(Math.max(0, p), top)]!;
+  const soldAt = (n: number) => sumTo(baseAt(n) + n) - sumTo(baseAt(n));
+  return { soldAt, lastUseful: Math.max(0, queue.lastPos - baseMin), cap: sumTo(queue.lastPos) - sumTo(baseMin) };
+}
+
 export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: Map<number, FlipRecipe>, o: EvalOptions): Evaluation {
   const q = c.quote;
   const toVendor = q.houseId == null;
-  const cap = capacity(q, o.horizonHours, o.capUsed);
+  const queue = overnightQueue(q, o.horizonHours);
   const sellItem = inputs.items.get(c.itemId);
   const depositEach = toVendor ? 0 : deposit(c.sellHouse!.faction, sellItem?.sellPrice, 1, LISTING_HOURS);
   const net = q.netEach;
-  // Auction sales: units past what sells overnight only lose, so walk to the larger of the small quantity and the
-  // capacity. Vendor sales: walk while units still cost under what the vendor pays.
-  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, Math.ceil(cap)));
+  // Auction sales: units whose chance of selling is negligible only lose, so walk to the larger of the small quantity
+  // and the last position with a real chance. Vendor sales: walk while units still cost under what the vendor pays.
+  const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
+  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful));
   const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && unit >= net);
-  const available = w.steps.length ? w.steps[w.steps.length - 1]!.cumUnits : 0;
+  // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
+  const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
+  const sold = probe;
+  const cap = sold.cap;
   const costAt = (n: number) => { const s = w.steps[stepFor(w, n)]!; return { cost: s.cumCost + s.waste, s }; };
+  // Gold on hand pays for everything bought and the deposit on every unit posted (round 1 finding H3).
   let maxN = available, goldCapped = false;
   if (o.gold != null) {
-    while (maxN > 0 && costAt(maxN).cost > o.gold) { maxN--; goldCapped = true; }
+    while (maxN > 0 && costAt(maxN).cost + maxN * depositEach > o.gold) { maxN--; goldCapped = true; }
   }
   const nonStack = !isStackable(sellItem);
   const minutesAt = (n: number, s: Step) => s.buyMinutes + (toVendor ? EFFORT.vendorSellMin : EFFORT.postMin + (nonStack ? (n - 1) * EFFORT.postUnitMin : 0));
   const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
   const expectedAt = (n: number, cost: number, s: Step) => {
-    const sold = Math.min(n, cap);
-    return sold * net - cost + (n - sold) * (salvage - depositEach) - (minutesAt(n, s) / 60) * o.timeRate;
+    const k = sold.soldAt(n);
+    return k * net - cost + (n - k) * (salvage - depositEach) - (minutesAt(n, s) / 60) * o.timeRate;
   };
   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
     const { cost, s } = costAt(n);
-    const sold = Math.min(n, cap);
+    const k = sold.soldAt(n);
     const minutes = minutesAt(n, s);
     const expectedProfit = Math.round(expectedAt(n, cost, s));
     const over = s.castMinutes > session + 1e-9;
-    return { label, units: n, cost: Math.round(cost), expectedSold: Math.round(sold * 10) / 10, expectedProfit, minutes: Math.round(minutes * 10) / 10,
+    return { label, units: n, cost: Math.round(cost), expectedSold: Math.round(k * 10) / 10, expectedProfit, minutes: Math.round(minutes * 10) / 10,
       castMinutes: Math.round(s.castMinutes * 10) / 10,
       note: over ? `${Math.round(s.castMinutes)} minutes of crafting, more than one ${session} minute session` : undefined,
-      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, sold, cap, depositEach, expectedProfit, w, salvage) };
+      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, k, cap, depositEach, expectedProfit, w, salvage) };
   };
   const at = (n: number) => option('best', Math.max(1, Math.min(n, Math.max(1, available))));
   if (maxN <= 0) return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0] ? w.steps[0].cost / w.steps[0].units : null, sessionCapped: false, options: [], best: null, bestStep: -1, at };
@@ -171,31 +198,36 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
     if ((n === 1 || s.castMinutes <= session + 1e-9) && e > bestE + 1e-9) { bestE = e; bestN = n; }
   }
   const sessionCapped = freeN > bestN;
-  const mostN = toVendor ? Math.max(bestN, freeN) : Math.max(bestN, Math.min(maxN, Math.ceil(cap)));
+  // The most: every unit with a real chance of selling (an auction), or all that still pays (a vendor), never past MAX_UNITS.
+  const mostN = Math.min(MAX_UNITS, toVendor ? Math.max(bestN, freeN) : Math.max(bestN, Math.min(maxN, Math.ceil(cap))));
   const options = [option('small', Math.min(SMALL_QUANTITY, maxN)), option('best', bestN), option('most', mostN)];
   return { walk: w, cap, depositEach, maxN, goldCapped, sessionCapped, firstUnitCost: w.steps[0]!.cost / w.steps[0]!.units, options, best: options[1]!, bestStep: stepFor(w, bestN), at };
 }
 
 /**
- * Risk at one quantity. Bad case: the price falls to its 3 day low and only the low estimate of units sells; unsold
- * units are salvaged at the vendor price and lose their deposit. High when the bad case loses more than the flip is
- * expected to make, medium when it loses anything, low when even the bad case does not lose.
+ * Risk at one quantity (round 1 finding H3). Bad case: the price falls to its 3 day low (a 25 percent drop until 72
+ * hours of floors are watched; a lower low seen is used) AND only half of the units expected to sell actually sell.
+ * Unsold units are salvaged at the vendor price and lose their deposit. Gold at stake counts every deposit.
+ * High when the bad case loses more than the flip is expected to make, medium when it loses more than half of it.
  */
 function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk, salvage: number): Risk {
   const q = c.quote;
-  const item = inputs.items.get(c.itemId);
   const drivers: string[] = [];
   let netBad = q.netEach, daysToSell: number | null = 0;
   if (q.houseId != null) {
-    const low = q.low3d ?? Math.round(q.claimPrice * (1 - RISK.unknownLowDrop));
+    const drop = Math.round(q.claimPrice * (1 - RISK.unknownLowDrop));
+    const covered = (q.lowCoverHours ?? q.hoursWatched) >= RISK.lowCoverHours;
+    const low = covered && q.low3d != null ? q.low3d : Math.min(q.low3d ?? Infinity, drop);
     netBad = netPerUnit(c.sellHouse!.faction, Math.min(low, q.undercutPrice));
     daysToSell = q.salesPerDayLow ? Math.round(((q.ahead + n) / q.salesPerDayLow) * 10) / 10 : null;
     if ((q.cv ?? 0) > RISK.jumpyCv) drivers.push('the price jumps around');
     if ((q.provenSales ?? 0) < RISK.fewSales) drivers.push('few sales seen');
     if (q.ahead > 0 && q.ahead >= (q.salesPerDayLow ?? 0) * (inputs.settings.horizonHours / 24)) drivers.push('many units listed ahead of you');
     if (q.rising) drivers.push('the price just jumped');
+    const war = priceWar(q);
+    if (war) drivers.push(war);
     if (n > cap) drivers.push('more units than sell overnight');
-    if (q.low3d == null) drivers.push('no 3 day low recorded yet');
+    if (!covered) drivers.push('under 3 days of prices seen, a 25% drop assumed for the bad case');
     if (c.sellHouse!.faction === 'blackwater') drivers.push('Blackwater deposit not verified yet');
   }
   // Thin supply: the units bought use most of what is listed for a reagent.
@@ -209,12 +241,27 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
       if (listed && u / listed > RISK.thinSupplyShare) { drivers.push(`thin supply of ${inputs.items.get(it)?.name ?? `item ${it}`}`); break; }
     }
   }
-  const soldBad = Math.min(n, cap);
-  const revenue = soldBad * netBad + (n - soldBad) * (salvage - depositEach);
-  const badCaseLoss = Math.max(0, Math.round(cost - revenue));
-  const level: Risk['level'] = badCaseLoss <= 0 ? 'low' : badCaseLoss > expected ? 'high' : 'medium';
-  void sold;
-  return { atStake: Math.round(cost), badCaseLoss, daysToSell, level, drivers };
+  // A vendor buys every unit at a fixed price: no shortfall and no price drop.
+  const soldBad = q.houseId == null ? n : sold * SALES_SHORTFALL;
+  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + (n - soldBad) * (salvage - depositEach))));
+  const halfSalesProfit = Math.round(soldBad * q.netEach + (n - soldBad) * (salvage - depositEach) - cost);
+  const level: Risk['level'] = badCaseLoss > expected ? 'high' : badCaseLoss > expected / 2 ? 'medium' : 'low';
+  return { atStake: Math.round(cost + n * depositEach), badCaseLoss, halfSalesProfit, deposits: Math.round(n * depositEach), daysToSell, level, drivers };
+}
+
+/**
+ * A price war, named as a risk, never read as demand: the floor fell more than 10 percent since the last publish, or
+ * more new units are posted an hour than sell an hour (middle estimate).
+ */
+export function priceWar(q: SellQuote): string | null {
+  if (q.houseId == null) return null;
+  const fell = q.floorChange1h != null && q.floorChange1h <= -RISK.priceWarDrop;
+  const soldPerHour = (q.salesPerDayMid ?? 0) / 24;
+  const flood = q.newPerHour > soldPerHour && q.newPerHour > 0;
+  if (!fell && !flood) return null;
+  const perHour = Math.round(fell && q.newLastHour != null ? q.newLastHour : q.newPerHour);
+  if (fell) return `price war: floor fell ${Math.round(-q.floorChange1h! * 100)}% this hour, ${perHour} new listings an hour`;
+  return `price war: ${perHour} new listings an hour, more than the ${Math.round(soldPerHour * 10) / 10} that sell`;
 }
 
 /** The buy legs for the first `traceEnd` trace entries: where to buy what, how many, at what average price, and the crafts. */

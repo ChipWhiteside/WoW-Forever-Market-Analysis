@@ -45,18 +45,27 @@ export const MAX_CRAFT_DEPTH = 4;
 export const DEFAULT_HOUSE = 111;
 
 /**
- * The cautious sales estimate when sale counting gives no low estimate (Demand.lowPerDay missing).
- * Sales seen are treated as a Poisson count n; the low estimate is n minus 1.645 square roots of n
- * (one sided 95 percent, normal approximation), spread over at least 6 hours, the same floor
- * src/analysis/history.ts uses so one early sale never reads as 24 a day.
+ * Learning: an auction sale is not ranked until its product has at least 6 hours of watched sales. One hour of
+ * differencing multiplied out to a day is noise (round 1 independent test, finding H1). Held back with code learning.
+ * The same 6 hours src/analysis/history.ts uses as its floor for projecting a day.
  */
-export const LOW_ESTIMATE = { z: 1.645, minHours: 6 };
+export const LEARNING_HOURS = 6;
 
 /**
- * New units other sellers post under Chip overnight, as a share of the middle sales estimate, used only when sale
- * counting gives no newPerDay. A guess until the backtest measures it; deliberately cautious.
+ * The cautious (low) sales estimate when sale counting gives none: sales are counted in sale EVENTS (vanished
+ * listings), not units, since one buyer taking a stack of 20 is one event. The low estimate is the one sided 95
+ * percent Poisson lower bound on the event count, times the mean units per event, spread over the hours watched
+ * (at least 6). Round 1 finding H1.
  */
-export const NEW_POSTS_FALLBACK_SHARE = 0.25;
+export const LOW_ESTIMATE = { confidence: 0.95, minHours: 6 };
+
+/**
+ * The chance a unit sells overnight: sale events over the night are Poisson with a mean from the middle estimate,
+ * less the new units others post under Chip overnight (measured, never guessed), each event taking the mean units per
+ * event. A unit sells when enough events reach it in the queue (round 1 finding H4). Units with under this chance are
+ * not walked further.
+ */
+export const SELL_CHANCE = { negligible: 0.001 };
 
 /**
  * One typical undercut: the median gap between the cheapest distinct price levels on the ladder, never under 1c and
@@ -76,10 +85,23 @@ export const WOBBLE = { unknownCv: 0.1, minCopper: 1 };
 export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
 
 /**
- * Risk (plan section 6). Bad case: the price falls to its 3 day low; with no low recorded it is assumed 25 percent
- * lower. Drivers are named in plain words past these first guess thresholds.
+ * Risk (plan section 6, tightened by round 1 finding H3). Bad case: the price falls to its 3 day low AND only half of
+ * the units expected to sell actually sell. Until 72 hours of floors are watched the low is assumed 25 percent under
+ * the claim, and an observed low is used only when it is lower. Unsold units are salvaged at the vendor price and lose
+ * their deposit. High when the bad case loses more than the flip is expected to make, medium when it loses more than
+ * half of it, low otherwise. A price war: the floor fell more than 10 percent this hour, or more new units are posted
+ * an hour than sell. Drivers are named in plain words past these first guess thresholds.
  */
-export const RISK = { unknownLowDrop: 0.25, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5 };
+export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1 };
+
+/** Bad case: only this share of the units expected to sell actually sell (coordinator decision, round 1 H3). */
+export const SALES_SHORTFALL = 0.5;
+
+/**
+ * Fresh data: a run whose newest snapshot of one of Chip's houses is older than 2 hours is incomplete, never a
+ * list built from stale prices (round 1 finding M1). Blizzard publishes about hourly.
+ */
+export const FRESH_HOURS = 2;
 
 /**
  * Effort minutes, shown on every card and charged only at the time rate (0 by default). First guesses until Chip

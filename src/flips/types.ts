@@ -81,13 +81,28 @@ export interface SellQuote {
   newOvernight?: number;
   /** one plain sentence about the price, for the card */
   note?: string | null;
+  /** sale events (listings bought) seen over the hours watched, and the mean units each took (round 1 finding H1) */
+  saleEvents?: number | null;
+  unitsPerEvent?: number | null;
+  /** hours of floors behind low3d; under 72 the bad case assumes the 25 percent drop unless the low seen is lower */
+  lowCoverHours?: number | null;
+  /** the floor's change since the previous publish as a share (-0.12 fell 12 percent), and new units posted that hour */
+  floorChange1h?: number | null;
+  newLastHour?: number | null;
+  /** units counted in `ahead` that this flip buys itself (cheap listing): whatever it leaves stays ahead of Chip */
+  ownAhead?: number;
 }
 
 export interface Risk {
-  /** total gold spent to do it */
+  /** total gold spent to do it, deposits on every unit posted included */
   atStake: number;
-  /** loss if the price falls to its 3 day low and only the low estimate sells overnight */
+  /** loss if the price falls to its 3 day low (a 25 percent drop until 3 days are watched) and only half the units
+   * expected to sell actually sell; unsold units are salvaged at the vendor price and lose their deposit */
   badCaseLoss: number;
+  /** expected profit at the claimed price when only half the units expected to sell actually sell */
+  halfSalesProfit?: number;
+  /** deposits on every unit posted, part of atStake */
+  deposits?: number;
   daysToSell: number | null;
   level: 'low' | 'medium' | 'high';
   drivers: string[];
@@ -145,7 +160,13 @@ export interface Flip {
   /** hours open in the last 72, for trends */
   openHours72: number;
   /** one time setup for crafts: where and what it costs to learn */
-  setup?: { skill: string; rank: number | null; cost: number | null; where: string | null; places: Place[] } | null;
+  setup?: {
+    skill: string; rank: number | null; cost: number | null; where: string | null; places: Place[];
+    /** the item that teaches it, when one does, and its cheapest price on Chip's houses when listed */
+    teachItem?: { id: number; name: string } | null;
+    auctionPrice?: number | null;
+    auctionHouseId?: number | null;
+  } | null;
   /** keys of higher ranked flips that use the same reagent listings, buyers or gold */
   shares: string[];
   /** numbers after the shared reagent pass; equal to best when nothing is shared */

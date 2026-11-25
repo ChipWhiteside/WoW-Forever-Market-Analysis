@@ -109,3 +109,18 @@ export function ceruleanAtBens(over: { lichen?: Listing[]; dye?: Listing[]; dyeD
     houses: over.extra?.houses, settings: over.extra?.settings, typical: over.extra?.typical, recent: over.extra?.recent,
   };
 }
+
+/** P(X >= j) for X ~ Poisson(mu), summed from the pmf directly: an independent check of src/flips/poisson.ts. */
+export function refTail(mu: number, j: number): number {
+  if (j <= 0) return 1;
+  let p = Math.exp(-mu), cdf = 0;
+  for (let i = 0; i < j; i++) { cdf += p; p *= mu / (i + 1); }
+  return 1 - cdf;
+}
+
+/** Expected profit of n units at queue positions ahead + 1 .. ahead + n, `upe` units per sale event (plan section 6). */
+export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number }): number {
+  let sold = 0;
+  for (let k = 1; k <= o.n; k++) sold += refTail(o.mu, Math.ceil((o.ahead + k) / (o.upe ?? 1)));
+  return sold * o.net + (o.n - sold) * (o.salvage - o.deposit) - o.cost;
+}

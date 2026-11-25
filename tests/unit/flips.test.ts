@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, LICHEN, VIAL, DYE, BAUBLES, DYE_RECIPE, type Fixture } from './flips.fixture.ts';
 import { lowPerDay, typicalUndercut } from '../../src/flips/sellBook.ts';
+import { refExpected, refTail } from './flips.fixture.ts';
+import { poissonLowerBound, poissonTail } from '../../src/flips/poisson.ts';
 
 const DYE_KEY = `craft_auction:111:${DYE}:${DYE_RECIPE}`;
 const SPICES = 3713, CLOTH = 2589, BANDAGE = 1251;
@@ -30,25 +32,32 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(top.sellQuote.claimPrice).toBe(7500);
     expect(top.sellQuote.undercutPrice).toBe(7450);
     expect(top.sellQuote.netEach).toBe(7077);
-    // Queue: 60 a day low, 12 a day new posts under him, 0 ahead: 60 x 10/24 - 12 x 10/24 = 25 - 5 = 20 overnight.
-    expect(top.best.units).toBe(20);
-    expect(top.best.expectedSold).toBe(20);
-    // Cost of 20 crafts walking the lichen ladder (2 @25s, 4 @27s, 10 @28s, 20 @29s, then 30s), 1 vial each at 4c:
-    //   5004 + 2 x 5404 + 5 x 5604 + 10 x 5804 + 2 x 6004 = 113,880 (20 vials are exactly 4 bundles of 5, nothing wasted)
-    expect(top.best.cost).toBe(113880);
-    // Per item: 7077 - 113880 / 20 = 7077 - 5694 = 1383, about 13s 83c.
-    expect(top.perItem).toBe(1383);
-    // Expected profit: 20 x 7077 - 113,880 = 27,660 (2g 76s 60c).
-    expect(top.best.expectedProfit).toBe(27660);
-    // Bad case: the dye falls to its 3 day low of 70s, net floor(7000 x 0.95) = 6650 x 20 = 133,000, still over cost: risk low.
-    expect(top.best.risk.level).toBe('low');
-    expect(top.best.risk.badCaseLoss).toBe(0);
+    // Queue (round 1 finding H4): 60 a day middle, 12 a day new posts under him, 0 ahead, one unit per sale event.
+    //   Sale events overnight are Poisson with mean (60 - 12) x 10/24 = 20; unit k sells when at least k events come.
+    //   Each unit adds P_k x 7077 + (1 - P_k) x (75 salvage - 360 deposit) against its own cost; the 17th adds
+    //   0.779 x 7077 - 0.221 x 285 - 5800 < 0, so the best is 16 crafts (an independent recompute agrees, below).
+    expect(top.best.units).toBe(16);
+    expect(top.best.expectedSold).toBe(15.6);
+    // Cost of 16 crafts walking the lichen ladder (2 @25s, 4 @27s, 10 @28s, 20 @29s), 1 vial each at 4c in bundles of 5:
+    //   5004 + 2 x 5404 + 5 x 5604 + 8 x 5804 = 90,200, plus 4 bundles of vials (20 vials, 4 spare) = 80: 90,280
+    expect(top.best.cost).toBe(90280);
+    // Per item: 7077 - 90280 / 16 = 1434.5, rounded 1435, about 14s 35c.
+    expect(top.perItem).toBe(1435);
+    // Expected profit: 15.593 x 7077 + 0.407 x (75 - 360) - 90,280 = 19,956 (1g 99s 56c).
+    expect(top.best.expectedProfit).toBe(19956);
+    expect(top.best.expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16 })));
+    // Bad case (round 1 finding H3): the dye at its 3 day low of 70s (72 hours watched) nets 6650, and only half of the
+    //   15.593 expected sell: 7.797 x 6650 + 8.203 x (75 - 360) = 49,509 back on 90,280 spent, a 40,771 loss.
+    //   That is more than the 19,956 it is expected to make: high risk. Gold at stake counts 16 deposits of 360c.
+    expect(top.best.risk.badCaseLoss).toBe(40771);
+    expect(top.best.risk.level).toBe('high');
+    expect(top.best.risk.atStake).toBe(90280 + 16 * 360);
     // New listings under him overnight: 12 a day x 10/24 = 5, stated on the card.
     expect(top.sellQuote.newOvernight).toBeCloseTo(5, 6);
     expect(top.notes).toContain('about 5 new listings usually appear under you overnight');
-    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 40 });
+    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 32 });
     expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 20, unitPrice: 4 });
-    // 40 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
+    // 32 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
     expect(top.repeatable).toBe(false);
     // The weaker flips are on the same list, below it.
     const spices = r.flips.find(f => f.family === 'vendor_auction' && f.itemId === SPICES)!;
@@ -57,10 +66,12 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(bandage.kind).toBe('craft');
     expect(spices.rank).toBeGreaterThan(1);
     expect(bandage.rank).toBeGreaterThan(1);
-    // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Queue 20 x 10/24 - 4 x 10/24 = 6.67.
-    //   6 units: 6 x 280 - 6 x 160 = 720. 7 units: 6.67 x 280 - 1120 + 0.33 x (40 salvage - 192 deposit) = 696. Best 6, 7s 20c.
-    expect(spices.best.units).toBe(6);
-    expect(spices.best.expectedProfit).toBe(720);
+    // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Events overnight: (20 - 4) x 10/24 = 6.67.
+    //   The 6th unit sells with chance P(X >= 6) = 0.652: 0.652 x 280 + 0.348 x (40 - 192) - 160 = -30, so the best is 5:
+    //   4.644 expected sold, 4.644 x 280 + 0.356 x (40 - 192) - 800 = 446.
+    expect(spices.best.units).toBe(5);
+    expect(spices.best.expectedProfit).toBe(446);
+    expect(spices.best.expectedProfit).toBe(Math.round(refExpected({ mu: (20 - 4) * 10 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, cost: 800, n: 5 })));
   });
 
   it('the first craft carries the whole 20c bundle of vials: 5000 + 20 = 5020', () => {
@@ -80,7 +91,7 @@ describe('Bright Baubles on Blackwater (yardstick 2)', () => {
     demand: { 116: { [BAUBLES]: sells(demand.unitsPerDay, 500, { hours: 48, ...demand }) } },
   });
   const KEY = `vendor_auction:116:${BAUBLES}`;
-  it('high sales: shows. 250c in, post at 4s97, 4s22 net after 15%, 1s72 each, 15 sell overnight', () => {
+  it('high sales: shows. 250c in, post at 4s97, 4s22 net after 15%, 1s72 each, 13 posted against a 14 7s 85c deposit each', () => {
     const r = run(baubles({ unitsPerDay: 48, lowPerDay: 40, newPerDay: 4, low3d: 480 }));
     const f = r.flips.find(x => x.key === KEY)!;
     expect(f).toBeDefined();
@@ -88,11 +99,14 @@ describe('Bright Baubles on Blackwater (yardstick 2)', () => {
     // claim 500; undercut = median gap (1, 4) = 2.5 -> 3c; post 497; net floor(497 x 0.85) = 422; 422 - 250 = 172 each
     expect(f.sellQuote.netEach).toBe(422);
     expect(f.perItem).toBe(172);
-    // queue: 40 x 10/24 - 4 x 10/24 = 15 units; 15 x 172 = 2,580
-    expect(f.best.units).toBe(15);
-    expect(f.best.expectedProfit).toBe(2580);
+    // Events overnight: (48 - 4) x 10/24 = 18.33. The Blackwater deposit is 5 x floor(62 x 0.2 x 24) = 1,485 a unit, so a
+    //   unit pays only while P_k x 422 + (1 - P_k) x (62 - 1485) > 250, that is P_k > 0.907: the 13th (0.912) does, the
+    //   14th (0.865) does not. 13 units, 12.825 expected to sell: 12.825 x 422 - 0.175 x 1423 - 3250 = 1,913.
+    expect(f.best.units).toBe(13);
+    expect(f.best.expectedProfit).toBe(1913);
+    expect(f.best.expectedProfit).toBe(Math.round(refExpected({ mu: (48 - 4) * 10 / 24, ahead: 0, net: 422, salvage: 62, deposit: 1485, cost: 3250, n: 13 })));
     expect(f.notes.join(' ')).toMatch(/Blackwater deposit is not verified/);
-    expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 15 });
+    expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 13 });
   });
   it('low sales: held back, and the reason says it sells under 1 a day', () => {
     const r = run(baubles({ unitsPerDay: 1, lowPerDay: 0.5, newPerDay: 0.2, recentSales: 1 }));
@@ -236,9 +250,11 @@ describe('other families', () => {
     const f = r.flips.find(x => x.family === 'cross_house')!;
     expect(f.key).toBe(`cross_house:116:${WOOL}`);
     expect(f.buy[0]).toMatchObject({ kind: 'auction', houseId: 111, unitPrice: 100 });
-    // post at 297 (undercut 3c), net floor(297 x 0.85) = 252; 152 each; 48 x 10/24 = 20 sell overnight
+    // post at 297 (undercut 3c), net floor(297 x 0.85) = 252; 152 each; 20 sale events expected overnight, but with a
+    //   790c deposit (5 x floor(33 x 0.2 x 24)) a unit pays only past a 0.86 chance: 15 units, 14.75 expected sold.
     expect(f.perItem).toBe(152);
-    expect(f.best.units).toBe(20);
+    expect(f.best.units).toBe(15);
+    expect(f.best.expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 252, salvage: 33, deposit: 790, cost: 1500, n: 15 })));
   });
   it('cheap listing: bought well under the typical floor and relisted near it', () => {
     const ORE = 2770;
@@ -268,12 +284,38 @@ describe('other families', () => {
 });
 
 describe('the cautious sales inputs', () => {
-  it('with no low estimate from sale counting, one is worked out from the sales seen', () => {
-    // 60 a day over 72 hours is 180 seen; 180 - 1.645 x sqrt(180) = 157.93; over 72 hours that is 52.64 a day
-    expect(lowPerDay({ unitsPerDay: 60, hours: 72, snapshots: 72 }).value).toBeCloseTo(52.64, 2);
-    // one hour of watching counts as 6, so 4 sold an hour reads 16 a day middle, and the low is far under it
-    expect(lowPerDay({ unitsPerDay: 16, hours: 1, snapshots: 1 }).value).toBeCloseTo(((4 - 1.645 * 2) / 6) * 24, 5);
+  it('with no low estimate from sale counting, one is worked out from sale EVENTS, never units (round 1 H1)', () => {
+    // 3 sale events in 6 hours that took 284 units (221, 48 and 15). The one sided 95% Poisson lower bound on 3 events is
+    // 0.8177 (half the chi square 5% quantile with 6 degrees of freedom, 1.6354 / 2): 0.8177 x 284/3 units over 6 hours,
+    // 12.9 units an hour at most cautious, 309.7 a day; the middle estimate (284 in 6 hours) is 1,136 a day.
+    const d = { unitsPerDay: 1136, hours: 6, snapshots: 6, saleEvents: 3, unitsPerEvent: 284 / 3, hoursWatched: 6 };
+    expect(lowPerDay(d).value).toBeCloseTo((0.81770 * (284 / 3) / 6) * 24, 0);
+    expect(lowPerDay(d).derived).toBe(true);
+    // Counted as units (284 events of 1), the same sales would claim a low near 1,000 a day: the event count is the honest one.
+    expect(lowPerDay({ ...d, saleEvents: 284, unitsPerEvent: 1 }).value!).toBeGreaterThan(3 * lowPerDay(d).value!);
+    // 0 events: a low of 0; under 6 hours the hours count as 6, so 1 event in the first hour is never 24 a day
+    expect(lowPerDay({ ...d, saleEvents: 0 }).value).toBe(0);
+    expect(lowPerDay({ unitsPerDay: 24, hours: 1, snapshots: 1, saleEvents: 1, unitsPerEvent: 1 }).value).toBeCloseTo((0.05129 / 6) * 24, 3);
+    // No event count at all: unknown, never projected from units
+    expect(lowPerDay({ unitsPerDay: 60, hours: 72, snapshots: 72 }).value).toBeNull();
+    // Sale counting's own low wins
     expect(lowPerDay({ unitsPerDay: 60, hours: 72, snapshots: 72, lowPerDay: 33 }).value).toBe(33);
+  });
+  it('the Poisson helpers match the textbook values', () => {
+    // one sided 95% lower bounds: 1 event 0.0513, 2 events 0.3554, 5 events 1.9701, 10 events 5.4254
+    expect(poissonLowerBound(1)).toBeCloseTo(0.05129, 4);
+    expect(poissonLowerBound(2)).toBeCloseTo(0.35536, 4);
+    expect(poissonLowerBound(5)).toBeCloseTo(1.97015, 4);
+    expect(poissonLowerBound(10)).toBeCloseTo(5.42540, 4);
+    // a fractional count bounds like the whole events under it
+    expect(poissonLowerBound(2.9)).toBe(poissonLowerBound(2));
+    // tails against a direct sum of the pmf, small and large means
+    for (const mu of [0.5, 6.67, 20, 500]) {
+      const t = poissonTail(mu, Math.ceil(mu * 1.5) + 5);
+      for (const j of [0, 1, Math.floor(mu), Math.ceil(mu * 1.2)]) expect(t[j]!).toBeCloseTo(refTail(mu, j), 9);
+    }
+    // a mean past where exp(-mu) underflows still works (log space): P(X >= mu) is about a half
+    expect(poissonTail(2000, 2000)[2000]!).toBeCloseTo(0.5, 1);
   });
   it('one typical undercut is the median gap between the cheapest price levels, within 1c and 5%', () => {
     expect(typicalUndercut([{ unitPrice: 7500 }, { unitPrice: 7501 }, { unitPrice: 7550 }, { unitPrice: 7600 }, { unitPrice: 7800 }, { unitPrice: 8000 }], 7500)).toBe(50);

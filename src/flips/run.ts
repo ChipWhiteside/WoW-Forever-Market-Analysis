@@ -1,11 +1,11 @@
-import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, MAX_UNITS, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import { Market } from './market.ts';
 import { SellBook } from './sellBook.ts';
 import { generate } from './families.ts';
 import { evaluate, legsOf, auctionUse, type Candidate, type Evaluation } from './evaluate.ts';
-import type { FlipInputs, FlipRecipe } from './inputs.ts';
+import { recipeKey, type FlipInputs, type FlipRecipe, type TrainerRow } from './inputs.ts';
 import { FAMILY_KIND, type Flip, type FlipLeg, type FlipRunReport, type HeldBack } from './types.ts';
 
 export interface FlipRunResult { flips: Flip[]; heldBack: HeldBack[]; report: FlipRunReport }
@@ -54,6 +54,11 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
         continue;
       }
       if (c.quote.netEach - e.firstUnitCost! <= 0) { hold(toVendor ? 'no profit at the vendor price' : 'no profit after the cut', toVendor ? 'no profit at the vendor price' : 'no profit after the cut'); continue; }
+      // Learning: an auction sale is not ranked on under 6 hours of watched sales (round 1 finding H1).
+      if (!toVendor && c.quote.hoursWatched < LEARNING_HOURS) {
+        hold(`learning: ${round1(c.quote.hoursWatched)} of ${LEARNING_HOURS} hours of sales seen`, 'learning');
+        continue;
+      }
       if (!toVendor && (c.quote.salesPerDayLow ?? 0) < FLIP_GATES.minSalesPerDay) {
         hold(`sells under ${FLIP_GATES.minSalesPerDay} a day (low estimate ${round1(c.quote.salesPerDayLow ?? 0)} a day)`, 'sells under 1 a day');
         continue;
@@ -62,7 +67,7 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
       const b = e.best;
       const perItem = Math.round(c.quote.netEach - b.cost / b.units);
       if (b.expectedProfit <= 0) {
-        hold(e.cap < 1 && !toVendor ? `not enough sells overnight: about ${round1(e.cap)} after the units ahead and new posts` : 'no expected profit once unsold units lose their deposit',
+        hold(e.cap < 1 && !toVendor ? `not enough sells overnight: about ${round1(e.cap)} expected after the units ahead and new posts` : 'no expected profit once unsold units lose their deposit',
           'no expected profit overnight', perItem);
         continue;
       }
@@ -110,9 +115,10 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   const notes: string[] = [];
   if (q.note) notes.push(q.note);
   if (!toVendor) {
-    notes.push(`${plural(q.ahead, 'unit')} listed at or under your price, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate); you can expect to sell ${round1(e.cap)} overnight`);
-    notes.push(`about ${Math.round(q.newOvernight ?? 0)} new listings usually appear under you overnight${q.newDerived ? ' (a fallback: a quarter of the sales seen, until sale counting measures new listings)' : ''}`);
-    if (q.lowDerived) notes.push('the low sales estimate is worked out here from the sales seen; sale counting has not given one yet');
+    notes.push(`${plural(q.ahead, 'unit')} listed at or under your price, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate); about ${round1(b.expectedSold)} of your ${b.units} expected to sell overnight`);
+    notes.push(q.newDerived ? 'new listings under you are not measured yet for this item; none are assumed'
+      : `about ${Math.round(q.newOvernight ?? 0)} new listings usually appear under you overnight`);
+    if (q.lowDerived) notes.push(`the low sales estimate is worked out here from ${plural(Math.floor(q.saleEvents ?? 0), 'sale')} seen (sales counted as listings bought, not units); sale counting has not given one yet`);
     if (h!.faction === 'blackwater') notes.push('the Blackwater deposit is not verified yet (test T7)');
   }
   if (c.recipe) {
@@ -136,7 +142,8 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     key: c.key, kind: FAMILY_KIND[c.family], family: c.family, itemId: c.itemId, name: c.name,
     recipeId: c.recipe?.id, recipeName: c.recipe?.name, profession: c.recipe?.profession,
     sellHouseId: h?.id ?? null, buy, sell, perItem, best: b, options: e.options, sellQuote: q, repeatable, opening,
-    openHours72: (inputs.history.openHours.get(c.key) ?? 0) + 1,
+    // earlier distinct hours plus this one, never more than the 72 hours it counts (round 1 finding L3)
+    openHours72: Math.min(OPENING.trendHours, (inputs.history.openHours.get(c.key) ?? 0) + 1),
     setup: c.recipe ? setupFor(c.recipe, inputs) : null,
     shares: [], afterShared: { units: b.units, expectedProfit: b.expectedProfit },
     notes, dataAt: Math.min(...inputs.houses.filter(x => x.id === h?.id || c.buyHouseIds.includes(x.id)).map(x => x.publishedAt || inputs.now), inputs.now),
@@ -144,25 +151,44 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   };
 }
 
-/** Where and for how much a recipe is learned: a trainer (Alliance or neutral first), else the item that teaches it. Never a reason to hide a flip. */
+/**
+ * Where and for how much a recipe is learned. Never a reason to hide a flip. The rank is the recipe's own learn skill
+ * (recipes.learn_skill), the trainer's rank only when the recipe has none (round 1 finding M4).
+ *   1. A trainer Chip can use: trainer rows match by spell id, or by name when either side has no spell id.
+ *   2. The item that teaches it: recipes.teach_item_id (linked by id through the game's ItemEffect table), else a
+ *      name match with any prefix (Recipe:, Pattern:, Plans:, Formula:, Schematic:, Blueprint:, Manual:, Design:).
+ *      Its cheapest price on Chip's houses when listed, else its vendor offer; both are named when both exist.
+ *   3. Only Horde trainers teach it (learn_source trainer_horde_only): said so plainly.
+ */
 export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
-  const nm = r.name.toLowerCase();
-  const match = inputs.trainers.filter(t => (r.spellId != null && t.spellId === r.spellId) || (t.name.toLowerCase() === nm && (!t.skill || t.skill === r.profession)));
+  const nm = recipeKey(r.name);
+  const match = inputs.trainers.filter(t => (r.spellId != null && t.spellId != null ? t.spellId === r.spellId : false)
+    || ((r.spellId == null || t.spellId == null) && recipeKey(t.name) === nm && (!t.skill || t.skill === r.profession)));
   const usable = match.filter(t => t.faction === 'alliance' || t.faction === 'neutral');
-  const pick = (usable.length ? usable : match).sort((a, b) => (a.cost ?? Infinity) - (b.cost ?? Infinity) || a.npcId - b.npcId)[0];
+  const byCost = (a: TrainerRow, b: TrainerRow) => (a.cost ?? Infinity) - (b.cost ?? Infinity) || a.npcId - b.npcId;
+  const pick = [...usable].sort(byCost)[0];
   if (pick) {
-    return { skill: r.profession, rank: pick.skillRank ?? r.learnSkill, cost: pick.cost,
-      where: usable.length ? `${pick.npcName}${pick.zone ? `, ${pick.zone}` : ''}` : 'a trainer (no Alliance trainer recorded yet)',
-      places: usable.length ? [{ label: pick.npcName, zone: pick.zone, uiMap: pick.mapId, x: pick.x, y: pick.y }] : [] };
+    return { skill: r.profession, rank: r.learnSkill ?? pick.skillRank, cost: pick.cost, where: `${pick.npcName}${pick.zone ? `, ${pick.zone}` : ''}`,
+      places: [{ label: pick.npcName, zone: pick.zone, uiMap: pick.mapId, x: pick.x, y: pick.y }] };
   }
-  const itemId = inputs.recipeItems.get(nm);
+  const itemId = r.teachItemId ?? inputs.recipeItems.get(nm) ?? null;
   if (itemId != null) {
-    const v = inputs.vendors.get(itemId)?.[0];
-    let floor: number | null = null;
-    for (const h of inputs.houses) { const l = inputs.listings.get(h.id)?.get(itemId)?.[0]; if (l && (floor == null || l.unitPrice! < floor)) floor = l.unitPrice!; }
     const name = inputs.items.get(itemId)?.name ?? `Item ${itemId}`;
-    if (v) return { skill: r.profession, rank: r.learnSkill, cost: v.unitPrice, where: `${name} from ${v.npcName}${v.zone ? `, ${v.zone}` : ''}`, places: v.places };
-    return { skill: r.profession, rank: r.learnSkill, cost: floor, where: floor != null ? `${name} on the auction house` : `${name} (no seller seen)`, places: [] };
+    const vendor = inputs.vendors.get(itemId)?.[0] ?? null;
+    let floor: number | null = null, houseId: number | null = null;
+    for (const h of inputs.houses) { const l = inputs.listings.get(h.id)?.get(itemId)?.[0]; if (l && (floor == null || l.unitPrice! < floor)) { floor = l.unitPrice!; houseId = h.id; } }
+    const house = houseId != null ? inputs.houses.find(h => h.id === houseId) : null;
+    const onAuction = floor != null ? `${money(floor)} on the ${house?.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house` : null;
+    const fromVendor = vendor ? `${money(vendor.unitPrice)} from ${vendor.npcName}${vendor.zone ? `, ${vendor.zone}` : ''}` : null;
+    const extra = { teachItem: { id: itemId, name }, auctionPrice: floor, auctionHouseId: houseId };
+    const prices = [onAuction, fromVendor].filter(Boolean).join(', or ');
+    const cost = Math.min(floor ?? Infinity, vendor?.unitPrice ?? Infinity);
+    return { skill: r.profession, rank: r.learnSkill, cost: Number.isFinite(cost) ? cost : null, where: prices ? `${name}: ${prices}` : `${name} (no seller seen)`,
+      places: vendor && (floor == null || vendor.unitPrice <= floor) ? vendor.places : [], ...extra };
+  }
+  if (match.length || r.learnSource === 'trainer_horde_only') {
+    const h = [...match].sort(byCost)[0];
+    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null, where: 'Horde trainers only', places: [] };
   }
   return { skill: r.profession, rank: r.learnSkill, cost: null, where: null, places: [] };
 }
@@ -203,7 +229,7 @@ function sharedPass(flips: Flip[], evals: Map<string, { c: Candidate; e: Evaluat
       // Sharing never makes a flip look better than it does alone (a bundle a higher flip paid for could otherwise).
       f.afterShared = { units: Math.min(e.best.units, f.best.units), expectedProfit: Math.min(e.best.expectedProfit, f.best.expectedProfit) };
       f.sharedUse = [...auctionUse(e.walk.trace, step.traceEnd)].map(([itemId, units]) => ({ itemId, units }));
-      if (gold != null) { if (e.goldCapped) touch('gold', f.key, mine, shares); gold = Math.max(0, gold - e.best.cost); mine.add('gold'); }
+      if (gold != null) { if (e.goldCapped) touch('gold', f.key, mine, shares); gold = Math.max(0, gold - e.best.risk.atStake); mine.add('gold'); }
       if (capKey) capUsed.set(capKey, (capUsed.get(capKey) ?? 0) + e.best.units);
       market.rollback(step.markAfter);
     } else {
