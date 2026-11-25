@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
-import { buildRecipes, writeRecipes, foreverItems, CONVERSION_ID_BASE, type BlizzardRecipe, type BuiltRecipe } from '../../src/datasets/recipes.ts';
+import { buildRecipes, writeRecipes, foreverItems, learnFrom, CONVERSION_ID_BASE, type BlizzardRecipe, type BuiltRecipe } from '../../src/datasets/recipes.ts';
 import { openDb } from '../../src/store/db.ts';
 import { tempDir } from '../helpers.ts';
 
@@ -20,20 +20,20 @@ const { recipes, report } = buildRecipes(game, blizzard, { trainerRanks, exists 
 const R = (id: number): BuiltRecipe => { const r = recipes.find(x => x.id === id); if (!r) throw new Error(`recipe ${id} missing`); return r; };
 
 describe('recipes from the game tables, checked by hand against the real rows', () => {
-  it('Smelt Copper (3324): 1 Copper Ore makes 1 Copper Bar, 3 s, both sources agree, learned at yellow 25 (no trainer row)', () => {
+  it('Smelt Copper (3324): 1 Copper Ore makes 1 Copper Bar, 3 s, both sources agree, learned automatically at 1 (AcquireMethod 1), not at yellow 25', () => {
     expect(R(3324)).toMatchObject({ spellId: 2657, craftedItemId: 2840, qtyMin: 1, qtyMax: 1, reagents: [{ itemId: 2770, quantity: 1 }], castMs: 3000,
-      source: 'both', disagreement: null, yellow: 25, green: 48, grey: 70, learnSkill: 25, learnFrom: 'yellow', cooldownMs: null, randomYield: false, live: true });
+      source: 'both', disagreement: null, yellow: 25, green: 48, grey: 70, learnSkill: 1, learnSource: 'auto', cooldownMs: null, randomYield: false, live: true });
   });
   it('Minor Healing Potion (54191) is First Aid in Forever and needs an Empty Vial; trainer teaches it at 1', () => {
     expect(R(54191)).toMatchObject({ profession: 'First Aid', craftedItemId: 118,
-      reagents: [{ itemId: 3371, quantity: 1 }, { itemId: 2678, quantity: 1 }, { itemId: 2447, quantity: 1 }], learnSkill: 1, learnFrom: 'trainer' });
+      reagents: [{ itemId: 3371, quantity: 1 }, { itemId: 2678, quantity: 1 }, { itemId: 2447, quantity: 1 }], learnSkill: 1, learnSource: 'trainer_alliance' });
   });
   it('Linen Bandage (1838): 1 Linen Cloth makes 1 Linen Bandage', () => {
     expect(R(1838)).toMatchObject({ craftedItemId: 1251, reagents: [{ itemId: 2589, quantity: 1 }], yellow: 30, grey: 60, source: 'both', disagreement: null });
   });
   it('Cerulean Dye (54453): 2 Frilled Lichen and 1 Empty Vial make 1, 5 s cast, trainer at Alchemy 40', () => {
     expect(R(54453)).toMatchObject({ spellId: 1249630, profession: 'Alchemy', craftedItemId: 249409, qtyMin: 1, qtyMax: 1,
-      reagents: [{ itemId: 249399, quantity: 2 }, { itemId: 3371, quantity: 1 }], castMs: 5000, learnSkill: 40, learnFrom: 'trainer', yellow: 50, disagreement: null });
+      reagents: [{ itemId: 249399, quantity: 2 }, { itemId: 3371, quantity: 1 }], castMs: 5000, learnSkill: 40, learnSource: 'trainer_alliance', yellow: 50, disagreement: null });
   });
   it('White Wedding Dress (6622) keeps Bleach, and the Blizzard disagreement is recorded', () => {
     const r = R(6622);
@@ -67,10 +67,10 @@ describe('recipes from the game tables, checked by hand against the real rows', 
     expect(R(2418)).toMatchObject({ craftedItemId: 4360, qtyMin: 2, qtyMax: 2, randomYield: false });
   });
   it('learn skill: Copper Chain Belt (1632) from its trainer at 30, not its yellow 70', () => {
-    expect(R(1632)).toMatchObject({ learnSkill: 30, learnFrom: 'trainer', yellow: 70, grey: 110 });
+    expect(R(1632)).toMatchObject({ learnSkill: 30, learnSource: 'trainer_alliance', yellow: 70, grey: 110, teachItemId: null });
   });
-  it('learn skill falls back to yellow when no trainer teaches it: Bolt of Linen Cloth (2359) 25', () => {
-    expect(R(2359)).toMatchObject({ craftedItemId: 2996, reagents: [{ itemId: 2589, quantity: 2 }], learnSkill: 25, learnFrom: 'yellow' });
+  it('Bolt of Linen Cloth (2359) is learned automatically at 1 (AcquireMethod 1), not at its yellow 25', () => {
+    expect(R(2359)).toMatchObject({ craftedItemId: 2996, reagents: [{ itemId: 2589, quantity: 2 }], learnSkill: 1, learnSource: 'auto', yellow: 25 });
   });
   it('Instant Poison (4807) comes from wago only, under Poisons', () => {
     expect(R(4807)).toMatchObject({ source: 'wago', profession: 'Poisons', craftedItemId: 6947, reagents: [{ itemId: 2928, quantity: 1 }, { itemId: 3371, quantity: 1 }] });
@@ -108,6 +108,66 @@ describe('recipes from the game tables, checked by hand against the real rows', 
   });
 });
 
+/**
+ * Teaching items, read by hand from the real rows of build 1.60.1.71037: ItemEffect TriggerType 6 casts the craft
+ * spell, ItemXItemEffect links it to the item, ItemSparse.RequiredSkillRank is the rank it teaches at.
+ * Pattern: Fine Leather Boots 2406 -> spell 2158 at 65 (yellow 95). Recipe: Swiftness Potion 2555 -> spell 2335 at 60
+ * (yellow 90). Pattern: Mooncloth 14526 -> 18560 at 230 (yellow 270). Pattern: Runecloth Bag 14468 -> 18405 at 215.
+ */
+describe('where a recipe is learned (round 2 fix 1)', () => {
+  it('the game tables link a teaching item to its craft spell by id: Pattern: Mooncloth 14526 teaches 18560', () => {
+    expect(game.teachers.get(18560)).toEqual([14526]);
+    expect(game.items.get(14526)).toMatchObject({ name: 'Pattern: Mooncloth', requiredSkill: 197, requiredSkillRank: 230 });
+  });
+  it('Fine Leather Boots (1359) is learned from Pattern: Fine Leather Boots at 65, not at its yellow 95', () => {
+    expect(R(1359)).toMatchObject({ spellId: 2158, learnSkill: 65, learnSource: 'item', teachItemId: 2406, teachSkill: 65, yellow: 95 });
+  });
+  it('Swiftness Potion (1383) is learned from Recipe: Swiftness Potion at 60, not at its yellow 90', () => {
+    expect(R(1383)).toMatchObject({ spellId: 2335, learnSkill: 60, learnSource: 'item', teachItemId: 2555, teachSkill: 60, yellow: 90 });
+  });
+  it('Mooncloth (10487) at 230 and Runecloth Bag (10401) at 215 from their patterns', () => {
+    expect(R(10487)).toMatchObject({ learnSkill: 230, learnSource: 'item', teachItemId: 14526, yellow: 270 });
+    expect(R(10401)).toMatchObject({ learnSkill: 215, learnSource: 'item', teachItemId: 14468, yellow: 230 });
+  });
+  it('an Alliance trainer below the item wins; the item is still recorded', () => {
+    const r = buildRecipes(game, blizzard, { trainerRanks: new Map([[2158, 50]]), exists });
+    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSkill: 50, learnSource: 'trainer_alliance', teachItemId: 2406, teachSkill: 65 });
+  });
+  it('a teaching item not in Forever is not used', () => {
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists: id => id !== 2406 && game.items.has(id) });
+    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSource: 'yellow', learnSkill: 95, teachItemId: null });
+  });
+  it('only Horde trainers teach it: their rank, flagged trainer_horde_only; with none at all, yellow is the last guess', () => {
+    // Coarse Dynamite (2427, spell 3931) has no teaching item and AcquireMethod 0 in the real rows; the Horde rank is made up.
+    const h = buildRecipes(game, blizzard, { trainerRanks, hordeRanks: new Map([[3931, 75]]), exists });
+    expect(h.recipes.find(x => x.id === 2427)).toMatchObject({ learnSkill: 75, learnSource: 'trainer_horde_only' });
+    expect(R(2427)).toMatchObject({ learnSkill: 90, learnSource: 'yellow', yellow: 90 });
+  });
+  it('the lowest of auto, Alliance trainer and item wins, ties go to auto then trainer; Horde and yellow only as fallbacks', () => {
+    expect(learnFrom({ trainer: 30, teach: 30, auto: 30, yellow: 70 })).toEqual({ skill: 30, source: 'auto' });
+    expect(learnFrom({ trainer: 30, teach: 30, yellow: 70 })).toEqual({ skill: 30, source: 'trainer_alliance' });
+    expect(learnFrom({ trainer: 40, teach: 30, horde: 1 })).toEqual({ skill: 30, source: 'item' });
+    expect(learnFrom({ horde: 1, yellow: 70 })).toEqual({ skill: 1, source: 'trainer_horde_only' });
+    expect(learnFrom({ yellow: 70 })).toEqual({ skill: 70, source: 'yellow' });
+    expect(learnFrom({})).toEqual({ skill: null, source: null });
+  });
+  it('every profession recipe with thresholds has a learn source; the report counts them', () => {
+    const prof = recipes.filter(r => r.kind === 'profession');
+    expect(prof.filter(r => r.yellow != null && r.learnSource == null)).toEqual([]);
+    const l = report.learn;
+    expect(l.trainer_alliance + l.trainer_horde_only + l.item + l.auto + l.yellow + l.none).toBe(prof.length);
+    expect(l.conversion).toBe(recipes.filter(r => r.kind === 'conversion').length);
+    expect(recipes.filter(r => r.learnSource == null).map(r => r.id)).toEqual(prof.filter(r => r.learnSource == null).map(r => r.id));
+    expect(l.teachItem).toBe(prof.filter(r => r.teachItemId != null).length);
+  });
+  it('writes teach_item_id, teach_skill and learn_source', () => {
+    const db = openDb(tempDir(), ':memory:');
+    writeRecipes(db, recipes, { version: 'test', note: 'test' });
+    expect(db.prepare('SELECT learn_skill, learn_source, teach_item_id, teach_skill FROM recipes WHERE id = 1383').get()).toEqual({ learn_skill: 60, learn_source: 'item', teach_item_id: 2555, teach_skill: 60 });
+    expect(db.prepare('SELECT learn_source FROM recipes WHERE id = 3324').get()).toEqual({ learn_source: 'auto' });
+  });
+});
+
 describe('conversions from item use spells', () => {
   it('Lesser Magic Essence: 3 in (2 reagents plus the item used up), 1 Greater out, as the spell text says', () => {
     expect(R(CONVERSION_ID_BASE + 13361)).toMatchObject({ kind: 'conversion', profession: 'Conversion', spellId: 13361, craftedItemId: 10939, qtyMin: 1, qtyMax: 1, reagents: [{ itemId: 10938, quantity: 3 }], live: true });
@@ -129,6 +189,16 @@ describe('conversions from item use spells', () => {
     const r = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id) });
     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
     expect(r.report.conversions.bound).toBe(2);
+  });
+  it('bound if EITHER source says so: the live API binds Lesser Magic Essence on pickup while ItemSparse says unbound (a server hotfix)', () => {
+    expect(game.items.get(10938)?.bonding).toBe(0);
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10938 ? 'ON_ACQUIRE' : null) });
+    expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
+    expect(r.report.conversions).toMatchObject({ bound: 2, boundByApiOnly: 2 });
+    const q = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10939 ? 'QUEST' : 'ON_USE') });
+    expect(q.report.conversions.bound).toBe(2);
+    const free = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: () => 'ON_EQUIP' });
+    expect(free.report.conversions.kept.length).toBe(2);
   });
 });
 

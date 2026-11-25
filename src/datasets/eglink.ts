@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { fetchCached } from './fetchcache.ts';
 import { type DB, tx } from '../store/db.ts';
 import { zoneName } from './zones.ts';
+import { loadNewestCachedGameData, type GameData } from './gamedata.ts';
 
 /**
  * EG Link output: player recorded WoW Forever data, CC BY 4.0, by Efficient Games.
@@ -24,34 +25,112 @@ export interface EgLootSource { windows?: number; items?: Record<string, EgLootI
 export interface EgQuest { title?: string; level?: number; minLevel?: number; zoneAreaId?: number; startItemId?: number; objectives?: Array<{ type?: string; objectId?: number; amount?: number }> }
 export interface EgKills { deaths?: number; empty?: number; unknown?: number; levels?: Record<string, number> }
 
-export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unknown';
+export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unconfirmed' | 'unknown';
+
+/**
+ * NPCs proven usable by Alliance though the reaction records alone would not say so, each with its reason.
+ * Add one only with a reason a person can check.
+ */
+export const KNOWN_NEUTRAL: Record<number, string> = {
+  2626: 'Old Man Heming, Booty Bay: Chip bought Bright Baubles from him in game (verification B3, ledger V22)',
+  3134: 'Kzixx, Duskwood goblin: Neutral to Horde in an Alliance zone, known neutral (round 2 review)',
+};
+
+/**
+ * The Steamwheedle Cartel towns, neutral to both factions in Classic, as boxes on their zone map (percent, as the
+ * vendor rows store x and y). Boxes drawn from the recorded positions of each town's NPCs (November 25):
+ * Booty Bay around 27,77 in Stranglethorn Vale; Ratchet around 62,38 in the Barrens; Gadgetzan around 52,28 in
+ * Tanaris; Everlook around 61,38 in Winterspring. Provisional until Chip buys from one vendor per town.
+ */
+export const STEAMWHEEDLE_TOWNS: Array<{ town: string; uiMap: number; x: [number, number]; y: [number, number] }> = [
+  { town: 'Booty Bay', uiMap: 1434, x: [24, 32], y: [70, 85] },
+  { town: 'Ratchet', uiMap: 1413, x: [60, 65.5], y: [33, 42] },
+  { town: 'Gadgetzan', uiMap: 1446, x: [49, 54], y: [25, 31] },
+  { town: 'Everlook', uiMap: 1452, x: [58, 63], y: [35, 40] },
+];
+
+/** The Steamwheedle town a position lies in, if any. x and y in percent of the zone map. */
+export function steamwheedleTown(uiMap: number | null | undefined, x: number | null | undefined, y: number | null | undefined): string | null {
+  if (uiMap == null || x == null || y == null) return null;
+  return STEAMWHEEDLE_TOWNS.find(t => t.uiMap === uiMap && x >= t.x[0] && x <= t.x[1] && y >= t.y[0] && y <= t.y[1])?.town ?? null;
+}
+
+/** A position from EG Link (fractions 0 to 1) to its Steamwheedle town. */
+const townOf = (pos: Pos | undefined) => steamwheedleTown(pos?.uiMap, pos?.mapX != null ? pos.mapX * 100 : null, pos?.mapY != null ? pos.mapY * 100 : null);
 
 /**
  * Who can use a vendor, from which faction's players saw it and how it reacted to them.
- * Reaction numbers: 4 Neutral, 5 Friendly and up. A Horde only NPC shows 5+ to Horde and is never seen by Alliance.
+ * Reaction numbers: 4 Neutral, 5 Friendly and up, 3 or less hostile. A Horde only NPC shows 5+ to Horde.
+ * A named proven case (KNOWN_NEUTRAL) or an NPC in a Steamwheedle town is neutral, unless an Alliance player saw it
+ * hostile. Otherwise a vendor only Horde players saw at exactly Neutral is 'unconfirmed', never usable, until an
+ * Alliance player records it: EG Link creatures carry no faction id and wago's Creature table holds only pets.
  */
-export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>): VendorFaction {
+export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>, npcId?: number | string, town?: string | null): VendorFaction {
   const a = [...(reactions['Alliance'] ?? [])];
   const h = [...(reactions['Horde'] ?? [])];
   const aOk = a.some(r => r >= 4) || sides.has('Alliance');
   const hOk = h.some(r => r >= 4) || sides.has('Horde');
   if (aOk && hOk) return 'neutral';
-  // A vendor opened at exactly Neutral (4) belongs to a neutral faction such as the goblins of
-  // Booty Bay or Ratchet: the other faction's own NPCs are Friendly or better to their players.
-  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'neutral';
+  const aHostile = !aOk && a.length > 0;
+  if (!aHostile && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
+  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'unconfirmed';
+  // Alliance players saw it at exactly Neutral: a neutral faction, and usable by Alliance either way.
   if (aOk && a.length && Math.max(...a) === 4 && !sides.has('Alliance')) return 'neutral';
   if (aOk) return 'alliance';
   if (hOk) return 'horde';
   return 'unknown';
 }
 
-/** Classic reputation discounts by standing (4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted). */
-export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 0.9, '7': 0.85, '8': 0.8 };
+/**
+ * Reputation discounts by standing (4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted), as Forever charges them.
+ * Revered is 0.90, the same as Honored, not Classic's 0.85. Checked November 25 on 126 EG Link rows recorded at Revered
+ * for an item whose Friendly or Neutral price another vendor recorded: 104 are exactly 0.90 of it, the rest 0.90 to 0.94,
+ * none 0.85 (Engineer's Ink: Revered 1800, base 2000). The 6 rows with both Honored and Revered are equal. Exalted 0.8
+ * is unverified: no row was recorded at Exalted.
+ */
+export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 0.9, '7': 0.9, '8': 0.8 };
+
+/** Hangul, the Korean alphabet. EG Link rows recorded by a Korean client carry Korean names. */
+const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
+export const isHangul = (s: string | null | undefined): boolean => !!s && HANGUL.test(s);
+
+/**
+ * Korean profession names as the Korean client writes them, to Blizzard's English names. The first four are the ones
+ * EG Link recorded (November 25), each checked by spell id (2329 Alchemy, 2368 Herbalism, 7731 Fishing, 2539 Cooking).
+ * The rest are the client's names for the other professions, not yet seen in the data.
+ */
+export const KOREAN_PROFESSIONS: Record<string, string> = {
+  '연금술': 'Alchemy', '약초채집': 'Herbalism', '낚시': 'Fishing', '요리': 'Cooking', '대장기술': 'Blacksmithing',
+  '가죽세공': 'Leatherworking', '재봉술': 'Tailoring', '기계공학': 'Engineering', '마법부여': 'Enchanting', '채광': 'Mining',
+  '무두질': 'Skinning', '응급치료': 'First Aid',
+};
+
+/**
+ * One display name per NPC: the newest English name seen in any build, from the vendor or trainer record, the NPC
+ * record or the creature record. A Korean name is kept only when no English one exists anywhere.
+ */
+export function npcNames(builds: Array<{ build: string; vendors?: Record<string, { name?: string }>; trainers?: Record<string, { name?: string }>; npcs?: Record<string, EgNpc>; creatures?: Record<string, EgCreature> }>): Map<string, string> {
+  const english = new Map<string, string>(), any = new Map<string, string>();
+  for (const b of [...builds].sort((x, y) => cmpBuild(x.build, y.build))) {
+    for (const src of [b.creatures, b.npcs, b.trainers, b.vendors]) {
+      for (const [id, o] of Object.entries(src ?? {})) {
+        if (!o?.name) continue;
+        any.set(id, o.name);
+        if (!isHangul(o.name)) english.set(id, o.name);
+      }
+    }
+  }
+  for (const [id, n] of english) any.set(id, n);
+  return any;
+}
 
 export interface MergedVendorItem {
   npcId: number; npcName: string; faction: VendorFaction; zone: string | null; x: number | null; y: number | null; uiMap: number | null;
   itemId: number; stack: number; costs: Record<string, number>; limited: boolean; lastSeen: string;
-  /** lowest standing a price was recorded at, 4 Neutral to 8 Exalted */
+  /**
+   * Lowest standing a price was recorded at, 4 Neutral to 8 Exalted. Information only: it is whoever happened to
+   * record the vendor, not a requirement. The gate is the item's MinFactionID and MinReputation (vendorGate).
+   */
   minStanding: number;
 }
 
@@ -93,6 +172,14 @@ export interface MergedTrainerSpell {
 export function mergeTrainers(builds: Array<{ build: string; trainers: Record<string, EgTrainer>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>): MergedTrainerSpell[] {
   const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
   const { reactions, sides } = factionIndex(sorted);
+  const names = npcNames(sorted);
+  // English spell and skill names per spell from any trainer in any build, for rows a Korean client recorded.
+  const spellEn = new Map<number, string>(), skillEn = new Map<number, string>();
+  for (const b of sorted) for (const t of Object.values(b.trainers)) for (const sv of Object.values(t.services ?? {})) {
+    if (sv.spellId == null) continue;
+    if (sv.name && !isHangul(sv.name)) spellEn.set(sv.spellId, sv.name);
+    if (sv.skill && !isHangul(sv.skill)) skillEn.set(sv.spellId, sv.skill);
+  }
   const out = new Map<string, MergedTrainerSpell>();
   for (const b of sorted) {
     for (const [npcId, t] of Object.entries(b.trainers)) {
@@ -101,14 +188,16 @@ export function mergeTrainers(builds: Array<{ build: string; trainers: Record<st
       for (const sv of Object.values(t.services ?? {})) {
         if (sv.spellId == null || !sv.name) continue;
         const costs = sv.costs && Object.keys(sv.costs).length ? sv.costs : null;
+        const name = isHangul(sv.name) ? spellEn.get(sv.spellId) ?? sv.name : sv.name;
+        const skill = sv.skill == null ? null : isHangul(sv.skill) ? KOREAN_PROFESSIONS[sv.skill] ?? skillEn.get(sv.spellId) ?? sv.skill : sv.skill;
         out.set(`${npcId}:${sv.spellId}`, {
-          npcId: Number(npcId), npcName: t.name ?? `NPC ${npcId}`,
-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set()),
+          npcId: Number(npcId), npcName: names.get(npcId) ?? t.name ?? `NPC ${npcId}`,
+          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId, townOf(pos)),
           zone: zoneName(pos?.uiMap),
           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
           uiMap: pos?.uiMap ?? null,
-          spellId: sv.spellId, name: sv.name, skill: sv.skill ?? null, skillRank: sv.skillRank ?? null,
+          spellId: sv.spellId, name, skill, skillRank: sv.skillRank ?? null,
           cost: costs ? vendorUnitPrice(costs, 1) : null,
         });
       }
@@ -122,6 +211,7 @@ export function mergeVendors(
 ): MergedVendorItem[] {
   const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
   const { reactions, sides } = factionIndex(sorted);
+  const names = npcNames(sorted);
   // Newest build that lists an NPC with entries defines that NPC's whole inventory, so an item removed or
   // repriced by a hotfix does not linger from an older build (review finding 5).
   const newest = new Map<string, EgVendor>();
@@ -136,8 +226,8 @@ export function mergeVendors(
         const key = `${npcId}:${e.itemId}`;
         out.set(key, {
           npcId: Number(npcId),
-          npcName: v.name ?? `NPC ${npcId}`,
-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set()),
+          npcName: names.get(npcId) ?? v.name ?? `NPC ${npcId}`,
+          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId, townOf(pos)),
           zone: zoneName(pos?.uiMap),
           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
@@ -156,14 +246,37 @@ export function mergeVendors(
 }
 
 /**
+ * The base price (Friendly, else Neutral) of a vendor entry. A recorded Friendly or Neutral price is used as is.
+ * Only when none was recorded is it backed out of the lowest discounted standing, rounded to the nearest copper:
+ * the game rounds the discounted price, so backing it out can land a copper off, and taking the largest back out
+ * of several standings, as before, picked the copper that rounds up.
+ */
+export function vendorBasePrice(costs: Record<string, number>): number {
+  const plain = ['5', '4', '3'].map(k => costs[k]).find(c => c != null);
+  if (plain != null) return plain;
+  const st = Object.keys(costs).map(Number).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  if (st == null) return NaN;
+  return Math.round(costs[String(st)]! / (STANDING_DISCOUNT[String(st)] ?? 1));
+}
+
+/**
  * Price per unit. At a known standing with a recorded price, that price. Otherwise the base price
- * (Neutral or Friendly) backed out of whatever standings were recorded, which is the most Chip pays.
+ * (Friendly or Neutral), backed out of a discounted standing only when no base price was recorded.
  */
 export function vendorUnitPrice(costs: Record<string, number>, stack: number, standing?: number | null): number {
   const exact = standing != null ? costs[String(standing)] : undefined;
-  const base = Math.max(...Object.entries(costs).map(([st, c]) => c / (STANDING_DISCOUNT[st] ?? 1)));
-  const price = exact ?? base * (standing != null ? STANDING_DISCOUNT[String(standing)] ?? 1 : 1);
+  const price = exact ?? vendorBasePrice(costs) * (standing != null ? STANDING_DISCOUNT[String(standing)] ?? 1 : 1);
   return Math.ceil(Math.round(price) / Math.max(1, stack));
+}
+
+/**
+ * The standing a vendor item needs, as EG Link writes standings (4 Neutral .. 8 Exalted), from the item's own
+ * ItemSparse.MinFactionID and MinReputation (MinReputation counts from 0 Hated, so EG Link's standing is one more).
+ * An item with no faction requirement needs nothing: '4'. Null when the game table lacks the item.
+ */
+export function vendorGate(item: { minFactionId: number; minReputation: number } | undefined): string | null {
+  if (!item) return null;
+  return item.minFactionId > 0 ? String(item.minReputation + 1) : '4';
 }
 
 export interface MergedLoot {
@@ -249,8 +362,62 @@ export function cmpBuild(a: string, b: string): number {
 
 interface EgIndex { products: Record<string, Record<string, Record<string, { records: number }>>> }
 
+export interface GameFixes {
+  /** trainer rows whose Korean spell name or skill was replaced from the game tables */
+  trainerNames: number; trainerSkills: number;
+  /** trainer rows still holding Korean text because no English value exists anywhere */
+  trainerKorean: number;
+  /** vendor rows gated by the item's own reputation requirement, and rows whose gate changed */
+  vendorGated: number; vendorGateChanged: number;
+  /** vendor rows whose item the game table lacks, so they keep the recorded standing */
+  vendorNoItem: number;
+}
+
+/**
+ * Fill what EG Link cannot know from the game's own tables: English spell names and profession names for trainer
+ * rows a Korean client recorded (by spell id, through SpellName and SkillLineAbility), and each vendor item's real
+ * standing gate from ItemSparse.MinFactionID and MinReputation. Idempotent; run after every EG Link or game refresh.
+ */
+export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 'sla' | 'skillLines' | 'items'>): GameFixes {
+  const out: GameFixes = { trainerNames: 0, trainerSkills: 0, trainerKorean: 0, vendorGated: 0, vendorGateChanged: 0, vendorNoItem: 0 };
+  const lineBySpell = new Map<number, string>();
+  for (const s of game.sla.values()) { const n = game.skillLines.get(s.skillLine)?.name; if (n && !isHangul(n)) lineBySpell.set(s.spellId, n); }
+  tx(db, () => {
+    const setName = db.prepare('UPDATE trainer_spells SET name = ? WHERE npc_id = ? AND spell_id = ?');
+    const setSkill = db.prepare('UPDATE trainer_spells SET skill = ? WHERE npc_id = ? AND spell_id = ?');
+    for (const r of db.prepare('SELECT npc_id, spell_id, name, skill, npc_name FROM trainer_spells').all() as Array<{ npc_id: number; spell_id: number; name: string; skill: string | null; npc_name: string }>) {
+      if (isHangul(r.name)) { const en = game.spellNames.get(r.spell_id); if (en && !isHangul(en)) { setName.run(en, r.npc_id, r.spell_id); out.trainerNames++; r.name = en; } }
+      if (isHangul(r.skill)) { const en = KOREAN_PROFESSIONS[r.skill!] ?? lineBySpell.get(r.spell_id); if (en) { setSkill.run(en, r.npc_id, r.spell_id); out.trainerSkills++; r.skill = en; } }
+      if (isHangul(r.name) || isHangul(r.skill) || isHangul(r.npc_name)) out.trainerKorean++;
+    }
+    const setGate = db.prepare('UPDATE vendor_items SET standing_required = ? WHERE npc_id = ? AND item_id = ?');
+    for (const r of db.prepare('SELECT npc_id, item_id, standing_required, price_by_standing FROM vendor_items').all() as Array<{ npc_id: number; item_id: number; standing_required: string | null; price_by_standing: string | null }>) {
+      const gate = vendorGate(game.items.get(r.item_id));
+      if (gate == null) {
+        // Not in the game table: keep the recorded standing, the only evidence there is.
+        out.vendorNoItem++;
+        const rec = recordedStanding(r.price_by_standing);
+        if (rec != null && rec !== r.standing_required) setGate.run(rec, r.npc_id, r.item_id);
+        continue;
+      }
+      if (gate !== '4') out.vendorGated++;
+      if (gate !== r.standing_required) { setGate.run(gate, r.npc_id, r.item_id); out.vendorGateChanged++; }
+    }
+  });
+  return out;
+}
+
+function recordedStanding(json: string | null): string | null {
+  try { const ks = Object.keys(JSON.parse(json ?? '{}') as object).map(Number).filter(Number.isFinite); return ks.length ? String(Math.min(...ks)) : null; } catch { return null; }
+}
+
 /** Download (cached by ETag) and merge every live build, then write vendors, loot and names into the database. */
-export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number; questItems: number; trainerSpells: number }> {
+export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}, opts: { game?: GameData } = {}): Promise<{
+  vendors: number; loot: number; names: number; builds: number; questItems: number; trainerSpells: number;
+  /** distinct vendor NPCs per faction */
+  vendorFactions: Record<string, number>;
+  fixes: GameFixes | null;
+}> {
   const dir = join(dataDir, 'datasets', 'eglink');
   const { data: index } = await fetchCached<EgIndex>(`${EG_BASE}/index.json`, join(dir, 'index.json'));
   const builds = Object.keys(index.products[EG_PRODUCT] ?? {}).sort(cmpBuild);
@@ -306,6 +473,9 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
   const vendors = mergeVendors(vendorBuilds);
   const loot = mergeLoot(lootBuilds);
   const trainers = mergeTrainers(trainerBuilds);
+  // Loot sources keep an English creature name when any build recorded one.
+  const english = npcNames([...vendorBuilds, ...trainerBuilds]);
+  for (const [id, ci] of creatureInfo) { const n = english.get(String(id)); if (n) ci.name = n; }
   tx(db, () => {
     db.exec('DELETE FROM trainer_spells');
     const it = db.prepare(`INSERT OR REPLACE INTO trainer_spells (npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost)
@@ -334,5 +504,13 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('eglink', ?, ?, ?, ?)`)
       .run(builds[builds.length - 1]!, Date.now(), vendors.length + loot.length, EG_ATTRIBUTION);
   });
-  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size, trainerSpells: trainers.length };
+  // The game tables from the last refresh fill English names and the vendor standing gate. On a first install they are
+  // not cached yet; the recipes step right after applies the same fixes once it has downloaded them.
+  const game = opts.game ?? loadNewestCachedGameData(dataDir, { log });
+  let fixes: GameFixes | null = null;
+  if (game) fixes = applyGameToEgLink(db, game);
+  else log('eglink: no game tables cached yet, vendor gates and Korean trainer names wait for the recipes step');
+  const factions: Record<string, number> = {};
+  for (const v of new Map(vendors.map(v => [v.npcId, v.faction])).values()) factions[v] = (factions[v] ?? 0) + 1;
+  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size, trainerSpells: trainers.length, vendorFactions: factions, fixes };
 }
