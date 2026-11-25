@@ -6,6 +6,14 @@ import { aggregate, nextSeen, type Seen, type Diagnostics } from '../../src/anal
 import { aggregate as oldAggregate } from './old-aggregate.ts';
 import { simulate, type MarketType, type SimOpts } from './market.ts';
 
+/**
+ * Share of listings sellers pull each hour, measured on the real snapshots where no buyer can reach (B38): deep
+ * commodity listings behind a stack still up in buy order 2.2%, thin commodity ones 2.6%, equipment priced over
+ * 2 times the floor 3.5% (an upper bound: a few of those are bought for a better suffix). Listings that could expire
+ * within the hour are left out of each.
+ */
+export const MEASURED_CANCELS: Record<MarketType, number> = { deep: 0.022, thin: 0.026, equipment: 0.035 };
+
 export interface Score {
   type: MarketType;
   hours: number;

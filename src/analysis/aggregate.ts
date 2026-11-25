@@ -8,16 +8,16 @@
  *  - Bid only listings never set a floor.
  *  - Sell through comes from strict listing id set differences, never row counts (rule 4).
  *
- * How a vanished listing is judged (docs/flip-plan.md holes 11 and 12, verification B22 to B25):
+ * How a vanished listing is judged (docs/flip-plan.md holes 11 and 12, verification B33 to B36):
  *  - Its age decides whether it could have run out of time. Forever listings last 2, 8 or 24 hours, and the
- *    time left a listing shows when first seen tells which (B22). A 2 hour listing first seen this hour cannot
+ *    time left a listing shows when first seen tells which (B33). A 2 hour listing first seen this hour cannot
  *    expire before the next publish, so if it vanished it was bought or cancelled, never expired.
- *  - Commodities fill cheapest first, and at one price newest first (B23). A stack that vanished while one ahead
+ *  - Commodities fill cheapest first, and at one price newest first (B34). A stack that vanished while one ahead
  *    of it in that order survived was cancelled or expired. A stack ahead of a point buyers provably reached (a
  *    partly bought stack, or a vanished stack that could not have expired) was bought, even if it could have expired.
  *  - A seller who cancels and posts the same quantity a little cheaper is undercutting, not selling. Matched on thin
  *    markets and on deep equipment markets (stricter terms there). Not on deep commodity markets, where the match
- *    is pure coincidence with restocking (B24) and buy order already catches cancels behind a survivor.
+ *    is pure coincidence with restocking (B35) and buy order already catches cancels behind a survivor.
  */
 
 export type TimeLeft = 'SHORT' | 'MEDIUM' | 'LONG' | 'VERY_LONG';
@@ -74,19 +74,20 @@ const H = 3600_000;
 export const LISTING_HOURS = [2, 8, 24] as const;
 
 /**
- * The listing length a time_left reading means when the listing is under 1.6 hours old (B22, measured on 127,737
- * new listings: none showed SHORT, every MEDIUM was gone within 7 hours, every LONG was SHORT, MEDIUM or gone 7 hours
- * later, every VERY_LONG still up 7 hours later was still VERY_LONG).
+ * The listing length a time_left reading means when the listing is under 1.6 hours old (B33, measured on 259,823
+ * new listings on 8 houses: none showed SHORT, every fresh MEDIUM was gone 7 hours later, every fresh LONG was SHORT,
+ * MEDIUM or gone 7 hours later, every fresh VERY_LONG still up 7 or 8 hours later was still VERY_LONG).
  */
 export const FRESH_HOURS: Partial<Record<TimeLeft, number>> = { MEDIUM: 2, LONG: 8, VERY_LONG: 24 };
 
 /**
- * Hours left each bucket can mean. SHORT under 30 minutes and MEDIUM 30 minutes to 2 hours are measured (B22).
- * Where LONG ends and VERY_LONG starts (8 or 12 hours) is not measured yet, so both ranges are kept wide enough
- * for either; only the lower end of each matters for "could it expire within the hour".
+ * Hours left each bucket can mean (B33). SHORT under 30 minutes and MEDIUM 30 minutes to 2 hours. LONG ends between
+ * 11 and 15 hours: 4,293 listings read LONG 9 hours apart (so LONG reaches past 11 hours), and fresh 24 hour
+ * listings with 15 to 16 hours left still read VERY_LONG. The usual 12 fits; the ranges below allow the whole
+ * measured span. Only the lower end of each matters for "could it expire within the hour".
  */
 export const BUCKET_HOURS: Record<TimeLeft, readonly [number, number]> = {
-  SHORT: [0, 0.5], MEDIUM: [0.5, 2], LONG: [2, 12], VERY_LONG: [8, 24],
+  SHORT: [0, 0.5], MEDIUM: [0.5, 2], LONG: [2, 15], VERY_LONG: [11, 24],
 };
 
 /** A vanished listing whose chance of having run out of time exceeds this is treated as possibly expired. */
@@ -95,14 +96,14 @@ export const EXPIRY_CHANCE = 0.05;
 export const EQUIP_SURVIVOR_MARGIN = 1.25;
 /** Equipment sales count only up to 1.25 times the previous floor: a pricey copy vanishing is too often a cancel or a
  * troll (B18). It was 1.1; buyers also take a copy a little over the cheapest (a better suffix), and the simulator
- * read 1.25 as the better line (B25). */
+ * read 1.25 as the better line (B36). */
 export const EQUIP_SOLD_BAND = 1.25;
 /** A market with this many listings or fewer last hour is thin: cancel and relist matching is looser there. */
 export const THIN_LISTINGS = 5;
 
 /**
  * Commodity buy order: the buy window takes the cheapest listing first and, at one price, the newest listing (highest
- * id) first. Measured on 3,373 partly bought stacks (B23): every cheaper listing was gone, and at the same price
+ * id) first. Measured on 3,373 partly bought stacks (B34): every cheaper listing was gone, and at the same price
  * 9,112 newer listings were gone against 1 still up, while older ones stayed up about 90 percent of the time.
  */
 export function buysFirst(a: Listing, b: Listing): boolean {
@@ -278,7 +279,7 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
     let prevFloor: number | null = null;
     for (const l of prevL) if (l.unitPrice != null && (prevFloor == null || l.unitPrice < prevFloor)) prevFloor = l.unitPrice;
     // The first previous listing still up now (whole or partly bought), in buy order. Commodities: the buy window
-    // takes the cheapest first and, at one price, the newest first (B23), so nothing after it in that order was
+    // takes the cheapest first and, at one price, the newest first (B34), so nothing after it in that order was
     // bought. Equipment: the cheapest copy still up.
     let survivor: Listing | null = null;
     for (const l of prevL) if (l.unitPrice != null && curById.has(l.id) && (!survivor || (commodity ? buysFirst(l, survivor) : l.unitPrice < survivor.unitPrice!))) survivor = l;
@@ -311,7 +312,7 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
     // Cancel to undercut: a vanished listing replaced by a new one of the same quantity at a lower or similar price.
     const fresh = curL.filter(n => !prevById!.has(n.id) && n.unitPrice != null && !own?.has(n.id));
     // Not on deep commodity markets: there a same quantity, cheaper post shows up for 31 percent of stacks that were
-    // certainly bought and 27 percent of undecided ones (B24), so a match says nothing and would erase real sales.
+    // certainly bought and 27 percent of undecided ones (B35), so a match says nothing and would erase real sales.
     // Buy order already rules out cancels of every stack behind a survivor there.
     const thin = prevL.length <= THIN_LISTINGS;
     const matchable = thin || !commodity;

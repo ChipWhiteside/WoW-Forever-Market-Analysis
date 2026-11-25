@@ -182,7 +182,7 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(aggregate([L(1, 4251, 1, 950, 'LONG'), ...others], prev)[0]!.soldUnits).toBe(1);
   });
 
-  it('deep commodities: a same size stack posted cheaper is not taken as an undercut (pure coincidence there, B24)', () => {
+  it('deep commodities: a same size stack posted cheaper is not taken as an undercut (pure coincidence there, B35)', () => {
     const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 2589, 20, 30, 'LONG'));
     const prev = [L(1, 2589, 20, 25, 'LONG'), ...deep];
     const cur = [L(9, 2589, 20, 24, 'LONG'), L(8, 2589, 5, 23, 'LONG'), ...deep];

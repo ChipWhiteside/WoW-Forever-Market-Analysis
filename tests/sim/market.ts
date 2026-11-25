@@ -42,7 +42,7 @@ const pickWeighted = <T,>(r: () => number, items: Array<[T, number]>): T => {
   return items[items.length - 1]![0];
 };
 
-/** Listing lengths as measured on Forever's new listings (B22): 17% 2 hour, 64% 8 hour, 18% 24 hour. */
+/** Listing lengths as measured on Forever's new listings (B33): 17% 2 hour, 64% 8 hour, 18% 24 hour. */
 const duration = (r: () => number) => pickWeighted(r, [[120, 17], [480, 64], [1440, 18]]);
 
 export const SPECS: Record<MarketType, Spec> = {
@@ -77,6 +77,8 @@ export interface SimOpts {
   type: MarketType; seed: number; items?: number; hours?: number; warmupHours?: number; longEndsAt?: number;
   /** override how often a seller cancels to undercut, per item per hour (sensitivity runs) */
   undercutsPerHour?: number;
+  /** override the share of listings a seller pulls each hour without posting again (sensitivity runs) */
+  cancelPerListingHour?: number;
 }
 
 export interface SimRun {
@@ -91,7 +93,7 @@ export interface SimRun {
   fate: Map<number, 'bought' | 'expired' | 'undercut' | 'cancelled'>;
 }
 
-/** Bucket for minutes left. `longEndsAt` is where LONG gives way to VERY_LONG, 720 (12 hours) or 480 (8 hours): not yet measured on Forever. */
+/** Bucket for minutes left. `longEndsAt` is where LONG gives way to VERY_LONG: measured between 11 and 15 hours on Forever (B33), 12 by default. */
 export function bucket(minutesLeft: number, longEndsAt = 720): TimeLeft {
   if (minutesLeft < 30) return 'SHORT';
   if (minutesLeft < 120) return 'MEDIUM';
@@ -100,7 +102,8 @@ export function bucket(minutesLeft: number, longEndsAt = 720): TimeLeft {
 }
 
 export function simulate(o: SimOpts): SimRun {
-  const spec = { ...SPECS[o.type], ...(o.undercutsPerHour != null ? { undercutsPerHour: o.undercutsPerHour } : {}) };
+  const spec = { ...SPECS[o.type], ...(o.undercutsPerHour != null ? { undercutsPerHour: o.undercutsPerHour } : {}),
+    ...(o.cancelPerListingHour != null ? { cancelPerListingHour: o.cancelPerListingHour } : {}) };
   const r = rng(o.seed);
   const nItems = o.items ?? 6;
   const hours = o.hours ?? 24 * 7;
@@ -142,7 +145,7 @@ export function simulate(o: SimOpts): SimRun {
   const buy = (item: number, want: number, maxPrice: number) => {
     const ls = live.get(item)!;
     if (spec.commodity) {
-      ls.sort((a, b) => a.price - b.price || b.id - a.id); // cheapest first, newest first at one price (B23)
+      ls.sort((a, b) => a.price - b.price || b.id - a.id); // cheapest first, newest first at one price (B34)
       while (want > 0 && ls.length && ls[0]!.price <= maxPrice) {
         const l = ls[0]!;
         const take = Math.min(want, l.qty);
