@@ -73,7 +73,7 @@ export function rebuildHistory(db: DB, log: (m: string) => void = () => {}): { s
 }
 
 /** Rebuild once per version of the sale rules. Bump the version whenever aggregate's sale logic changes. */
-export const SALE_RULES_VERSION = '2026-11-24';
+export const SALE_RULES_VERSION = '2026-11-25';
 export function rebuildIfRulesChanged(db: DB, log: (m: string) => void): void {
   // Once a migration adds item_stats.sold_events (P14), the history is re-counted once more to fill it.
   const version = SALE_RULES_VERSION + (hasSoldEvents(db) ? '+events' : '');
