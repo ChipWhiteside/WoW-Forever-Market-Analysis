@@ -154,7 +154,11 @@ export class Engine {
   /** Once a day: refresh vendor sell prices, which hotfixes change (spec 17.3). Returns the changes as news. */
   async refreshCatalog(): Promise<Array<{ id: number; from: number | null; to: number | null }>> {
     const ids = (this.db.prepare('SELECT id FROM items WHERE status = 200').all() as Array<{ id: number }>).map(r => r.id);
+    // Thousands of item calls: say so, so a quiet log during this step is never mistaken for a stall.
+    const t0 = Date.now();
+    this.log(`vendor prices: checking ${ids.length} items older than 20 hours`);
     const r = await resolveItems(this.client, this.db, ids, { maxAgeMs: 20 * 3600_000 });
+    this.log(`vendor prices: ${r.fetched} fetched, ${r.errors} errors in ${Math.round((Date.now() - t0) / 1000)} s`);
     if (r.priceChanges.length) setKv(this.db, 'news:vendor_price_changes', JSON.stringify({ at: Date.now(), changes: r.priceChanges.slice(0, 200) }));
     return r.priceChanges;
   }
