@@ -5,7 +5,7 @@ import { Market } from './market.ts';
 import { SellBook } from './sellBook.ts';
 import { generate } from './families.ts';
 import { evaluate, legsOf, auctionUse, type Candidate, type Evaluation } from './evaluate.ts';
-import { recipeKey, type FlipInputs, type FlipRecipe, type VendorSource } from './inputs.ts';
+import { recipeKey, type FlipInputs, type FlipRecipe, type TrainerRow } from './inputs.ts';
 import { FAMILY_KIND, type Flip, type FlipLeg, type FlipRunReport, type HeldBack } from './types.ts';
 
 export interface FlipRunResult { flips: Flip[]; heldBack: HeldBack[]; report: FlipRunReport }
@@ -152,48 +152,45 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
 }
 
 /**
- * Where and for how much a recipe is learned: a trainer (Alliance or neutral first), else the item that teaches it.
- * Never a reason to hide a flip. The rank is the recipe's own learn skill (recipes.learn_skill), the trainer's rank
- * only when the recipe has none. Trainer rows match by spell id, or by name when either side has no spell id.
- * Teaching items match by the spell they teach (wago ItemEffect, trigger 6) when the game tables are on disk, else by
- * name with any prefix (Recipe:, Pattern:, Plans:, Formula:, Schematic:, Blueprint:, Manual:, Design:). When the
- * teaching item is listed on one of Chip's houses its cheapest price is shown too (round 1 finding M4).
+ * Where and for how much a recipe is learned. Never a reason to hide a flip. The rank is the recipe's own learn skill
+ * (recipes.learn_skill), the trainer's rank only when the recipe has none (round 1 finding M4).
+ *   1. A trainer Chip can use: trainer rows match by spell id, or by name when either side has no spell id.
+ *   2. The item that teaches it: recipes.teach_item_id (linked by id through the game's ItemEffect table), else a
+ *      name match with any prefix (Recipe:, Pattern:, Plans:, Formula:, Schematic:, Blueprint:, Manual:, Design:).
+ *      Its cheapest price on Chip's houses when listed, else its vendor offer; both are named when both exist.
+ *   3. Only Horde trainers teach it (learn_source trainer_horde_only): said so plainly.
  */
 export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
   const nm = recipeKey(r.name);
   const match = inputs.trainers.filter(t => (r.spellId != null && t.spellId != null ? t.spellId === r.spellId : false)
     || ((r.spellId == null || t.spellId == null) && recipeKey(t.name) === nm && (!t.skill || t.skill === r.profession)));
   const usable = match.filter(t => t.faction === 'alliance' || t.faction === 'neutral');
-  const pick = (usable.length ? usable : match).sort((a, b) => (a.cost ?? Infinity) - (b.cost ?? Infinity) || a.npcId - b.npcId)[0];
+  const byCost = (a: TrainerRow, b: TrainerRow) => (a.cost ?? Infinity) - (b.cost ?? Infinity) || a.npcId - b.npcId;
+  const pick = [...usable].sort(byCost)[0];
   if (pick) {
-    return { skill: r.profession, rank: r.learnSkill ?? pick.skillRank, cost: pick.cost,
-      where: usable.length ? `${pick.npcName}${pick.zone ? `, ${pick.zone}` : ''}` : 'a trainer (no Alliance trainer recorded yet)',
-      places: usable.length ? [{ label: pick.npcName, zone: pick.zone, uiMap: pick.mapId, x: pick.x, y: pick.y }] : [] };
+    return { skill: r.profession, rank: r.learnSkill ?? pick.skillRank, cost: pick.cost, where: `${pick.npcName}${pick.zone ? `, ${pick.zone}` : ''}`,
+      places: [{ label: pick.npcName, zone: pick.zone, uiMap: pick.mapId, x: pick.x, y: pick.y }] };
   }
-  // Every item that teaches it: by the spell it teaches, else by name.
-  const ids = new Set<number>(r.spellId != null ? inputs.teachItems?.get(r.spellId) ?? [] : []);
-  const byName = inputs.recipeItems.get(nm);
-  if (!ids.size && byName != null) ids.add(byName);
-  if (!ids.size) return { skill: r.profession, rank: r.learnSkill, cost: null, where: null, places: [] };
-  let best: { itemId: number; vendor: VendorSource | null; floor: number | null; houseId: number | null } | null = null;
-  for (const itemId of ids) {
+  const itemId = r.teachItemId ?? inputs.recipeItems.get(nm) ?? null;
+  if (itemId != null) {
+    const name = inputs.items.get(itemId)?.name ?? `Item ${itemId}`;
     const vendor = inputs.vendors.get(itemId)?.[0] ?? null;
     let floor: number | null = null, houseId: number | null = null;
     for (const h of inputs.houses) { const l = inputs.listings.get(h.id)?.get(itemId)?.[0]; if (l && (floor == null || l.unitPrice! < floor)) { floor = l.unitPrice!; houseId = h.id; } }
-    const rankOf = (x: typeof best) => (x!.vendor ? 0 : x!.floor != null ? 1 : 2);
-    const cand = { itemId, vendor, floor, houseId };
-    if (!best || rankOf(cand) < rankOf(best) || (rankOf(cand) === rankOf(best) && ((cand.vendor?.unitPrice ?? cand.floor ?? Infinity) < (best.vendor?.unitPrice ?? best.floor ?? Infinity)))) best = cand;
+    const house = houseId != null ? inputs.houses.find(h => h.id === houseId) : null;
+    const onAuction = floor != null ? `${money(floor)} on the ${house?.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house` : null;
+    const fromVendor = vendor ? `${money(vendor.unitPrice)} from ${vendor.npcName}${vendor.zone ? `, ${vendor.zone}` : ''}` : null;
+    const extra = { teachItem: { id: itemId, name }, auctionPrice: floor, auctionHouseId: houseId };
+    const prices = [onAuction, fromVendor].filter(Boolean).join(', or ');
+    const cost = Math.min(floor ?? Infinity, vendor?.unitPrice ?? Infinity);
+    return { skill: r.profession, rank: r.learnSkill, cost: Number.isFinite(cost) ? cost : null, where: prices ? `${name}: ${prices}` : `${name} (no seller seen)`,
+      places: vendor && (floor == null || vendor.unitPrice <= floor) ? vendor.places : [], ...extra };
   }
-  const b = best!;
-  const name = inputs.items.get(b.itemId)?.name ?? `Item ${b.itemId}`;
-  const teachItem = { id: b.itemId, name };
-  const house = b.houseId != null ? inputs.houses.find(h => h.id === b.houseId) : null;
-  const onAuction = b.floor != null ? `${money(b.floor)} on the ${house?.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house` : null;
-  const extra = { teachItem, auctionPrice: b.floor, auctionHouseId: b.houseId };
-  if (b.vendor) {
-    return { skill: r.profession, rank: r.learnSkill, cost: b.vendor.unitPrice, where: `${name} from ${b.vendor.npcName}${b.vendor.zone ? `, ${b.vendor.zone}` : ''}${onAuction ? `, or ${onAuction}` : ''}`, places: b.vendor.places, ...extra };
+  if (match.length || r.learnSource === 'trainer_horde_only') {
+    const h = [...match].sort(byCost)[0];
+    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null, where: 'Horde trainers only', places: [] };
   }
-  return { skill: r.profession, rank: r.learnSkill, cost: b.floor, where: onAuction ? `${name}, ${onAuction}` : `${name} (no seller seen)`, places: [], ...extra };
+  return { skill: r.profession, rank: r.learnSkill, cost: null, where: null, places: [] };
 }
 
 /**

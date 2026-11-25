@@ -41,6 +41,10 @@ export interface FlipItem {
 export interface FlipRecipe {
   id: number; name: string; profession: string; productId: number; qtyMin: number; qtyMax: number; learnSkill: number | null;
   spellId: number | null; castMs: number | null; cooldownMs: number | null; cooldownCategory: number | null;
+  /** the item that teaches it, linked by id through the game's ItemEffect table (recipes.teach_item_id, migration 12) */
+  teachItemId?: number | null;
+  /** where learnSkill came from: trainer_alliance | trainer_horde_only | item | auto | yellow (recipes.learn_source) */
+  learnSource?: string | null;
   randomYield: boolean; live: boolean; kind: 'profession' | 'conversion';
   reagents: Array<{ itemId: number; quantity: number }>;
 }
@@ -77,10 +81,9 @@ export interface FlipInputs {
   low3dHours?: Map<number, Map<number, number>>;
   drivers: Map<number, Driver>;
   trainers: TrainerRow[];
-  /** teaching items ("Recipe: Cerulean Dye", "Blueprint: Tanning Rack") by the normalized name they teach (recipeKey) */
+  /** teaching items ("Recipe: Cerulean Dye", "Blueprint: Tanning Rack") by the normalized name they teach (recipeKey);
+   * only a fallback for recipes whose teach_item_id is not filled */
   recipeItems: Map<string, number>;
-  /** teaching items by the craft spell they teach (wago ItemEffect trigger 6), when the game tables are on disk */
-  teachItems?: Map<number, number[]>;
   /** recent: keys seen within the last publish gap; openHours: distinct earlier hours open in the last 72, this hour not counted */
   history: { recent: Set<string>; openHours: Map<string, number> };
   settings: FlipSettings;
@@ -185,7 +188,8 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     recipes.push({ id: Number(r.id), name, profession, productId: Number(r.crafted_item_id), qtyMin, qtyMax, learnSkill: num(r.learn_skill),
       spellId: num(r.spell_id), castMs: num(r.cast_ms), cooldownMs: num(r.cooldown_ms), cooldownCategory: num(r.cooldown_category),
       randomYield: !!Number(r.random_yield ?? 0) || qtyMin !== qtyMax, live: Number(r.live ?? 1) !== 0 && !testRow,
-      kind: r.kind === 'conversion' ? 'conversion' : 'profession', reagents: reagents.get(Number(r.id)) ?? [] });
+      kind: r.kind === 'conversion' ? 'conversion' : 'profession', reagents: reagents.get(Number(r.id)) ?? [],
+      teachItemId: num(r.teach_item_id), learnSource: (r.learn_source as string | null | undefined) ?? null });
   }
   if (!recipes.length) problems.push('recipe catalog missing');
   if (recipes.length && !recipes.some(r => r.cooldownMs != null)) {
@@ -244,19 +248,23 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
  */
 export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<number, FlipDemand>): Map<number, FlipDemand> {
   const since = now - 72 * 3600_000;
-  const rows = db.prepare(`SELECT item_id, SUM(MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))) sold,
-      SUM(COALESCE(gone_listings, 0)) gl, SUM(COALESCE(gone_units, 0)) gu, SUM(new_near_floor) nnf, COUNT(new_near_floor) nnfRows, SUM(COALESCE(new_units, 0)) nu
+  // Per publish: units judged sold (the same rule as demandByItem), and the sale events behind them, which are the
+  // vanished listings scaled by the share of vanished units judged sold (gone listings minus the expiring and far from
+  // the floor share). New units near the floor where measured, else every new unit (older rows).
+  const SOLD = 'MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))';
+  const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold,
+      SUM(CASE WHEN COALESCE(gone_units, 0) > 0 THEN COALESCE(gone_listings, 0) * 1.0 * ${SOLD} / gone_units ELSE 0 END) events,
+      SUM(COALESCE(new_near_floor, new_units, 0)) fresh
     FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; gl: number; gu: number; nnf: number | null; nnfRows: number; nu: number }>;
+    .all(houseId, since, now) as Array<{ item_id: number; sold: number; events: number; fresh: number }>;
   for (const r of rows) {
     const d = demand.get(r.item_id);
     if (!d) continue;
     const hours = d.hoursWatched ?? d.hours;
-    const upe = r.gl > 0 && r.gu > 0 ? Math.max(1, r.gu / r.gl) : 1;
-    if (d.unitsPerEvent == null) d.unitsPerEvent = upe;
-    if (d.saleEvents == null) d.saleEvents = r.sold / (d.unitsPerEvent || 1);
+    if (d.saleEvents == null) d.saleEvents = r.events;
+    if (d.unitsPerEvent == null) d.unitsPerEvent = r.events > 0 ? Math.max(1, r.sold / r.events) : null;
     if (d.hoursWatched == null) d.hoursWatched = hours;
-    if (d.newPerDay == null && hours > 0) d.newPerDay = ((r.nnfRows > 0 ? r.nnf ?? 0 : r.nu) / hours) * 24;
+    if (d.newPerDay == null && hours > 0) d.newPerDay = (r.fresh / hours) * 24;
   }
   // The last hour: the newest differenced publish of each kind, against the one before it.
   const last = db.prepare(`SELECT s.id, s.kind, s.published_at t FROM snapshots s WHERE s.house_id = ? AND s.published_at <= ? AND s.diff_hours IS NOT NULL
