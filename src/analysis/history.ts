@@ -74,14 +74,15 @@ function normalQuantile(p: number): number {
 export function demandByItem(db: DB, houseId: number, opts: { hours?: number; now?: number } = {}): Map<number, Demand> {
   const now = opts.now ?? Date.now();
   const hours = opts.hours ?? 72;
+  // Every query is bounded to rows at or before `now`, so a run for a past hour never sees later sales.
   const since = now - hours * 3600_000;
   // Hours actually covered by differencing, per kind: the sum of the gaps between consecutive publishes
   // that were differenced. Gaps over 1.6 hours are never differenced, so outages cannot inflate demand.
   // Only rows counted with a sold price (they carry sold_value). Rows from before it counted expiries and
   // relists as sales, so they are left out rather than mixed in.
-  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND diff_hours IS NOT NULL
-     AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND sold_value IS NOT NULL) GROUP BY kind`)
-    .all(houseId, since, houseId, since) as Array<{ kind: string; h: number }>;
+  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND diff_hours IS NOT NULL
+     AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND sold_value IS NOT NULL) GROUP BY kind`)
+    .all(houseId, since, now, houseId, since, now) as Array<{ kind: string; h: number }>;
   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
   const out = new Map<number, Demand>();
   if (covered <= 0) return out;
@@ -91,21 +92,21 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
-     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
+     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
+    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
-     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000) as Array<{ item_id: number; sold: number; value: number }>)
+     FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
     .map(r => [r.item_id, r]));
   // Steadiness: how far the hourly floor wanders over the window (standard deviation over mean).
-  const steady = new Map((db.prepare(`SELECT item_id, AVG(floor) m, AVG(floor * floor) m2, COUNT(*) n FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
+  const steady = new Map((db.prepare(`SELECT item_id, AVG(floor) m, AVG(floor * floor) m2, COUNT(*) n FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id`)
+    .all(houseId, since, now) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
   // The bad case price: the lowest hourly floor in the last 3 days, whatever the demand window.
-  const low3d = new Map((db.prepare(`SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
-    .all(houseId, now - 72 * 3600_000) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f]));
+  const low3d = new Map((db.prepare(`SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id`)
+    .all(houseId, now - 72 * 3600_000, now) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f]));
   // The last hour's sweep: the latest differenced publish of each kind, if it is under 2 hours old.
   const sweep = new Map((db.prepare(`SELECT item_id, sweep_high FROM item_stats WHERE sweep_high IS NOT NULL AND snapshot_id IN
-     (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? GROUP BY kind)`)
-    .all(houseId, now - 2 * 3600_000) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
+     (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? AND published_at <= ? GROUP BY kind)`)
+    .all(houseId, now - 2 * 3600_000, now) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
   const hoursWatched = Math.round(covered * 10) / 10;
   for (const r of rows) {
     const rc = recent.get(r.item_id);
