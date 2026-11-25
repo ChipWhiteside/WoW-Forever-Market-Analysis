@@ -111,6 +111,17 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(listingHours({ firstSeen: t0, firstTimeLeft: 'VERY_LONG', postedAfter: null })).toBe(24); // only 24 hour listings show it
   });
 
+  it('LONG reaches past 11 hours and VERY_LONG starts by 15 (B33): readings from real listings are no age conflict', () => {
+    // A fresh 24 hour listing (23 to 24 hours left at t0) read 9 hours later (14 to 15 left): either bucket fits.
+    for (const tl of ['LONG', 'VERY_LONG'] as const) {
+      const r = expiryChance(L(1, 7, 1, 100, tl), fresh('VERY_LONG'), t0 + 9 * H, t0 + 10 * H);
+      expect(r.conflict).toBe(false);
+      expect(r.chance).toBe(0);
+    }
+    // A listing read LONG twice, 9 hours apart (seen 4,293 times on Forever), is no conflict either.
+    expect(expiryChance(L(1, 7, 1, 100, 'LONG'), { firstSeen: t0, firstTimeLeft: 'LONG', postedAfter: null }, t0 + 9 * H, t0 + 10 * H).conflict).toBe(false);
+  });
+
   it('a 2 hour listing cannot expire in its first hour, can in its second', () => {
     const l = L(1, 7, 1, 100, 'MEDIUM');
     expect(expiryChance(l, fresh('MEDIUM'), t0, t0 + H).chance).toBe(0);
