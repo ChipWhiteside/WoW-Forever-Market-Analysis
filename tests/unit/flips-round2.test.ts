@@ -5,9 +5,10 @@
 import { describe, it, expect } from 'vitest';
 import { A, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, DYE, DYE_RECIPE } from './flips.fixture.ts';
 import { Market } from '../../src/flips/market.ts';
-import { SellBook, overnightQueue, lowPerDay } from '../../src/flips/sellBook.ts';
-import { soldCurve, priceWar } from '../../src/flips/evaluate.ts';
-import { buildFlipInputs, vendorUnitPrice } from '../../src/flips/inputs.ts';
+import { SellBook, overnightQueue, lowPerDay, newPerDay } from '../../src/flips/sellBook.ts';
+import { soldCurve, priceWar, unsoldWorth } from '../../src/flips/evaluate.ts';
+import { buildFlipInputs, enrichDemand, vendorUnitPrice, type FlipDemand } from '../../src/flips/inputs.ts';
+import { demandByItem } from '../../src/analysis/history.ts';
 import { poissonLowerBound } from '../../src/flips/poisson.ts';
 import { openDb } from '../../src/store/db.ts';
 import { MAX_UNITS } from '../../src/rules/flips.ts';
@@ -42,18 +43,21 @@ describe('H3: risk', () => {
   it('under 72 hours of floors the bad case assumes a 25% drop unless the low seen is lower', () => {
     // 24 hours of floors, a 3 day low of 70s: the 25% drop to 56s 25c is lower, so it is used (net floor(5625 x 0.95) = 5343)
     const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { hours: 24, hoursWatched: 24 } })), DYE_KEY);
+    // the dye has proven demand, so the unsold half carries over at the bad price less one more deposit (round 3)
     const S1 = refTail(20, 1);
-    expect(e.at(1).risk.badCaseLoss).toBe(Math.round(5020 - (S1 / 2 * 5343 + (1 - S1 / 2) * (75 - 360))));
+    const badAt = (netBad: number) => Math.max(0, Math.round(5020 - (S1 / 2 * netBad + (1 - S1 / 2) * (netBad - 360 - 360))));
+    expect(e.at(1).risk.badCaseLoss).toBe(badAt(5343));
     expect(e.at(1).risk.drivers).toContain('under 3 days of prices seen, a 25% drop assumed for the bad case');
     // a low seen under the 25% drop is used: 40s nets 3800
     const lower = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { hours: 24, hoursWatched: 24, low3d: 4000 } })), DYE_KEY).e;
-    expect(lower.at(1).risk.badCaseLoss).toBe(Math.round(5020 - (S1 / 2 * 3800 + (1 - S1 / 2) * (75 - 360))));
+    expect(lower.at(1).risk.badCaseLoss).toBe(badAt(3800));
     // 72 hours covered: the low seen is used even when higher than the 25% drop (70s nets 6650)
     const full = evalKey(inputsOf(ceruleanAtBens()), DYE_KEY).e;
-    expect(full.at(1).risk.badCaseLoss).toBe(Math.round(5020 - (S1 / 2 * 6650 + (1 - S1 / 2) * (75 - 360))));
+    expect(full.at(1).risk.badCaseLoss).toBe(badAt(6650));
   });
   it('the level: high past the expected profit, medium past half of it, low otherwise, at every quantity', () => {
-    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 7200 } })), DYE_KEY);
+    // without proven demand (low 0.8 a day) unsold units are worth only the vendor price, so all three levels show up
+    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 7200, lowPerDay: 0.8 } })), DYE_KEY);
     const seen = new Set<string>();
     for (let n = 1; n <= 20; n++) {
       const o = e.at(n);
@@ -76,11 +80,12 @@ describe('H3: risk', () => {
   it('big deposits: the best amount stops well before what the queue could take, and half sales lose (the Truesilver case)', () => {
     // Ore at 1g, the bar posted near 1g 40c, with a 5s vendor price: a 24 hour deposit of floor(500 x 0.2 x 24) = 24s a bar.
     const BAR = 6037, ORE = 7911;
-    const r = run({ listings: { 111: [L(ORE, 10000, 400), ...many(BAR, 14000, 6, 20)] }, items: [item(ORE, 'Truesilver Ore', 100), item(BAR, 'Truesilver Bar', 500)],
+    // No carryover here (low estimate 0.8 a day): an unsold bar is worth its 5s vendor price and loses the deposit.
+    const ev = evalKey(inputsOf({ listings: { 111: [L(ORE, 10000, 400), ...many(BAR, 14000, 6, 20)] }, items: [item(ORE, 'Truesilver Ore', 100), item(BAR, 'Truesilver Bar', 500)],
       recipes: [recipe(10098, 'Smelt Truesilver', BAR, [[ORE, 1]], { profession: 'Mining' })],
-      demand: { 111: { [BAR]: sells(480, 14000, { lowPerDay: 400, newPerDay: 0 }) } } });
-    const f = r.flips.find(x => x.itemId === BAR && x.family === 'craft_auction')!;
-    const most = f.options.find(o => o.label === 'most')!;
+      demand: { 111: { [BAR]: sells(480, 14000, { lowPerDay: 0.8, newPerDay: 0 }) } } }), `craft_auction:111:${BAR}:10098`).e;
+    const f = { best: ev.best! };
+    const most = ev.options.find(o => o.label === 'most')!;
     // 200 sale events expected overnight; the best stops where a unit's chance no longer covers its 24s deposit risk
     expect(f.best.units).toBeLessThan(most.units);
     expect(f.best.expectedProfit).toBeGreaterThan(most.expectedProfit);
@@ -112,7 +117,18 @@ describe('H4: the chance each unit sells falls smoothly', () => {
     // no cliff: the 20th unit (the old flat capacity) still sells more often than not, the 25th sometimes
     expect(curve.soldAt(20) - curve.soldAt(19)).toBeGreaterThan(0.5);
     expect(curve.soldAt(25) - curve.soldAt(24)).toBeGreaterThan(0.1);
-    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16 })));
+    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16, carry: { each: 7077 - 360, cap: 60 } })));
+  });
+  it('a seller pulling and reposting is not new competition: new = max(0, new - pulled) (round 3)', () => {
+    // Poached Sunscale Salmon pattern: about 1,700 units pulled near the floor and 822 posted again in one hour
+    const q = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 822 * 24, pulledPerDay: 1700 * 24 } }))).quote(A, DYE)!;
+    expect(newPerDay({ unitsPerDay: 1, hours: 6, snapshots: 6, newPerDay: 822 * 24, pulledPerDay: 1700 * 24 }).value).toBe(0);
+    expect(q.newPerHour).toBe(0);
+    expect(q.newOvernight).toBe(0);
+    // 30 new and 10 pulled an hour: 20 really new an hour compete
+    expect(newPerDay({ unitsPerDay: 1, hours: 6, snapshots: 6, newPerDay: 30 * 24, pulledPerDay: 10 * 24 }).value).toBe(20 * 24);
+    // pulled unknown: every new unit counts
+    expect(newPerDay({ unitsPerDay: 1, hours: 6, snapshots: 6, newPerDay: 822 * 24 }).value).toBe(822 * 24);
   });
   it('new posts competing ahead come off the mean, never under 0', () => {
     const q = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 200 } }))).quote(A, DYE)!;
@@ -216,11 +232,27 @@ describe('sale events and new posts from the stored hourly counts', () => {
     }
     const inputs = buildFlipInputs(d, new Map([[111, [L(12359, 1900, 10)]]]), t);
     const dm = inputs.demand.get(111)!.get(12359)!;
-    // 7 hours: 7 x 28 = 196 units sold, 7 x 10 x 28/238 = 8.24 events of 23.8 units
-    expect(dm.saleEvents).toBeCloseTo(7 * 10 * 28 / 238, 9);
-    expect(dm.unitsPerEvent).toBeCloseTo(238 / 10, 9);
-    // new posts: new_near_floor where measured (40), else new_units (913): (6 x 913 + 40) / 7 hours x 24
-    expect(dm.newPerDay).toBeCloseTo(((6 * 913 + 40) / 7) * 24, 6);
+    // Path 1, sale counting's fields are authoritative: buildFlipInputs keeps exactly what demandByItem gives.
+    const fromHistory = demandByItem(d, 111, { now: t }).get(12359)!;
+    for (const k of ['saleEvents', 'unitsPerEvent', 'newPerDay', 'pulledPerDay', 'hoursWatched'] as const) expect(dm[k]).toBe(fromHistory[k]);
+    // no sold_events column filled: a commodity hour with sales counts as one event, 7 events of 28 units
+    expect(dm.saleEvents).toBe(7);
+    // Path 2, the fallback for a Demand that lacks them: events are the vanished listings scaled by the share of
+    //   vanished units judged sold, 7 x 10 x 28/238 = 8.24 events of 23.8 units; new posts near the floor where
+    //   measured (40), else new units (913); pulled near the floor 210 an hour.
+    const bare = { ...fromHistory, saleEvents: undefined, unitsPerEvent: undefined, newPerDay: undefined, pulledPerDay: undefined } as FlipDemand;
+    const derived = enrichDemand(d, 111, t, new Map([[12359, bare]])).get(12359)!;
+    expect(derived.saleEvents).toBeCloseTo(7 * 10 * 28 / 238, 9);
+    expect(derived.unitsPerEvent).toBeCloseTo(238 / 10, 9);
+    expect(derived.newPerDay).toBeCloseTo(((6 * 913 + 40) / 7) * 24, 6);
+    expect(derived.pulledPerDay).toBeCloseTo(210 * 24, 6);
+    // a field already present is never overwritten by the derivation
+    expect(enrichDemand(d, 111, t, new Map([[12359, { ...fromHistory }]])).get(12359)!.saleEvents).toBe(7);
+    // demandByItem never sees rows after `now` (round 3): at 4 hours only 4 hours of sales count
+    const early = demandByItem(d, 111, { now: 4 * HOUR }).get(12359)!;
+    expect(early.hoursWatched).toBe(4);
+    expect(early.saleEvents).toBe(4);
+    expect(early.low3d).toBe(2180);
     expect(dm.floorChange1h).toBeCloseTo((1900 - 2180) / 2180, 9);
     expect(dm.newLastHour).toBe(40);
     // floors from 1 to 7 hours: 6 hours behind the 3 day low, so the bad case still assumes the 25% drop
@@ -231,5 +263,26 @@ describe('sale events and new posts from the stored hourly counts', () => {
     const later = buildFlipInputs(d, new Map([[111, [L(12359, 1900, 10)]]]), t);
     expect(later.low3dHours!.get(111)!.get(12359)).toBe(80);
     expect(later.low3d.get(111)!.get(12359)).toBe(1900);
+  });
+});
+
+describe('carryover: an unsold unit of a product with proven demand is relisted, not lost (round 3)', () => {
+  it('worth the net at the case price less one more deposit, never under the vendor price, for one day of the low estimate', () => {
+    const q = new SellBook(inputsOf(ceruleanAtBens())).quote(A, DYE)!;
+    // 60 a day low: up to 60 units at 7077 - 360 = 6717 each, the rest at the 75c vendor price
+    expect(unsoldWorth(q, 7077, 75, 360, 10)).toBe(10 * 6717);
+    expect(unsoldWorth(q, 7077, 75, 360, 70)).toBe(60 * 6717 + 10 * 75);
+    // at a bad case price under the deposits it is never below the vendor price
+    expect(unsoldWorth(q, 300, 75, 360, 2)).toBe(2 * 75);
+    // no proven demand (under 1 a day): vendor price only; no vendor price: 0
+    expect(unsoldWorth({ ...q, salesPerDayLow: 0.9 }, 7077, 75, 360, 4)).toBe(4 * 75);
+    expect(unsoldWorth({ ...q, salesPerDayLow: 0.9 }, 7077, 0, 360, 4)).toBe(0);
+    // a vendor sale never has unsold units
+    expect(unsoldWorth({ ...q, houseId: null }, 7077, 75, 360, 4)).toBe(0);
+  });
+  it('yardstick: Cerulean Dye is low risk once unsold dye carries over', () => {
+    const dye = run(ceruleanAtBens()).flips.find(f => f.key === DYE_KEY)!;
+    expect(dye.best).toMatchObject({ units: 38, expectedProfit: 34005 });
+    expect(dye.best.risk).toMatchObject({ badCaseLoss: 0, level: 'low' });
   });
 });

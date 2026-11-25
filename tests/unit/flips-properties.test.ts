@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
+import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, refWorth, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
 import { Market } from '../../src/flips/market.ts';
 import { SellBook } from '../../src/flips/sellBook.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
@@ -103,20 +103,26 @@ describe('properties', () => {
       last = loss;
     }
     // Bad case (round 1 H3): the 3 day low of 50s nets floor(5000 x 0.95) = 4750, and only half of the S(n) units expected
-    //   to sell do; the rest are salvaged at 75c and lose the 360c deposit. S(n) sums P(X >= k), X ~ Poisson(20).
+    //   to sell do. The dye sells 60 a day at the low estimate (proven demand), so up to 60 unsold units carry over
+    //   (round 3): relisted at 4750 less one more 360c deposit, 4390, and each loses tonight's 360c deposit too.
+    //   S(n) sums P(X >= k), X ~ Poisson(20).
     const S = (n: number, mu = 20) => { let s = 0; for (let k = 1; k <= n; k++) s += refTail(mu, k); return s; };
-    const bad = (n: number, cost: number, mu = 20) => Math.max(0, Math.round(cost - (S(n, mu) / 2 * 4750 + (n - S(n, mu) / 2) * (75 - 360))));
-    // 20 crafts cost 113,880; S(20) = 18.22, so 9.11 sell at 4750 and 10.89 are salvaged: a 73,703 loss
-    expect(e.at(20).risk.badCaseLoss).toBe(bad(20, 113880));
-    expect(e.at(20).risk.badCaseLoss).toBe(73703);
-    expect(e.at(20).risk.level).toBe('high');
-    // one craft: 5020 spent, half of the 1.0 expected sold at 4750, half salvaged at 75 - 360: 5020 - 2375 + 142.5 = 2788
-    expect(e.at(1).risk.badCaseLoss).toBe(bad(1, 5020));
-    expect(e.at(1).risk.badCaseLoss).toBe(2788);
-    // the same with half the expected sold at the claimed price, the "at half sales" number on the card
-    expect(e.at(1).risk.halfSalesProfit).toBe(Math.round(0.5 * 7077 + 0.5 * (75 - 360) - 5020));
-    // Thin sales (12 a day middle, none new: 5 sale events overnight): each unit past the queue adds its cost and lost deposit.
-    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 12, newPerDay: 0 } })), DYE_KEY).e;
+    const bad = (n: number, cost: number, mu = 20, carry?: { each: number; cap: number }) => {
+      const sold = S(n, mu) / 2, left = n - sold;
+      return Math.max(0, Math.round(cost - (sold * 4750 + refWorth(left, 75, carry) - left * 360)));
+    };
+    const carry = { each: 4750 - 360, cap: 60 };
+    // 20 crafts cost 113,880; S(20) = 18.22, so 9.11 sell at 4750 and 10.89 carry over at 4390: a 26,720 loss
+    expect(e.at(20).risk.badCaseLoss).toBe(bad(20, 113880, 20, carry));
+    expect(e.at(20).risk.badCaseLoss).toBe(26720);
+    // one craft: 5020 spent, half of the 1.0 expected sold at 4750, half carried at 4390 - 360: 5020 - 2375 - 2015 = 630
+    expect(e.at(1).risk.badCaseLoss).toBe(bad(1, 5020, 20, carry));
+    expect(e.at(1).risk.badCaseLoss).toBe(630);
+    // the same with half the expected sold at the claimed price, the rest carried at 7077 - 360: the "at half sales" number
+    expect(e.at(1).risk.halfSalesProfit).toBe(Math.round(0.5 * 7077 + 0.5 * (7077 - 360 - 360) - 5020));
+    // No proven demand (low estimate 0.8 a day, 12 a day middle, none new: 5 sale events overnight): unsold units are worth
+    //   only their 75c vendor price, so each unit past the queue adds its cost and lost deposit, and the risk is high.
+    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 0.8, newPerDay: 0 } })), DYE_KEY).e;
     let prev = -1;
     for (let n = 1; n <= 10; n++) { const loss = thin.at(n).risk.badCaseLoss; expect(loss).toBeGreaterThanOrEqual(prev); prev = loss; }
     expect(thin.at(10).risk.level).toBe('high');
@@ -124,6 +130,10 @@ describe('properties', () => {
     expect(thin.at(10).expectedProfit).toBe(Math.round(refExpected({ mu: 5, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 55440, n: 10 })));
     expect(thin.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5));
     expect(thin.at(10).risk.drivers).toContain('more units than sell overnight');
+    // The same thin market with proven demand (1.2 a day low): 1.2 units carry over, so the loss is smaller
+    const proven = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 1.2, newPerDay: 0 } })), DYE_KEY).e;
+    expect(proven.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5, { each: 4390, cap: 1.2 }));
+    expect(proven.at(10).risk.badCaseLoss).toBeLessThan(thin.at(10).risk.badCaseLoss);
   });
   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {
     const r = run(ceruleanAtBens({ extra: { settings: { goldOnHand: 50000 } } }));
