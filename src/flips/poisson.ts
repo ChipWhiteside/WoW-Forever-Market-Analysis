@@ -30,11 +30,13 @@ export function poissonCdf(k: number, mu: number): number {
 /**
  * One sided lower confidence bound on a Poisson mean after seeing n events: the mean whose chance of showing n or more
  * is 1 - confidence. For n = 0 it is 0. Exact (bisection on the cdf), the same as half the chi square quantile.
+ * A fractional count (events scaled from units) is rounded down, the cautious side: 2.6 events bound like 2.
  */
 export function poissonLowerBound(n: number, confidence = 0.95): number {
-  if (!(n > 0)) return 0;
-  const k = Math.ceil(n) - 1; // P(X >= n) = 1 - cdf(n - 1)
-  let lo = 0, hi = Math.max(1, n);
+  const whole = Math.floor(n + 1e-9);
+  if (!(whole > 0)) return 0;
+  const k = whole - 1; // P(X >= n) = 1 - cdf(n - 1)
+  let lo = 0, hi = Math.max(1, whole);
   for (let i = 0; i < 100; i++) {
     const mid = (lo + hi) / 2;
     // cdf(k; mid) falls as mid grows; we want 1 - cdf = 1 - confidence

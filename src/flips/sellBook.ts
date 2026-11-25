@@ -1,7 +1,8 @@
 import type { Listing } from '../analysis/aggregate.ts';
 import { judgeSell, type DetectorContext, type HouseCtx, type ItemCtx, type VendorOffer } from '../detectors/types.ts';
 import { netPerUnit } from '../rules/fees.ts';
-import { FLIP_GATES, LOW_ESTIMATE, NEW_POSTS_FALLBACK_SHARE, UNDERCUT } from '../rules/flips.ts';
+import { FLIP_GATES, LOW_ESTIMATE, SELL_CHANCE, UNDERCUT } from '../rules/flips.ts';
+import { poissonLowerBound, poissonTail, poissonUpper } from './poisson.ts';
 import { money } from '../format/money.ts';
 import type { FlipDemand, FlipInputs } from './inputs.ts';
 import type { HouseRef, SellQuote } from './types.ts';
@@ -13,20 +14,31 @@ import type { HouseRef, SellQuote } from './types.ts';
  * sell overnight come from a queue (capacity below).
  */
 
-/** The cautious units sold a day: sale counting's lowPerDay, else a low estimate from the sales actually seen. */
+/**
+ * The cautious units sold a day: sale counting's lowPerDay, else worked out here from sale EVENTS, never units. One
+ * buyer taking a stack of 20 is one event, so the low estimate is the one sided 95 percent Poisson lower bound on the
+ * events seen, times the mean units per event, over the hours watched (at least 6). Null when no event count exists:
+ * the low estimate is never projected from units alone (round 1 finding H1).
+ */
 export function lowPerDay(d: FlipDemand | undefined): { value: number | null; derived: boolean } {
   if (!d) return { value: null, derived: false };
   if (d.lowPerDay != null && Number.isFinite(d.lowPerDay)) return { value: Math.max(0, d.lowPerDay), derived: false };
-  const hours = Math.max(d.hours, LOW_ESTIMATE.minHours);
-  const seen = (d.unitsPerDay * hours) / 24;
-  const low = Math.max(0, seen - LOW_ESTIMATE.z * Math.sqrt(seen));
-  return { value: (low / hours) * 24, derived: true };
+  if (d.saleEvents == null || !Number.isFinite(d.saleEvents)) return { value: null, derived: true };
+  const hours = Math.max(hoursWatched(d), LOW_ESTIMATE.minHours);
+  const upe = d.unitsPerEvent != null && d.unitsPerEvent > 0 ? d.unitsPerEvent : 1;
+  return { value: ((poissonLowerBound(d.saleEvents, LOW_ESTIMATE.confidence) * upe) / hours) * 24, derived: true };
 }
 
-/** New units other sellers post under Chip a day: sale counting's newPerDay, else a cautious share of middle sales. */
-export function newPerDay(d: FlipDemand | undefined): { value: number; derived: boolean } {
-  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) return { value: Math.max(0, d.newPerDay), derived: false };
-  return { value: (d?.unitsPerDay ?? 0) * NEW_POSTS_FALLBACK_SHARE, derived: true };
+/** Hours of differenced publishes behind an item's sales numbers. */
+export const hoursWatched = (d: FlipDemand | undefined): number => d?.hoursWatched ?? d?.hours ?? 0;
+
+/**
+ * New units other sellers post near or under the floor a day, as measured (sale counting's newPerDay, else the stored
+ * hourly counts, src/flips/inputs.ts enrichDemand). Never guessed: unmeasured reads 0 and the card says so.
+ */
+export function newPerDay(d: FlipDemand | undefined): { value: number; measured: boolean } {
+  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) return { value: Math.max(0, d.newPerDay), measured: true };
+  return { value: 0, measured: false };
 }
 
 /** One typical undercut in copper, from the gaps between the cheapest distinct price levels. */
@@ -48,14 +60,46 @@ export function typicalUndercut(ladder: Array<Pick<Listing, 'unitPrice'>>, claim
 }
 
 /**
- * Units Chip can expect to sell within the horizon at his post price: the low estimate of sales in that time, minus
- * units listed at or under his price, minus new units others post under him overnight, minus units his own higher
- * ranked flips already posted (shared pass). Never negative. A vendor buys without limit.
+ * The overnight queue (round 1 finding H4). Sale events over the night are Poisson, with a mean from the middle sales
+ * estimate less the new units others post ahead of Chip overnight (never under 0), and each event takes the mean units
+ * per event. Whoever is listed at or under Chip's price is served first, so the unit at queue position p (counting
+ * every unit ahead of it) sells when the night brings at least ceil(p / units per event) events.
+ * A vendor buys everything: every position sells.
+ */
+export interface Queue {
+  /** chance the unit at queue position `pos` sells overnight; position 1 is the first unit with nothing ahead */
+  at(pos: number): number;
+  /** past this position the chance is under SELL_CHANCE.negligible; Infinity for a vendor */
+  lastPos: number;
+  /** mean sale events overnight, and the units each takes */
+  meanEvents: number;
+  unitsPerEvent: number;
+}
+
+export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
+  if (q.houseId == null) return { at: () => 1, lastPos: Infinity, meanEvents: Infinity, unitsPerEvent: 1 };
+  const upe = q.unitsPerEvent != null && q.unitsPerEvent > 0 ? q.unitsPerEvent : 1;
+  const midUnits = ((q.salesPerDayMid ?? 0) * horizonHours) / 24;
+  const mu = Math.max(0, midUnits - q.newPerHour * horizonHours) / upe;
+  const maxJ = poissonUpper(mu, SELL_CHANCE.negligible);
+  const tail = poissonTail(mu, maxJ);
+  const lastPos = maxJ > 1 ? Math.floor(upe * (maxJ - 1) + 1e-9) : 0;
+  return {
+    at: (pos: number) => { if (pos <= 0) return 1; const j = Math.ceil(pos / upe - 1e-9); return j < tail.length ? tail[j]! : 0; },
+    lastPos, meanEvents: mu, unitsPerEvent: upe,
+  };
+}
+
+/**
+ * Units Chip can expect to sell overnight if he posted without limit: the sum of the chances past the units ahead
+ * (listed at or under his price, plus `used` units his higher ranked flips already posted). A vendor buys without limit.
  */
 export function capacity(q: SellQuote, horizonHours: number, used = 0): number {
   if (q.houseId == null) return Infinity;
-  if (q.salesPerDayLow == null) return 0;
-  return Math.max(0, (q.salesPerDayLow * horizonHours) / 24 - q.ahead - q.newPerHour * horizonHours - used);
+  const queue = overnightQueue(q, horizonHours);
+  let sum = 0;
+  for (let p = q.ahead + used + 1; p <= queue.lastPos; p++) sum += queue.at(p);
+  return sum;
 }
 
 export class SellBook {
@@ -98,6 +142,7 @@ export class SellBook {
     let ahead = 0;
     for (const l of ls) { if (l.unitPrice! > post) break; ahead += l.quantity; }
     const low = lowPerDay(d), fresh = newPerDay(d);
+    const horizon = this.inputs.settings.horizonHours;
     const gates: string[] = [];
     // The same "sold near" rule judgeSell uses: at least one sale seen and a price it happened at.
     const recentOk = (d?.recentSales ?? 0) >= 3 && d?.recentSoldPrice != null;
@@ -114,11 +159,14 @@ export class SellBook {
     const basis: SellQuote['basis'] = judged.picture.used;
     return {
       houseId: h.id, claimPrice: claim, netEach: netPerUnit(h.faction, post), undercutPrice: post, listed: floor, basis, ahead,
-      salesPerDayLow: low.value, salesPerDayMid: d ? d.unitsPerDay : null, hoursWatched: d?.hours ?? 0, newPerHour: fresh.value / 24,
+      salesPerDayLow: low.value, salesPerDayMid: d ? d.unitsPerDay : null, hoursWatched: hoursWatched(d), newPerHour: fresh.value / 24,
       sweepHigh: sweep, low3d: d?.low3d ?? this.inputs.low3d.get(h.id)?.get(itemId) ?? null, cv: d?.floorCv ?? null,
       strength: judged.score, strengthParts: judged.parts, gates, rising,
       provenSales: judged.evidence.provenSales, undercut, upTo: rising ? Math.min(sweep!, floor) : null,
-      lowDerived: low.derived, newDerived: fresh.derived, newOvernight: (fresh.value / 24) * this.inputs.settings.horizonHours,
+      lowDerived: low.derived, newDerived: !fresh.measured, newOvernight: (fresh.value / 24) * horizon,
+      saleEvents: d?.saleEvents ?? null, unitsPerEvent: d?.unitsPerEvent ?? null,
+      lowCoverHours: this.inputs.low3dHours?.get(h.id)?.get(itemId) ?? hoursWatched(d),
+      floorChange1h: d?.floorChange1h ?? null, newLastHour: d?.newLastHour ?? null,
       note: rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
     };
   }

@@ -5,7 +5,7 @@ import type { Place } from '../datasets/places.ts';
 import { demandByItem, typicalFloors, type Typical } from '../analysis/history.ts';
 import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, OPENING, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
 import type { HouseRef } from './types.ts';
 
@@ -73,10 +73,14 @@ export interface FlipInputs {
   typical: Map<number, Map<number, Typical>>;
   /** lowest hourly floor over 3 days per house and item, the fallback when Demand.low3d is missing */
   low3d: Map<number, Map<number, number>>;
+  /** hours of floors behind low3d per house and item (first reading in the 72 hour window to now) */
+  low3dHours?: Map<number, Map<number, number>>;
   drivers: Map<number, Driver>;
   trainers: TrainerRow[];
   /** teaching items ("Recipe: Cerulean Dye", "Blueprint: Tanning Rack") by the normalized name they teach (recipeKey) */
   recipeItems: Map<string, number>;
+  /** teaching items by the craft spell they teach (wago ItemEffect trigger 6), when the game tables are on disk */
+  teachItems?: Map<number, number[]>;
   /** recent: keys seen within the last publish gap; openHours: distinct earlier hours open in the last 72, this hour not counted */
   history: { recent: Set<string>; openHours: Map<string, number> };
   settings: FlipSettings;
@@ -118,11 +122,12 @@ const num = (v: unknown): number | null => (v == null || v === '' || !Number.isF
 
 /**
  * Everything one flip run reads, gathered once. `listingsByHouse` is the collector's current listings per house
- * (both kinds merged, raw). Houses other than Chip's are ignored even when passed.
+ * (both kinds merged, raw). Houses other than Chip's are ignored even when passed. `missing` names listings the caller
+ * could not read (a raw file gone): each makes the run incomplete, never a silent partial list (round 1 finding L5).
  */
-export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>, now = Date.now()): FlipInputs {
+export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>, now = Date.now(), missing: string[] = []): FlipInputs {
   const { houses, notes } = chipHousesWithNotes(db);
-  const problems: string[] = [];
+  const problems: string[] = [...missing];
   const listings = new Map<number, Map<number, Listing[]>>();
   for (const h of houses) {
     const ls = listingsByHouse.get(h.id);
@@ -192,34 +197,40 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const demand = new Map<number, Map<number, FlipDemand>>();
   const typical = new Map<number, Map<number, Typical>>();
   const low3d = new Map<number, Map<number, number>>();
+  const low3dHours = new Map<number, Map<number, number>>();
   for (const h of houses) {
     demand.set(h.id, enrichDemand(db, h.id, now, demandByItem(db, h.id, { now }) as Map<number, FlipDemand>));
     typical.set(h.id, typicalFloors(db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours }));
-    low3d.set(h.id, new Map((db.prepare('SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id')
-      .all(h.id, now - 72 * 3600_000) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f])));
+    // The 3 day low and how many hours of floors stand behind it (round 1 finding H3: under 72, a 25 percent drop is assumed).
+    const lows = db.prepare('SELECT item_id, MIN(floor) f, MIN(published_at) first FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id')
+      .all(h.id, now - RISK.lowCoverHours * 3600_000, now) as Array<{ item_id: number; f: number; first: number }>;
+    low3d.set(h.id, new Map(lows.map(r => [r.item_id, r.f])));
+    low3dHours.set(h.id, new Map(lows.map(r => [r.item_id, (now - r.first) / 3600_000])));
   }
 
   const trainers = (db.prepare(`SELECT npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost FROM trainer_spells`).all() as Array<Record<string, unknown>>)
     .map(r => ({ npcId: Number(r.npc_id), npcName: String(r.npc_name ?? ''), faction: String(r.faction ?? ''), zone: (r.zone as string | null) ?? null, x: num(r.x), y: num(r.y), mapId: num(r.map_id),
       spellId: num(r.spell_id), name: String(r.name), skill: (r.skill as string | null) ?? null, skillRank: num(r.skill_rank), cost: num(r.cost) }));
+  // Teaching items by name, any prefix, lowest id first so the pick never depends on table order.
   const recipeItems = new Map<string, number>();
-  for (const it of items.values()) {
+  for (const it of [...items.values()].sort((a, b) => a.id - b.id)) {
     const m = TEACH_PREFIX.exec(it.name);
     if (m && !recipeItems.has(recipeKey(m[2]!))) recipeItems.set(recipeKey(m[2]!), it.id);
   }
 
   const recent = new Set((db.prepare('SELECT DISTINCT key FROM flip_history WHERE at >= ? AND at < ?').all(now - OPENING.newWindowHours * 3600_000, now) as Array<{ key: string }>).map(r => r.key));
-  // Distinct earlier clock hours only: two runs in one hour count once, and this hour is added by the run itself.
+  // Distinct earlier clock hours only, the 71 before this one: two runs in one hour count once, and this hour is added
+  // by the run itself, so "open N of the last 72 hours" never double counts and never passes 72 (round 1 finding L3).
   const thisHour = Math.floor(now / 3600_000);
-  const openHours = new Map((db.prepare('SELECT key, COUNT(DISTINCT CAST(at / 3600000 AS INTEGER)) n FROM flip_history WHERE at > ? AND at < ? AND CAST(at / 3600000 AS INTEGER) < ? GROUP BY key')
-    .all(now - OPENING.trendHours * 3600_000, now, thisHour) as Array<{ key: string; n: number }>).map(r => [r.key, r.n]));
+  const openHours = new Map((db.prepare('SELECT key, COUNT(DISTINCT CAST(at / 3600000 AS INTEGER)) n FROM flip_history WHERE CAST(at / 3600000 AS INTEGER) >= ? AND CAST(at / 3600000 AS INTEGER) < ? AND at < ? GROUP BY key')
+    .all(thisHour - (OPENING.trendHours - 1), thisHour, now) as Array<{ key: string; n: number }>).map(r => [r.key, r.n]));
 
   const setting = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value;
   const rate = num(setting(TIME_RATE_SETTING));
   const gold = num(setting(GOLD_SETTING));
   const session = num(setting(CRAFT_SESSION_SETTING));
   return {
-    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, drivers: demandDrivers(db), trainers, recipeItems,
+    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, drivers: demandDrivers(db), trainers, recipeItems,
     history: { recent, openHours },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
       craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT },

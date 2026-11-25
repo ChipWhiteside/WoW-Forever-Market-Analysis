@@ -46,7 +46,8 @@ export class Market {
   /** copper paid for spare units not used yet */
   waste = 0;
   readonly byProduct = new Map<number, FlipRecipe[]>();
-  private lbMemo = new Map<number, number>();
+  private lbMemo = new Map<number, { v: number; need: number }>();
+  private lbRoot = new Map<number, number>();
 
   constructor(readonly inputs: FlipInputs, private sourceRecipes: FlipRecipe[]) {
     for (const r of sourceRecipes) {
@@ -131,29 +132,48 @@ export class Market {
   /**
    * Static lower bound on one unit's cost (cheapest listing anywhere on Chip's houses, vendor, or the bound of a
    * craft). Only used to skip pricing a craft that cannot win; never a price shown to Chip.
+   *
+   * The answer must never depend on which item was asked about first (round 1 finding M2). A value worked out under a
+   * depth cut or a recipe cycle depends on the path that reached it, so it is never reused elsewhere. `lbMemo` keeps
+   * only exact values (no cut anywhere below) with the recipe depth they needed, and a hit is used only where that
+   * depth still fits under MAX_CRAFT_DEPTH, so a hit always equals what working it out again would give. An item's own
+   * top level value (asked with nothing above it) goes in `lbRoot`, read only by top level questions.
    */
   lowerBound(itemId: number, stack: Set<number> = new Set(), depth = 0): number {
-    const memo = this.lbMemo.get(itemId);
-    if (memo != null) return memo;
-    let best = Infinity, cut = false;
+    return this.lb(itemId, stack, depth).v;
+  }
+  private lb(itemId: number, stack: Set<number>, depth: number): { v: number; cut: boolean; need: number } {
+    const exact = this.lbMemo.get(itemId);
+    if (exact && depth + exact.need <= MAX_CRAFT_DEPTH) return { v: exact.v, cut: false, need: exact.need };
+    const top = depth === 0 && stack.size === 0;
+    if (top) { const r = this.lbRoot.get(itemId); if (r != null) return { v: r, cut: true, need: 0 }; }
+    let best = Infinity, cut = false, need = 0;
     for (const h of this.inputs.houses) { const l = this.ladder(h.id, itemId)[0]; if (l && l.unitPrice! < best) best = l.unitPrice!; }
     for (const v of this.inputs.vendors.get(itemId) ?? []) if (v.unitPrice < best) best = v.unitPrice;
-    if (depth < MAX_CRAFT_DEPTH && !stack.has(itemId)) {
+    const recipes = this.byProduct.get(itemId) ?? [];
+    if (recipes.length && (depth >= MAX_CRAFT_DEPTH || stack.has(itemId))) cut = true;
+    else if (recipes.length) {
+      need = 1;
       stack.add(itemId);
-      for (const r of this.byProduct.get(itemId) ?? []) {
+      for (const r of recipes) {
         let sum = 0;
         for (const g of r.reagents) {
           if (stack.has(g.itemId)) { cut = true; sum = Infinity; break; }
-          sum += g.quantity * this.lowerBound(g.itemId, stack, depth + 1);
+          const sub = this.lb(g.itemId, stack, depth + 1);
+          if (sub.cut) cut = true;
+          need = Math.max(need, sub.need + 1);
+          sum += g.quantity * sub.v;
+          // Stops a recipe that already cannot beat the best: the rest of its reagents cannot change the answer.
           if (sum >= best * this.yieldOf(r)) break;
         }
         const unit = sum / this.yieldOf(r);
         if (unit < best) best = unit;
       }
       stack.delete(itemId);
-    } else cut = true;
-    if (!cut || depth === 0) this.lbMemo.set(itemId, best);
-    return best;
+    }
+    if (!cut) this.lbMemo.set(itemId, { v: best, need });
+    else if (top) this.lbRoot.set(itemId, best);
+    return { v: best, cut, need };
   }
   lowerBoundCraft(r: FlipRecipe): number {
     let sum = 0;

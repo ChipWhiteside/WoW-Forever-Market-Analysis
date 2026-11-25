@@ -144,7 +144,11 @@ export function generate(inputs: FlipInputs, m: Market, book: SellBook): Generat
       const base = book.quote(h, itemId, rest.length ? rest : ls)!;
       const claim = Math.min(t.typicalFloor, base.claimPrice);
       const post = Math.max(1, claim - (base.undercut ?? 1));
-      const q: SellQuote = { ...base, claimPrice: claim, undercutPrice: post, netEach: netPerUnit(h.faction, post), ahead: rest.filter(l => l.unitPrice! <= post).reduce((a, l) => a + l.quantity, 0),
+      // Every unit at or under Chip's post price is ahead of him, the cheap ones too: those he buys leave the queue,
+      // those he does not buy stay in front of his own (round 1 finding M3). ownAhead says how many he may buy.
+      const atOrUnder = ls.filter(l => l.unitPrice! <= post);
+      const q: SellQuote = { ...base, claimPrice: claim, undercutPrice: post, netEach: netPerUnit(h.faction, post), ahead: atOrUnder.reduce((a, l) => a + l.quantity, 0),
+        ownAhead: atOrUnder.filter(l => l.unitPrice! <= line).reduce((a, l) => a + l.quantity, 0),
         note: `relist near the usual ${money(t.typicalFloor)}; the cheap ones sit ${Math.round((1 - ls[0]!.unitPrice! / t.typicalFloor) * 100)}% under it` };
       const mode: TakeMode = { houses: [h.id], vendor: false, craft: false };
       offer({ key: flipKey('cheap_listing', h.id, itemId), family: 'cheap_listing', itemId, name: name(itemId), sellHouse: h, quote: q, buyHouseIds: [h.id],
