@@ -229,6 +229,10 @@ const MIGRATIONS: string[] = [
   ALTER TABLE recipes ADD COLUMN teach_skill INTEGER;       -- ItemSparse.RequiredSkillRank of that item
   ALTER TABLE recipes ADD COLUMN learn_source TEXT;         -- trainer_alliance | trainer_horde_only | item | auto | yellow
   `,
+  // 13. Sales counted as events (listings bought), so the cautious estimate never mistakes one big stack for many buyers
+  `
+  ALTER TABLE item_stats ADD COLUMN sold_events INTEGER;
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {
