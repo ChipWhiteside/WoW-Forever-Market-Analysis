@@ -31,7 +31,26 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   /** average sold price over the last 24 hours only, so a market that moved is read at today's level */
   recentSoldPrice?: number | null; recentSales?: number;
   /** hourly floor's standard deviation over its mean, 3 days */
-  floorCv?: number | null }
+  floorCv?: number | null;
+  /** cautious units sold a day: the 95 percent one sided lower bound of the sale event count, times units per event,
+   * over hours watched, so few sales give a low number. null under 6 hours watched (never projected). */
+  lowPerDay?: number | null;
+  /** new units other sellers posted at or under 1.1 times the floor, per day (all new units for older rows). Reposts
+   * count: a seller who pulls a stack and posts it again adds it here and to pulledPerDay. */
+  newPerDay?: number;
+  /** units within 1.1 times the floor that left without being bought (cancelled, expired, pulled to post again), per
+   * day. newPerDay minus this is the net growth of the queue near the floor. */
+  pulledPerDay?: number;
+  /** highest unit price judged bought at the latest publish (the last hour), null when nothing was bought */
+  sweepHigh?: number | null;
+  /** lowest hourly floor in the last 3 days */
+  low3d?: number | null;
+  /** units judged sold in the window, the sale events behind them (listings bought), and units per event */
+  soldUnits?: number;
+  saleEvents?: number;
+  unitsPerEvent?: number | null;
+  /** hours of differenced publishes behind these numbers (the same as `hours`) */
+  hoursWatched?: number }
 
 /** Why people buy an item: quests that require it and recipes that use it. */
 export interface Driver { quests: number; questTitle: string | null; questAmount: number | null; questLevel: number | null; recipes: number; recipeNames: string[]; professions: string[] }
