@@ -16,6 +16,44 @@ const hasSoldEvents = (db: DB) =>
 export const LOW_CONFIDENCE = 0.95;
 /** Under this many hours watched, the low estimate is not projected to a day at all. */
 export const MIN_HOURS_LOW = 6;
+/** Hourly publishes are not exactly an hour apart (6 of them can sum to 5.99 hours), so the gate counts differenced
+ * publishes of the item's kind rather than summed hours. */
+export const MIN_PUBLISHES_LOW = 6;
+
+/**
+ * Share of listings sellers pull each hour where no buyer can reach, from the real snapshots (B38). A pull of the
+ * listing at the front reads as a sale, and nothing in a snapshot tells it apart (P15), so the cautious estimate
+ * takes off the pulls expected at this rate. Thin commodity markets are 5 listings or fewer.
+ */
+export const PULL_RATE = { deep: 0.022, thin: 0.026, equipment: 0.035 } as const;
+/** Equipment copies within this many times the floor read as sold when pulled (the counter's band, EQUIP_SOLD_BAND). */
+const PULL_BAND = 1.25;
+
+/**
+ * Pulls expected to read as sales in one hourly row, in events and units. Commodities: only the stack at the front can
+ * be pulled and still read as bought (anything behind a stack still up reads as pulled), so the units at the floor
+ * times the pull rate. Equipment: every copy within 1.25 times the floor, times the pull rate; each is one event and
+ * one unit. Same arithmetic as the SQL in demandByItem, kept here for the simulator.
+ */
+export function rowPulls(kind: 'commodities' | 'auctions', s: { listings: number; unitsAtFloor: number; floor: number | null; ladder: Array<[number, number]> }): { events: number; units: number } {
+  if (kind === 'commodities') {
+    const rate = s.listings <= 5 ? PULL_RATE.thin : PULL_RATE.deep;
+    return { events: s.listings > 0 ? rate : 0, units: rate * s.unitsAtFloor };
+  }
+  if (s.floor == null) return { events: 0, units: 0 };
+  let band = 0;
+  for (const [p, u] of s.ladder) if (p <= s.floor * PULL_BAND) band += u;
+  return { events: PULL_RATE.equipment * band, units: PULL_RATE.equipment * band };
+}
+
+/**
+ * The cautious units sold a day: the 95 percent lower bound of the sale events seen, less the pulls expected to have
+ * read as sales, times units per event, over hours watched. Never below 0.
+ */
+export function lowEstimate(events: number, units: number, pullEvents: number, hours: number): number {
+  if (events <= 0 || hours <= 0) return 0;
+  return (Math.max(0, poissonLower(events) - pullEvents) * (units / events) / hours) * 24;
+}
 
 /**
  * One sided lower confidence bound of a Poisson mean from `k` observed events: the mean m for which seeing k or
@@ -67,9 +105,10 @@ function normalQuantile(p: number): number {
  *
  * Two estimates. `unitsPerDay` is the middle one: units sold over hours watched, never projected from under
  * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses:
- * the 95 percent one sided lower bound of the number of sale EVENTS (listings bought, not units: three stacks of
- * 221, 48 and 15 are 3 sales, not 284), times the average units per event, over hours watched. Under 6 hours
- * watched it is null, never projected.
+ * the 95 percent one sided lower bound of the number of sale EVENTS (buyers, not units: a sweep of 116 stacks is
+ * one sale), less the pulls of the front listing expected to have read as sales (P15), times the average units per
+ * event, over hours watched. Under 6 differenced publishes it is null, never projected. `netPerDay` is the middle
+ * one less the units those pulls would add.
  */
 export function demandByItem(db: DB, houseId: number, opts: { hours?: number; now?: number } = {}): Map<number, Demand> {
   const now = opts.now ?? Date.now();
@@ -80,20 +119,25 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   // that were differenced. Gaps over 1.6 hours are never differenced, so outages cannot inflate demand.
   // Only rows counted with a sold price (they carry sold_value). Rows from before it counted expiries and
   // relists as sales, so they are left out rather than mixed in.
-  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND diff_hours IS NOT NULL
+  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h, COUNT(*) n FROM snapshots WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND diff_hours IS NOT NULL
      AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND sold_value IS NOT NULL) GROUP BY kind`)
-    .all(houseId, since, now, houseId, since, now) as Array<{ kind: string; h: number }>;
+    .all(houseId, since, now, houseId, since, now) as Array<{ kind: string; h: number; n: number }>;
   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
+  const coveredBy = new Map(snaps.map(s => [s.kind, { h: s.h ?? 0, n: s.n }]));
   const out = new Map<number, Demand>();
   if (covered <= 0) return out;
   const events = hasSoldEvents(db) ? `COALESCE(sold_events, ${FALLBACK_EVENTS})` : FALLBACK_EVENTS;
   // New units other sellers posted near the floor; rows written before that was measured fall back to all new units.
   // Units near the floor that left without being bought (cancelled, expired, pulled to post again).
   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
-     SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
+     SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(s.kind) kind,
+     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * (listings > 0)
+       ELSE ${PULL_RATE.equipment} * COALESCE((SELECT SUM(json_extract(j.value, '$[1]')) FROM json_each(ladder) j WHERE json_extract(j.value, '$[0]') <= floor * ${PULL_BAND}), 0) END) pull_events,
+     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * units_at_floor
+       ELSE ${PULL_RATE.equipment} * COALESCE((SELECT SUM(json_extract(j.value, '$[1]')) FROM json_each(ladder) j WHERE json_extract(j.value, '$[0]') <= floor * ${PULL_BAND}), 0) END) pull_units
      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
      WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
+    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string; pull_events: number; pull_units: number }>;
   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
      FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
     .map(r => [r.item_id, r]));
@@ -107,17 +151,20 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   const sweep = new Map((db.prepare(`SELECT item_id, sweep_high FROM item_stats WHERE sweep_high IS NOT NULL AND snapshot_id IN
      (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? AND published_at <= ? GROUP BY kind)`)
     .all(houseId, now - 2 * 3600_000, now) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
-  const hoursWatched = Math.round(covered * 10) / 10;
   for (const r of rows) {
     const rc = recent.get(r.item_id);
     const ev = r.events ?? 0;
     const unitsPerEvent = ev > 0 ? r.sold / ev : null;
+    // Hours watched of this item's kind (commodities and equipment publish separately).
+    const kc = coveredBy.get(r.kind) ?? { h: covered, n: 0 };
+    const h = kc.h > 0 ? kc.h : covered;
     // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
-    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(covered, 6)) * 24, hours: hoursWatched, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
+    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(h, 6)) * 24, hours: Math.round(h * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,
-      lowPerDay: covered < MIN_HOURS_LOW ? null : ((poissonLower(ev) * (unitsPerEvent ?? 0)) / covered) * 24,
-      newPerDay: ((r.fresh ?? 0) / covered) * 24, pulledPerDay: ((r.pulled ?? 0) / covered) * 24,
-      sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched });
+      lowPerDay: kc.n < MIN_PUBLISHES_LOW ? null : lowEstimate(ev, r.sold, r.pull_events ?? 0, h),
+      newPerDay: ((r.fresh ?? 0) / h) * 24, pulledPerDay: ((r.pulled ?? 0) / h) * 24,
+      pullEvents: r.pull_events ?? 0, netPerDay: (Math.max(0, r.sold - (r.pull_units ?? 0)) / Math.max(h, 6)) * 24,
+      sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched: Math.round(h * 10) / 10 });
   }
   return out;
 }

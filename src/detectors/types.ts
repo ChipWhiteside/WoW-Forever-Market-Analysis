@@ -45,7 +45,11 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   sweepHigh?: number | null;
   /** lowest hourly floor in the last 3 days */
   low3d?: number | null;
-  /** units judged sold in the window, the sale events behind them (listings bought), and units per event */
+  /** sale events expected to be pulls of the front listing read as sales (P15), already taken off lowPerDay */
+  pullEvents?: number;
+  /** unitsPerDay less the units those expected pulls add: the middle estimate with the known leak taken out */
+  netPerDay?: number;
+  /** units judged sold in the window, the sale events behind them (buyers: a run of stacks is one), and units per event */
   soldUnits?: number;
   saleEvents?: number;
   unitsPerEvent?: number | null;

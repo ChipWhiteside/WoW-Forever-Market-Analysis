@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { rawPath, writeRaw } from '../../src/engine/rawstore.ts';
 import { rebuildHistory, rebuildIfRulesChanged } from '../../src/engine/rebuild.ts';
-import { demandByItem, poissonLower } from '../../src/analysis/history.ts';
+import { demandByItem, poissonLower, PULL_RATE } from '../../src/analysis/history.ts';
 import { loadSeen } from '../../src/engine/collector.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
 import { tempDir } from '../helpers.ts';
@@ -103,14 +103,18 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.unitsPerEvent).toBeCloseTo(284 / 3, 6);
     expect(d.hoursWatched).toBe(6);
     expect(d.unitsPerDay).toBeCloseTo(284 / 6 * 24, 6);
-    // 95% lower bound of 3 events is 0.818: 0.818 * 94.7 / 6 * 24 = 310 a day, against 1,136 in the middle.
-    expect(d.lowPerDay).toBeCloseTo(poissonLower(3) * (284 / 3) / 6 * 24, 6);
+    // 95% lower bound of 3 events is 0.818, less the pulls of the front stack expected to read as sales: 6 hours of a
+    // deep market (more than 5 listings) at 2.2% an hour is 0.132. (0.818 - 0.132) * 94.7 / 6 * 24 = 260 a day,
+    // against 1,136 in the middle.
+    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep, 6);
+    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 6 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
     expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
     const sweep = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12211)!;
     expect(sweep.soldUnits).toBe(284);
     expect(sweep.saleEvents).toBe(1);
-    expect(sweep.lowPerDay).toBeCloseTo(poissonLower(1) * 284 / 6 * 24, 6); // one buyer proves far less than three
-    expect(sweep.lowPerDay! / d.lowPerDay!).toBeLessThan(0.2);
+    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.132), so the
+    // cautious estimate is 0. One sale could have been a seller pulling the front stack.
+    expect(sweep.lowPerDay).toBe(0);
   });
 
   it('runs once per version of the sale rules', () => {
