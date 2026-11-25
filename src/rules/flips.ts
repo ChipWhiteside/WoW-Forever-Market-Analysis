@@ -98,6 +98,18 @@ export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fe
 export const SALES_SHORTFALL = 0.5;
 
 /**
+ * What an unsold unit is worth the next morning (coordinator decision, round 2). A product with proven demand (the low
+ * estimate sells at least 1 a day) is not lost when it does not sell overnight: Chip relists it. Its carryover value is
+ * the net at the price of the case being priced (the expected post price for expected profit, the bad case price for
+ * the bad case) minus `relistDeposits` more deposits for posting it again, never below what a vendor pays. Without
+ * proven demand an unsold unit is worth only the vendor price (0 when no vendor buys it). In both cases the deposit
+ * paid tonight is lost on top. Carryover covers at most `days` days of the low estimate (units past what one more day
+ * can sell are worth the vendor price), so a thin market never turns every unsold unit into a near sale and the best
+ * amount stays tied to demand. A first rule, unverified until the backtest follows unsold units into the next day.
+ */
+export const CARRYOVER = { minLowPerDay: 1, relistDeposits: 1, days: 1 };
+
+/**
  * Fresh data: a run whose newest snapshot of one of Chip's houses is older than 2 hours is incomplete, never a
  * list built from stale prices (round 1 finding M1). Blizzard publishes about hourly.
  */

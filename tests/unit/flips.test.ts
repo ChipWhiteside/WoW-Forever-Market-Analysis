@@ -34,30 +34,34 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(top.sellQuote.netEach).toBe(7077);
     // Queue (round 1 finding H4): 60 a day middle, 12 a day new posts under him, 0 ahead, one unit per sale event.
     //   Sale events overnight are Poisson with mean (60 - 12) x 10/24 = 20; unit k sells when at least k events come.
-    //   Each unit adds P_k x 7077 + (1 - P_k) x (75 salvage - 360 deposit) against its own cost; the 17th adds
-    //   0.779 x 7077 - 0.221 x 285 - 5800 < 0, so the best is 16 crafts (an independent recompute agrees, below).
-    expect(top.best.units).toBe(16);
-    expect(top.best.expectedSold).toBe(15.6);
-    // Cost of 16 crafts walking the lichen ladder (2 @25s, 4 @27s, 10 @28s, 20 @29s), 1 vial each at 4c in bundles of 5:
-    //   5004 + 2 x 5404 + 5 x 5604 + 8 x 5804 = 90,200, plus 4 bundles of vials (20 vials, 4 spare) = 80: 90,280
-    expect(top.best.cost).toBe(90280);
-    // Per item: 7077 - 90280 / 16 = 1434.5, rounded 1435, about 14s 35c.
-    expect(top.perItem).toBe(1435);
-    // Expected profit: 15.593 x 7077 + 0.407 x (75 - 360) - 90,280 = 19,956 (1g 99s 56c).
-    expect(top.best.expectedProfit).toBe(19956);
-    expect(top.best.expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16 })));
-    // Bad case (round 1 finding H3): the dye at its 3 day low of 70s (72 hours watched) nets 6650, and only half of the
-    //   15.593 expected sell: 7.797 x 6650 + 8.203 x (75 - 360) = 49,509 back on 90,280 spent, a 40,771 loss.
-    //   That is more than the 19,956 it is expected to make: high risk. Gold at stake counts 16 deposits of 360c.
-    expect(top.best.risk.badCaseLoss).toBe(40771);
-    expect(top.best.risk.level).toBe('high');
-    expect(top.best.risk.atStake).toBe(90280 + 16 * 360);
+    // Carryover (round 3): the dye sells 60 a day at the low estimate, so a unit unsold tonight is relisted tomorrow and
+    //   is worth its net 7077 less one more 360c deposit, 6717, for up to 60 units; tonight's 360c deposit is lost on top.
+    //   Every craft up to the last lichen listed (the 38th, about 60s in) costs less than 6717 - 360 = 6357, so the best
+    //   is 38 crafts, all 76 lichen; 20.0 are expected to sell tonight and 18.0 carry over.
+    expect(top.best.units).toBe(38);
+    expect(top.best.expectedSold).toBe(20);
+    // Cost: all lichen 2 x 2500 + 4 x 2700 + 10 x 2800 + 20 x 2900 + 40 x 3000 = 221,800, plus 8 bundles of vials 160
+    expect(top.best.cost).toBe(221960);
+    // Per item: 7077 - 221960 / 38 = 1235.9, about 12s 36c.
+    expect(top.perItem).toBe(1236);
+    // Expected profit: 19.998 x 7077 + 18.002 x (6717 - 360) - 221,960 = 34,005 (3g 40s 5c).
+    const carry = { each: 7077 - 360, cap: 60 };
+    expect(top.best.expectedProfit).toBe(34005);
+    // (the engine drops chances under 0.1%, positions 36 to 38 tonight, so the two agree within a copper)
+    expect(Math.abs(top.best.expectedProfit - refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 221960, n: 38, carry }))).toBeLessThanOrEqual(1);
+    // Bad case (round 1 H3 with round 3 carryover): the dye at its 3 day low of 70s nets 6650 and only half of the 20.0
+    //   expected sell; the other 28 are relisted at 6650 - 360 = 6290 and lose tonight's 360: 10.0 x 6650 + 28.0 x 5930
+    //   = 232,489 back on 221,960 spent, no loss. Low risk. Gold at stake counts 38 deposits of 360c.
+    expect(top.best.risk.badCaseLoss).toBe(0);
+    expect(top.best.risk.level).toBe('low');
+    expect(top.best.risk.atStake).toBe(221960 + 38 * 360);
     // New listings under him overnight: 12 a day x 10/24 = 5, stated on the card.
     expect(top.sellQuote.newOvernight).toBeCloseTo(5, 6);
     expect(top.notes).toContain('about 5 new listings usually appear under you overnight');
-    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 32 });
-    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 20, unitPrice: 4 });
-    // 32 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
+    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 76 });
+    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 40, unitPrice: 4 });
+    expect(top.best.risk.drivers).toContain('thin supply of Frilled Lichen');
+    // all 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
     expect(top.repeatable).toBe(false);
     // The weaker flips are on the same list, below it.
     const spices = r.flips.find(f => f.family === 'vendor_auction' && f.itemId === SPICES)!;
@@ -67,11 +71,12 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(spices.rank).toBeGreaterThan(1);
     expect(bandage.rank).toBeGreaterThan(1);
     // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Events overnight: (20 - 4) x 10/24 = 6.67.
-    //   The 6th unit sells with chance P(X >= 6) = 0.652: 0.652 x 280 + 0.348 x (40 - 192) - 160 = -30, so the best is 5:
-    //   4.644 expected sold, 4.644 x 280 + 0.356 x (40 - 192) - 800 = 446.
+    //   An unsold one carries over at 280 - 192 = 88 (more than its 40c vendor price) and loses tonight's 192.
+    //   The 6th unit sells with chance P(X >= 6) = 0.652: 0.652 x 280 + 0.348 x (88 - 192) - 160 = -13.6, so the best
+    //   is 5: 4.644 expected sold, 4.644 x 280 + 0.356 x (88 - 192) - 800 = 463.
     expect(spices.best.units).toBe(5);
-    expect(spices.best.expectedProfit).toBe(446);
-    expect(spices.best.expectedProfit).toBe(Math.round(refExpected({ mu: (20 - 4) * 10 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, cost: 800, n: 5 })));
+    expect(spices.best.expectedProfit).toBe(463);
+    expect(spices.best.expectedProfit).toBe(Math.round(refExpected({ mu: (20 - 4) * 10 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, cost: 800, n: 5, carry: { each: 88, cap: 20 } })));
   });
 
   it('the first craft carries the whole 20c bundle of vials: 5000 + 20 = 5020', () => {
@@ -104,6 +109,11 @@ describe('Bright Baubles on Blackwater (yardstick 2)', () => {
     //   14th (0.865) does not. 13 units, 12.825 expected to sell: 12.825 x 422 - 0.175 x 1423 - 3250 = 1,913.
     expect(f.best.units).toBe(13);
     expect(f.best.expectedProfit).toBe(1913);
+    // Carryover (round 3) does not help: 422 net less a 1,485 relist deposit is under the 62c vendor price. Bad case:
+    //   under 72 hours of floors the 25% drop (375, net 318) is lower than the 480 low; half of 12.825 sell:
+    //   3250 - (6.412 x 318 + 6.588 x (62 - 1485)) = 10,585 lost, more than the 1,913 expected: high risk.
+    expect(f.best.risk.badCaseLoss).toBe(10585);
+    expect(f.best.risk.level).toBe('high');
     expect(f.best.expectedProfit).toBe(Math.round(refExpected({ mu: (48 - 4) * 10 / 24, ahead: 0, net: 422, salvage: 62, deposit: 1485, cost: 3250, n: 13 })));
     expect(f.notes.join(' ')).toMatch(/Blackwater deposit is not verified/);
     expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 13 });

@@ -243,21 +243,23 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
 }
 
 /**
- * Fill in what sale counting does not give yet, from the stored hourly counts (never guessed): sale events and units
- * per event (vanished listings), new units posted near the floor (new_near_floor, else every new unit), and what
- * happened in the last hour (floor change, new and sold units) for the price war check. Fields already present are kept.
+ * Fill in what sale counting does not give, from the stored hourly counts (never guessed): sale events and units per
+ * event (vanished listings), new units posted near the floor (new_near_floor, else every new unit), units pulled near
+ * the floor, and what happened in the last hour (floor change, new and sold units) for the price war check.
+ * Sale counting's own fields (src/analysis/history.ts demandByItem) are authoritative: a field already present is
+ * never overwritten; the derivation here is only the fallback for a Demand that lacks it.
  */
 export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<number, FlipDemand>): Map<number, FlipDemand> {
   const since = now - 72 * 3600_000;
   // Per publish: units judged sold (the same rule as demandByItem), and the sale events behind them, which are the
   // vanished listings scaled by the share of vanished units judged sold (gone listings minus the expiring and far from
   // the floor share). New units near the floor where measured, else every new unit (older rows).
-  const SOLD = 'MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))';
+  const SOLD = 'COALESCE(sold_units, MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0)))';
   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold,
       SUM(CASE WHEN COALESCE(gone_units, 0) > 0 THEN COALESCE(gone_listings, 0) * 1.0 * ${SOLD} / gone_units ELSE 0 END) events,
-      SUM(COALESCE(new_near_floor, new_units, 0)) fresh
+      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
     FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; events: number; fresh: number }>;
+    .all(houseId, since, now) as Array<{ item_id: number; sold: number; events: number; fresh: number; pulled: number }>;
   for (const r of rows) {
     const d = demand.get(r.item_id);
     if (!d) continue;
@@ -266,6 +268,7 @@ export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<n
     if (d.unitsPerEvent == null) d.unitsPerEvent = r.events > 0 ? Math.max(1, r.sold / r.events) : null;
     if (d.hoursWatched == null) d.hoursWatched = hours;
     if (d.newPerDay == null && hours > 0) d.newPerDay = (r.fresh / hours) * 24;
+    if (d.pulledPerDay == null && hours > 0) d.pulledPerDay = (r.pulled / hours) * 24;
   }
   // The last hour: the newest differenced publish of each kind, against the one before it.
   const last = db.prepare(`SELECT s.id, s.kind, s.published_at t FROM snapshots s WHERE s.house_id = ? AND s.published_at <= ? AND s.diff_hours IS NOT NULL

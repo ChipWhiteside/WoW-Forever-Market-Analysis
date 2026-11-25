@@ -1,5 +1,5 @@
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
+import { CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
 import { overnightQueue, type Queue } from './sellBook.ts';
@@ -10,9 +10,11 @@ import type { Family, FlipLeg, HouseRef, QuantityOption, Risk, SellQuote } from 
  * Expected profit if Chip acts now, at every quantity, from one walk of the cost book.
  *
  * For N units over the overnight horizon with no relisting:
- *   expected(N) = sum over k <= N of [P_k x net each + (1 - P_k) x (salvage - deposit lost)] - cost(N) - minutes(N) x time rate
- * where salvage is what a vendor pays for an unsold unit (0 when none does; never the reagents' value). The bad case
- * in the risk line uses the same salvage rule.
+ *   expected(N) = sold(N) x net each + worth of the N - sold(N) unsold units - (N - sold(N)) x deposit lost - cost(N) - minutes(N) x time rate
+ * where an unsold unit is worth its carryover when the product has proven demand (relisted next day: the net at the
+ * case's price less one more deposit, never under the vendor price), for as many units as one more day of the low
+ * estimate can take, and what a vendor pays for the rest (0 when none does; never the reagents' value). The bad case
+ * uses the same rule at the bad case price (unsoldWorth, CARRYOVER).
  * P_k is the chance unit k sells overnight: sale events are Poisson and unit k sells when enough of them arrive to
  * clear everything ahead of it and reach it (sellBook.overnightQueue, round 1 finding H4). P_k falls smoothly with k,
  * so big deposits pull the best amount below the queue's capacity. sold(N) = sum of P_k.
@@ -152,10 +154,12 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const sellItem = inputs.items.get(c.itemId);
   const depositEach = toVendor ? 0 : deposit(c.sellHouse!.faction, sellItem?.sellPrice, 1, LISTING_HOURS);
   const net = q.netEach;
-  // Auction sales: units whose chance of selling is negligible only lose, so walk to the larger of the small quantity
-  // and the last position with a real chance. Vendor sales: walk while units still cost under what the vendor pays.
+  // Auction sales: walk to the larger of the small quantity and the last position with a real chance tonight, plus
+  // what one more day can take when unsold units carry over (CARRYOVER); past that a unit is worth only the vendor
+  // price and loses its deposit. Vendor sales: walk while units still cost under what the vendor pays.
   const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
-  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful));
+  const carryUnits = !toVendor && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay ? Math.ceil((q.salesPerDayLow ?? 0) * CARRYOVER.days) : 0;
+  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + carryUnits));
   const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && unit >= net);
   // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
   const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
@@ -170,9 +174,10 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const nonStack = !isStackable(sellItem);
   const minutesAt = (n: number, s: Step) => s.buyMinutes + (toVendor ? EFFORT.vendorSellMin : EFFORT.postMin + (nonStack ? (n - 1) * EFFORT.postUnitMin : 0));
   const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
+  const worth = (unsoldUnits: number) => unsoldWorth(q, q.netEach, salvage, depositEach, unsoldUnits);
   const expectedAt = (n: number, cost: number, s: Step) => {
     const k = sold.soldAt(n);
-    return k * net - cost + (n - k) * (salvage - depositEach) - (minutesAt(n, s) / 60) * o.timeRate;
+    return k * net - cost + worth(n - k) - (n - k) * depositEach - (minutesAt(n, s) / 60) * o.timeRate;
   };
   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
@@ -207,7 +212,8 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
 /**
  * Risk at one quantity (round 1 finding H3). Bad case: the price falls to its 3 day low (a 25 percent drop until 72
  * hours of floors are watched; a lower low seen is used) AND only half of the units expected to sell actually sell.
- * Unsold units are salvaged at the vendor price and lose their deposit. Gold at stake counts every deposit.
+ * Unsold units are worth their carryover at the bad case price (proven demand) or the vendor price, and lose their
+ * deposit. Gold at stake counts every deposit.
  * High when the bad case loses more than the flip is expected to make, medium when it loses more than half of it.
  */
 function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk, salvage: number): Risk {
@@ -243,10 +249,27 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
   }
   // A vendor buys every unit at a fixed price: no shortfall and no price drop.
   const soldBad = q.houseId == null ? n : sold * SALES_SHORTFALL;
-  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + (n - soldBad) * (salvage - depositEach))));
-  const halfSalesProfit = Math.round(soldBad * q.netEach + (n - soldBad) * (salvage - depositEach) - cost);
+  const left = n - soldBad;
+  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + unsoldWorth(q, netBad, salvage, depositEach, left) - left * depositEach)));
+  const halfSalesProfit = Math.round(soldBad * q.netEach + unsoldWorth(q, q.netEach, salvage, depositEach, left) - left * depositEach - cost);
   const level: Risk['level'] = badCaseLoss > expected ? 'high' : badCaseLoss > expected / 2 ? 'medium' : 'low';
   return { atStake: Math.round(cost + n * depositEach), badCaseLoss, halfSalesProfit, deposits: Math.round(n * depositEach), daysToSell, level, drivers };
+}
+
+/**
+ * What the units left unsold at the end of the night are worth (CARRYOVER), before tonight's lost deposits, which the
+ * caller charges on top. With proven demand (the low estimate sells at least 1 a day) Chip relists them: each is worth
+ * the net at `netAtPrice` (the case's price after the cut) less the deposits to post it again, never under the vendor
+ * price, for as many units as one more day of the low estimate can take. The rest, and every unsold unit without
+ * proven demand, are worth the vendor price (0 when no vendor buys it). A vendor sale never has unsold units.
+ */
+export function unsoldWorth(q: SellQuote, netAtPrice: number, salvage: number, depositEach: number, unsold: number): number {
+  if (q.houseId == null || unsold <= 0) return 0;
+  const low = q.salesPerDayLow ?? 0;
+  if (low < CARRYOVER.minLowPerDay) return unsold * salvage;
+  const carried = Math.min(unsold, low * CARRYOVER.days);
+  const each = Math.max(salvage, netAtPrice - CARRYOVER.relistDeposits * depositEach);
+  return carried * each + (unsold - carried) * salvage;
 }
 
 /**

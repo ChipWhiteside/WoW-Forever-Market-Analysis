@@ -119,8 +119,16 @@ export function refTail(mu: number, j: number): number {
 }
 
 /** Expected profit of n units at queue positions ahead + 1 .. ahead + n, `upe` units per sale event (plan section 6). */
-export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number }): number {
+export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number;
+  /** carryover: up to `cap` unsold units are worth `each` (relisted next day), the rest the salvage price */
+  carry?: { each: number; cap: number } }): number {
   let sold = 0;
   for (let k = 1; k <= o.n; k++) sold += refTail(o.mu, Math.ceil((o.ahead + k) / (o.upe ?? 1)));
-  return sold * o.net + (o.n - sold) * (o.salvage - o.deposit) - o.cost;
+  return sold * o.net + refWorth(o.n - sold, o.salvage, o.carry) - (o.n - sold) * o.deposit - o.cost;
+}
+
+/** What `unsold` units are worth the next morning: `carry.cap` of them at `carry.each`, the rest at the salvage price. */
+export function refWorth(unsold: number, salvage: number, carry?: { each: number; cap: number }): number {
+  const carried = carry ? Math.min(unsold, carry.cap) : 0;
+  return carried * (carry?.each ?? 0) + (unsold - carried) * salvage;
 }

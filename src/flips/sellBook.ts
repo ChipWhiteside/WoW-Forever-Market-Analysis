@@ -33,11 +33,16 @@ export function lowPerDay(d: FlipDemand | undefined): { value: number | null; de
 export const hoursWatched = (d: FlipDemand | undefined): number => d?.hoursWatched ?? d?.hours ?? 0;
 
 /**
- * New units other sellers post near or under the floor a day, as measured (sale counting's newPerDay, else the stored
- * hourly counts, src/flips/inputs.ts enrichDemand). Never guessed: unmeasured reads 0 and the card says so.
+ * New units other sellers post near or under the floor a day that really compete with Chip, as measured (sale
+ * counting's newPerDay, else the stored hourly counts, src/flips/inputs.ts enrichDemand). A seller who pulls a stack
+ * and posts it again is not new competition, so units pulled near the floor (pulledPerDay) come off when known:
+ * competing new = max(0, newPerDay - pulledPerDay). Never guessed: unmeasured reads 0 and the card says so.
  */
 export function newPerDay(d: FlipDemand | undefined): { value: number; measured: boolean } {
-  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) return { value: Math.max(0, d.newPerDay), measured: true };
+  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) {
+    const pulled = d.pulledPerDay != null && Number.isFinite(d.pulledPerDay) ? d.pulledPerDay : 0;
+    return { value: Math.max(0, d.newPerDay - pulled), measured: true };
+  }
   return { value: 0, measured: false };
 }
 
