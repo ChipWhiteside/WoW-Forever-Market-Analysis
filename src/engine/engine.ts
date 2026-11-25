@@ -4,7 +4,7 @@ import type { BlizzardClient } from '../blizzard/client.ts';
 import { Collector, KINDS, type SnapshotEvent } from './collector.ts';
 import { syncHouses, trackedHouses } from './houses.ts';
 import { buildContext } from './context.ts';
-import { resolveItems, resolveIcons } from '../catalog/items.ts';
+import { resolveItems, resolveIcons, itemTradeable } from '../catalog/items.ts';
 import { vendorDump } from '../detectors/vendorDump.ts';
 import { vendorSupply } from '../detectors/vendorSupply.ts';
 import { crossHouse } from '../detectors/crossHouse.ts';
@@ -147,6 +147,8 @@ export class Engine {
     const a = await alertCycle(this.db, this.opts.webhookUrl, fresh, pinned, { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null });
     this.log(`detect: ${plays.length} plays (${life.created.length} new, ${life.gone.length} gone), alert ${a.sent ? `sent ${a.sent}` : a.skipped}`);
     // The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together.
+    // Who can trade what, from this hour's listings first, so the flip gate and the page agree.
+    try { itemTradeable(this.db, now); } catch (e) { this.log(`tradeable check failed: ${(e as Error).message}`); }
     hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
     return { plays, alerted: a.sent };
   }

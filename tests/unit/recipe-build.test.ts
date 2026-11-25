@@ -190,15 +190,16 @@ describe('conversions from item use spells', () => {
     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
     expect(r.report.conversions.bound).toBe(2);
   });
-  it('bound if EITHER source says so: the live API binds Lesser Magic Essence on pickup while ItemSparse says unbound (a server hotfix)', () => {
+  it('the one tradeable verdict decides: blocked when it says so even if ItemSparse is unbound, kept when it says tradeable even if ItemSparse binds', () => {
     expect(game.items.get(10938)?.bonding).toBe(0);
-    const r = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10938 ? 'ON_ACQUIRE' : null) });
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists, tradeable: id => (id === 10938 ? false : undefined) });
     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
-    expect(r.report.conversions).toMatchObject({ bound: 2, boundByApiOnly: 2 });
-    const q = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10939 ? 'QUEST' : 'ON_USE') });
-    expect(q.report.conversions.bound).toBe(2);
-    const free = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: () => 'ON_EQUIP' });
-    expect(free.report.conversions.kept.length).toBe(2);
+    expect(r.report.conversions.bound).toBe(2);
+    const items = new Map(game.items).set(10938, { ...game.items.get(10938)!, bonding: 1 });
+    const listed = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => true });
+    expect(listed.report.conversions.kept.length).toBe(2);
+    const noVerdict = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => undefined });
+    expect(noVerdict.report.conversions.bound).toBe(2);
   });
 });
 
