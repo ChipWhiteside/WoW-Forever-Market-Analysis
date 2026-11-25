@@ -58,9 +58,10 @@ export interface BuiltRecipe {
 /**
  * Where a recipe is learned. trainer_alliance: an Alliance or neutral trainer (EG Link). item: a plans, pattern or
  * recipe item. auto: SkillLineAbility AcquireMethod 1, learned on reaching the rank. trainer_horde_only: only Horde
- * trainers were recorded teaching it. yellow: none of these, so the yellow threshold is the best guess.
+ * trainers were recorded teaching it. yellow: none of these, so the yellow threshold is the best guess. conversion:
+ * an item use conversion, nothing to learn.
  */
-export type LearnSource = 'trainer_alliance' | 'trainer_horde_only' | 'item' | 'auto' | 'yellow';
+export type LearnSource = 'trainer_alliance' | 'trainer_horde_only' | 'item' | 'auto' | 'yellow' | 'conversion';
 
 export interface RecipeReport {
   build: string;
@@ -149,7 +150,7 @@ function sameReagents(a: Array<{ itemId: number; quantity: number }>, b: Array<{
 export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id: number; name: string }>; recipes: BlizzardRecipe[] },
   opts: RecipeBuildOpts): { recipes: BuiltRecipe[]; report: RecipeReport } {
   const report: RecipeReport = {
-    build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, none: 0, teachItem: 0 },
+    build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, conversion: 0, none: 0, teachItem: 0 },
     byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
     notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, boundByApiOnly: 0, unproven: [] },
   };
@@ -239,7 +240,8 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
   out.push(...buildConversions(game, opts.exists, report, opts.apiBinding));
   for (const r of out) {
     report.recipes++;
-    if (r.kind === 'profession') { report.learn[r.learnSource ?? 'none']++; if (r.teachItemId != null) report.learn.teachItem++; }
+    report.learn[r.learnSource ?? 'none']++;
+    if (r.teachItemId != null) report.learn.teachItem++;
     report.source[r.source]++;
     const p = (report.byProfession[r.profession] ??= { total: 0, live: 0 });
     p.total++;
@@ -310,7 +312,7 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
       craftedItemId: product, qtyMin: outQty, qtyMax: outQty, reagents: inputs,
       castMs: game.castMs.get(spellId) ?? null,
       cooldownMs: cd ? Math.max(cd.recoveryMs, cd.categoryRecoveryMs) : null, cooldownCategory: cd?.category ?? null,
-      randomYield: false, learnSkill: null, learnSource: null, teachItemId: null, teachSkill: null, yellow: null, green: null, grey: null, thresholdSource: null,
+      randomYield: false, learnSkill: null, learnSource: 'conversion', teachItemId: null, teachSkill: null, yellow: null, green: null, grey: null, thresholdSource: null,
       source: 'wago', disagreement: null, live: true,
     });
     report?.conversions.kept.push({ id, name });
@@ -392,7 +394,7 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
     + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions `
     + `(${p.conversions.bound} left out as bound, ${p.conversions.boundByApiOnly} of them by the live API only), `
     + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; learned from: ${l.trainer_alliance} Alliance trainer, `
-    + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.none} unknown; ${l.teachItem} have a teaching item; `
+    + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.conversion} conversion, ${l.none} unknown; ${l.teachItem} have a teaching item; `
     + `items ${r.items.bySource.forever} forever, ${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
     + `binding vs ItemSparse disagree on ${r.sparse.disagree.length} of ${r.sparse.compared} before the price refresh`
     + (r.stale ? `; STALE game data: build ${r.stale.wanted} failed (${r.stale.reason}), using ${r.build}` : '');

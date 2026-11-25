@@ -156,6 +156,8 @@ describe('where a recipe is learned (round 2 fix 1)', () => {
     expect(prof.filter(r => r.yellow != null && r.learnSource == null)).toEqual([]);
     const l = report.learn;
     expect(l.trainer_alliance + l.trainer_horde_only + l.item + l.auto + l.yellow + l.none).toBe(prof.length);
+    expect(l.conversion).toBe(recipes.filter(r => r.kind === 'conversion').length);
+    expect(recipes.filter(r => r.learnSource == null).map(r => r.id)).toEqual(prof.filter(r => r.learnSource == null).map(r => r.id));
     expect(l.teachItem).toBe(prof.filter(r => r.teachItemId != null).length);
   });
   it('writes teach_item_id, teach_skill and learn_source', () => {

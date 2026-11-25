@@ -28,29 +28,52 @@ export interface EgKills { deaths?: number; empty?: number; unknown?: number; le
 export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unconfirmed' | 'unknown';
 
 /**
- * NPCs held neutral although only Horde players recorded them, each with its reason. Kzixx (3134) is a goblin in
- * Duskwood, an Alliance zone, and Horde players saw him at Neutral; he was named known neutral by the round 2 review.
+ * NPCs proven usable by Alliance though the reaction records alone would not say so, each with its reason.
  * Add one only with a reason a person can check.
  */
 export const KNOWN_NEUTRAL: Record<number, string> = {
+  2626: 'Old Man Heming, Booty Bay: Chip bought Bright Baubles from him in game (verification B3, ledger V22)',
   3134: 'Kzixx, Duskwood goblin: Neutral to Horde in an Alliance zone, known neutral (round 2 review)',
 };
 
 /**
- * Who can use a vendor, from which faction's players saw it and how it reacted to them.
- * Reaction numbers: 4 Neutral, 5 Friendly and up. A Horde only NPC shows 5+ to Horde and is never seen by Alliance.
- * A vendor only Horde players saw, at exactly Neutral, may be a neutral goblin or may be hostile to Alliance: nothing
- * Alliance side proves it (Kixxle 8305 was neutral only by this guess). It is 'unconfirmed', never usable, until an
- * Alliance player records it. EG Link creatures carry no faction id, and wago's Creature table holds only pets, so
- * an Alliance observation is the only proof there is.
+ * The Steamwheedle Cartel towns, neutral to both factions in Classic, as boxes on their zone map (percent, as the
+ * vendor rows store x and y). Boxes drawn from the recorded positions of each town's NPCs (November 25):
+ * Booty Bay around 27,77 in Stranglethorn Vale; Ratchet around 62,38 in the Barrens; Gadgetzan around 52,28 in
+ * Tanaris; Everlook around 61,38 in Winterspring. Provisional until Chip buys from one vendor per town.
  */
-export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>, npcId?: number | string): VendorFaction {
+export const STEAMWHEEDLE_TOWNS: Array<{ town: string; uiMap: number; x: [number, number]; y: [number, number] }> = [
+  { town: 'Booty Bay', uiMap: 1434, x: [24, 32], y: [70, 85] },
+  { town: 'Ratchet', uiMap: 1413, x: [60, 65.5], y: [33, 42] },
+  { town: 'Gadgetzan', uiMap: 1446, x: [49, 54], y: [25, 31] },
+  { town: 'Everlook', uiMap: 1452, x: [58, 63], y: [35, 40] },
+];
+
+/** The Steamwheedle town a position lies in, if any. x and y in percent of the zone map. */
+export function steamwheedleTown(uiMap: number | null | undefined, x: number | null | undefined, y: number | null | undefined): string | null {
+  if (uiMap == null || x == null || y == null) return null;
+  return STEAMWHEEDLE_TOWNS.find(t => t.uiMap === uiMap && x >= t.x[0] && x <= t.x[1] && y >= t.y[0] && y <= t.y[1])?.town ?? null;
+}
+
+/** A position from EG Link (fractions 0 to 1) to its Steamwheedle town. */
+const townOf = (pos: Pos | undefined) => steamwheedleTown(pos?.uiMap, pos?.mapX != null ? pos.mapX * 100 : null, pos?.mapY != null ? pos.mapY * 100 : null);
+
+/**
+ * Who can use a vendor, from which faction's players saw it and how it reacted to them.
+ * Reaction numbers: 4 Neutral, 5 Friendly and up, 3 or less hostile. A Horde only NPC shows 5+ to Horde.
+ * A named proven case (KNOWN_NEUTRAL) or an NPC in a Steamwheedle town is neutral, unless an Alliance player saw it
+ * hostile. Otherwise a vendor only Horde players saw at exactly Neutral is 'unconfirmed', never usable, until an
+ * Alliance player records it: EG Link creatures carry no faction id and wago's Creature table holds only pets.
+ */
+export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>, npcId?: number | string, town?: string | null): VendorFaction {
   const a = [...(reactions['Alliance'] ?? [])];
   const h = [...(reactions['Horde'] ?? [])];
   const aOk = a.some(r => r >= 4) || sides.has('Alliance');
   const hOk = h.some(r => r >= 4) || sides.has('Horde');
   if (aOk && hOk) return 'neutral';
-  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return npcId != null && KNOWN_NEUTRAL[Number(npcId)] ? 'neutral' : 'unconfirmed';
+  const aHostile = !aOk && a.length > 0;
+  if (!aHostile && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
+  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'unconfirmed';
   // Alliance players saw it at exactly Neutral: a neutral faction, and usable by Alliance either way.
   if (aOk && a.length && Math.max(...a) === 4 && !sides.has('Alliance')) return 'neutral';
   if (aOk) return 'alliance';
@@ -169,7 +192,7 @@ export function mergeTrainers(builds: Array<{ build: string; trainers: Record<st
         const skill = sv.skill == null ? null : isHangul(sv.skill) ? KOREAN_PROFESSIONS[sv.skill] ?? skillEn.get(sv.spellId) ?? sv.skill : sv.skill;
         out.set(`${npcId}:${sv.spellId}`, {
           npcId: Number(npcId), npcName: names.get(npcId) ?? t.name ?? `NPC ${npcId}`,
-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId),
+          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId, townOf(pos)),
           zone: zoneName(pos?.uiMap),
           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
@@ -204,7 +227,7 @@ export function mergeVendors(
         out.set(key, {
           npcId: Number(npcId),
           npcName: names.get(npcId) ?? v.name ?? `NPC ${npcId}`,
-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId),
+          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId, townOf(pos)),
           zone: zoneName(pos?.uiMap),
           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,

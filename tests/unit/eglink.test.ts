@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { vendorFaction, vendorUnitPrice, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
+import { vendorFaction, steamwheedleTown, vendorUnitPrice, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
   type EgVendor, type EgNpc, type EgCreature, type EgTrainer } from '../../src/datasets/eglink.ts';
 import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
 import { openDb } from '../../src/store/db.ts';
@@ -14,8 +14,22 @@ const S = (o: Record<string, number[]>) => Object.fromEntries(Object.entries(o).
 describe('vendor faction (test T4)', () => {
   it('Horde NPC seen Friendly by Horde is Horde (Nerrist)', () => expect(vendorFaction(S({ Horde: [5, 6] }), new Set(['Horde']))).toBe('horde'));
   it('Alliance NPC is Alliance (Edna Mullby)', () => expect(vendorFaction(S({ Alliance: [5, 6] }), new Set(['Alliance']))).toBe('alliance'));
-  // Round 2 fix 7: seen only by Horde at Neutral proves nothing for Alliance, so it is unconfirmed and not usable.
-  it('seen only by Horde at Neutral is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
+  it('Old Man Heming (2626) is usable: Chip bought Bright Baubles from him in game (B3, V22)', () => {
+    expect(vendorFaction(S({ Horde: [4] }), new Set(), 2626)).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 2626)).toBe('neutral');
+  });
+  // Round 2 fix 7: seen only by Horde at Neutral, outside a Steamwheedle town and not a named case: unconfirmed.
+  it('seen only by Horde at Neutral elsewhere is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
+  it('a Steamwheedle town NPC is neutral, even if only Horde saw it, unless Alliance saw it hostile', () => {
+    expect(steamwheedleTown(1434, 28.1, 78)).toBe('Booty Bay');    // Glyx Brewright
+    expect(steamwheedleTown(1413, 62.7, 36.3)).toBe('Ratchet');    // Gagsprocket
+    expect(steamwheedleTown(1446, 51.5, 28.7)).toBe('Gadgetzan');  // Krinkle Goodsteel
+    expect(steamwheedleTown(1452, 61.2, 37.1)).toBe('Everlook');   // Qia
+    expect(steamwheedleTown(1413, 41.8, 38.6)).toBeNull();          // Kiknikle, not in Ratchet
+    expect(steamwheedleTown(1434, 32.7, 29.2)).toBeNull();          // Nerrist, Grom'gol
+    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 1, 'Ratchet')).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [5], Alliance: [2] }), new Set(), 1, 'Ratchet')).toBe('horde');
+  });
   it('seen by Alliance at Neutral is neutral', () => expect(vendorFaction(S({ Alliance: [4] }), new Set())).toBe('neutral'));
   it('seen usable by both is neutral', () => expect(vendorFaction(S({ Alliance: [4], Horde: [4] }), new Set())).toBe('neutral'));
   it('no observations is unknown', () => expect(vendorFaction({}, new Set())).toBe('unknown'));
