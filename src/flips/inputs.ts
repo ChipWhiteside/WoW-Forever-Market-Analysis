@@ -143,7 +143,8 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     if (newest) {
       h.publishedAt = newest;
       const age = (now - newest) / 3600_000;
-      if (age > FRESH_HOURS) problems.push(`data is ${Math.round(age * 10) / 10} hours old on house ${h.id}`);
+      // rounded up, so a run just past the gate never reads "2 hours old" (round 2 finding L3)
+      if (age > FRESH_HOURS) problems.push(`data is ${Math.ceil(age * 10) / 10} hours old on house ${h.id}`);
     }
     if (!h.publishedAt) h.publishedAt = now;
   }

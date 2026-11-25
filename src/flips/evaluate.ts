@@ -57,7 +57,8 @@ export interface Evaluation {
   at(n: number): QuantityOption;
 }
 
-const isStackable = (it: FlipItem | undefined) => it?.stackSize !== 1;
+/** Stacks only when the game says so: an unknown stack size is treated as one per listing (round 2 finding L1). */
+const isStackable = (it: FlipItem | undefined) => it?.stackSize != null && it.stackSize > 1;
 
 /** Incremental effort: minutes to buy and craft everything in the trace so far (posting and selling are added per N). */
 class Effort {

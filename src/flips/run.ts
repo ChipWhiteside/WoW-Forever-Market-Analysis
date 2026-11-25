@@ -1,7 +1,7 @@
 import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
-import { Market } from './market.ts';
+import { Market, cooldownCrafts } from './market.ts';
 import { SellBook } from './sellBook.ts';
 import { generate } from './families.ts';
 import { evaluate, legsOf, auctionUse, type Candidate, type Evaluation } from './evaluate.ts';
@@ -122,8 +122,8 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     if (h!.faction === 'blackwater') notes.push('the Blackwater deposit is not verified yet (test T7)');
   }
   if (c.recipe) {
-    const cap = c.recipe.cooldownMs ? Math.max(1, Math.ceil((inputs.settings.horizonHours * 3600_000) / c.recipe.cooldownMs)) : null;
-    if (cap != null) notes.push(`its cooldown allows ${plural(cap, 'craft')} tonight`);
+    const cap = c.recipe.cooldownMs ? cooldownCrafts(c.recipe, inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT) : null;
+    if (cap != null) notes.push(`its cooldown allows ${plural(cap, 'craft')} in one crafting session`);
   }
   if (buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'))) notes.push('a limited stock vendor is assumed to hold one bundle');
   if (e.goldCapped) notes.push('capped by your gold on hand');

@@ -1,5 +1,14 @@
 import type { Listing } from '../analysis/aggregate.ts';
-import { MAX_CRAFT_DEPTH, VENDOR_LIMITED_BUNDLES } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, MAX_CRAFT_DEPTH, VENDOR_LIMITED_BUNDLES } from '../rules/flips.ts';
+
+/**
+ * Crafts a cooldown allows inside one crafting session (round 2 finding M2): one now, then one each time it comes
+ * back within the session, 1 + floor(session / cooldown). Recipes sharing a cooldown category share the count.
+ */
+export function cooldownCrafts(r: Pick<FlipRecipe, 'cooldownMs'>, sessionMinutes: number): number {
+  if (!r.cooldownMs || r.cooldownMs <= 0) return Infinity;
+  return 1 + Math.floor((sessionMinutes * 60_000) / r.cooldownMs);
+}
 import type { FlipInputs, FlipRecipe, VendorSource } from './inputs.ts';
 import type { CostCurve, CurveStep } from './types.ts';
 
@@ -119,10 +128,9 @@ export class Market {
     if (!r.cooldownMs || r.cooldownMs <= 0) return null;
     return r.cooldownCategory ? `cat:${r.cooldownCategory}` : `rec:${r.id}`;
   }
-  /** Crafts a cooldown allows within the horizon: one now, then one each time it comes back. */
+  /** Crafts a cooldown allows within one crafting session (cooldownCrafts). */
   cooldownCap(r: FlipRecipe): number {
-    if (!r.cooldownMs || r.cooldownMs <= 0) return Infinity;
-    return Math.max(1, Math.ceil((this.inputs.settings.horizonHours * 3600_000) / r.cooldownMs));
+    return cooldownCrafts(r, this.inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT);
   }
   cooldownLeft(r: FlipRecipe): number {
     const k = this.cooldownKey(r);

@@ -168,7 +168,7 @@ describe('today\'s junk stays out', () => {
     expect(ts[0]!.afterShared).toMatchObject({ units: 1 });
     expect(ts[1]!.afterShared).toMatchObject({ units: 0, expectedProfit: 0 });
     expect(ts[1]!.shares).toContain(ts[0]!.key);
-    expect(ts[0]!.notes.join(' ')).toMatch(/cooldown allows 1 craft tonight/);
+    expect(ts[0]!.notes.join(' ')).toMatch(/cooldown allows 1 craft in one crafting session/);
   });
   it('a bind on pickup product never sells on a house (Blizzard binding or game table Bonding 1)', () => {
     for (const bop of [{ binding: 'ON_ACQUIRE' }, { bonding: 1 }]) {
