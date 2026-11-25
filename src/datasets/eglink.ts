@@ -72,7 +72,10 @@ export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set
   const hOk = h.some(r => r >= 4) || sides.has('Horde');
   if (aOk && hOk) return 'neutral';
   const aHostile = !aOk && a.length > 0;
-  if (!aHostile && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
+  // An NPC EG Link records on the Horde side is Horde's, even inside a Steamwheedle town: Creeg Bothunk (263570),
+  // the Darkspear Islands quartermaster, stands at 65.0, 34.6, inside the Ratchet box.
+  const hordeSide = sides.has('Horde');
+  if (!aHostile && !hordeSide && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
   if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'unconfirmed';
   // Alliance players saw it at exactly Neutral: a neutral faction, and usable by Alliance either way.
   if (aOk && a.length && Math.max(...a) === 4 && !sides.has('Alliance')) return 'neutral';

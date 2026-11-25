@@ -1,5 +1,5 @@
 {
- "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210.",
+ "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210, Creeg Bothunk 263570, Old Man Heming 2626.",
  "builds": [
   {
    "build": "1.60.1.70205",
@@ -150,6 +150,40 @@
        "stack": 1
       }
      }
+    },
+    "263570": {
+     "name": "Creeg Bothunk",
+     "lastSeen": "2026-11-05",
+     "positions": [
+      {
+       "instance": 1,
+       "mapX": 0.6503,
+       "mapY": 0.3464,
+       "uiMap": 1413,
+       "worldX": -728.1,
+       "worldY": -3966.5
+      }
+     ],
+     "entries": {
+      "item:17348": {
+       "costs": {
+        "4": 1000
+       },
+       "itemId": 17348,
+       "name": "Major Healing Draught",
+       "sources": 1,
+       "stack": 1
+      },
+      "item:17349": {
+       "costs": {
+        "4": 500
+       },
+       "itemId": 17349,
+       "name": "Superior Healing Draught",
+       "sources": 1,
+       "stack": 1
+      }
+     }
     }
    },
    "npcs": {
@@ -163,6 +197,10 @@
     },
     "4581": {
      "name": "Salazar Bloch",
+     "side": "Horde"
+    },
+    "263570": {
+     "name": "Creeg Bothunk",
      "side": "Horde"
     }
    },
@@ -191,6 +229,14 @@
        5
       ]
      }
+    },
+    "263570": {
+     "name": "Creeg Bothunk",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
     }
    },
    "trainers": {}
@@ -214,6 +260,31 @@
   {
    "build": "1.60.1.70862",
    "vendors": {
+    "2626": {
+     "name": "Old Man Heming",
+     "lastSeen": "2026-11-08",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.2743,
+       "mapY": 0.7713,
+       "uiMap": 1434,
+       "worldX": -14449.8,
+       "worldY": 470.4
+      }
+     ],
+     "entries": {
+      "item:6532": {
+       "costs": {
+        "4": 250
+       },
+       "itemId": 6532,
+       "name": "Bright Baubles",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
     "4581": {
      "name": "Salazar Bloch",
      "lastSeen": "2026-11-08",
@@ -277,6 +348,9 @@
     }
    },
    "npcs": {
+    "2626": {
+     "name": "Old Man Heming"
+    },
     "4581": {
      "name": "Salazar Bloch",
      "side": "Horde"
@@ -286,6 +360,14 @@
     }
    },
    "creatures": {
+    "2626": {
+     "name": "Old Man Heming",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
+    },
     "4581": {
      "name": "Salazar Bloch",
      "reactions": {
@@ -308,6 +390,31 @@
   {
    "build": "1.60.1.70888",
    "vendors": {
+    "2626": {
+     "name": "Old Man Heming",
+     "lastSeen": "2026-11-12",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.2745,
+       "mapY": 0.7713,
+       "uiMap": 1434,
+       "worldX": -14449.9,
+       "worldY": 469
+      }
+     ],
+     "entries": {
+      "item:6532": {
+       "costs": {
+        "4": 250
+       },
+       "itemId": 6532,
+       "name": "Bright Baubles",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
     "3134": {
      "name": "Kzixx",
      "lastSeen": "2026-11-11",
@@ -360,6 +467,9 @@
     }
    },
    "npcs": {
+    "2626": {
+     "name": "Old Man Heming"
+    },
     "3134": {
      "name": "Kzixx"
     },
@@ -369,6 +479,14 @@
     }
    },
    "creatures": {
+    "2626": {
+     "name": "Old Man Heming",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
+    },
     "3134": {
      "name": "Kzixx",
      "reactions": {
@@ -479,6 +597,31 @@
   {
    "build": "1.60.1.70959",
    "vendors": {
+    "2626": {
+     "name": "Old Man Heming",
+     "lastSeen": "2026-11-19",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.2745,
+       "mapY": 0.7711,
+       "uiMap": 1434,
+       "worldX": -14449,
+       "worldY": 468.9
+      }
+     ],
+     "entries": {
+      "item:6532": {
+       "costs": {
+        "4": 250
+       },
+       "itemId": 6532,
+       "name": "Bright Baubles",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "lastSeen": "2026-11-18",
@@ -531,6 +674,9 @@
     }
    },
    "npcs": {
+    "2626": {
+     "name": "Old Man Heming"
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "side": "Alliance"
@@ -538,9 +684,22 @@
     "4581": {
      "name": "Salazar Bloch",
      "side": "Horde"
+    },
+    "263570": {
+     "name": "Creeg Bothunk",
+     "side": "Horde"
     }
    },
    "creatures": {
+    "2626": {
+     "name": "Old Man Heming",
+     "reactions": {
+      "Horde": [
+       4,
+       5
+      ]
+     }
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "reactions": {
@@ -557,6 +716,14 @@
        7
       ]
      }
+    },
+    "263570": {
+     "name": "Creeg Bothunk",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
     }
    },
    "trainers": {}
@@ -564,6 +731,32 @@
   {
    "build": "1.60.1.71037",
    "vendors": {
+    "2626": {
+     "name": "Old Man Heming",
+     "lastSeen": "2026-11-22",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.2743,
+       "mapY": 0.7715,
+       "uiMap": 1434,
+       "worldX": -14450.9,
+       "worldY": 470.3
+      }
+     ],
+     "entries": {
+      "item:6532": {
+       "costs": {
+        "4": 250,
+        "5": 250
+       },
+       "itemId": 6532,
+       "name": "Bright Baubles",
+       "sources": 2,
+       "stack": 1
+      }
+     }
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "lastSeen": "2026-11-21",
@@ -650,6 +843,9 @@
     }
    },
    "npcs": {
+    "2626": {
+     "name": "Old Man Heming"
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "side": "Alliance"
@@ -672,6 +868,15 @@
     }
    },
    "creatures": {
+    "2626": {
+     "name": "Old Man Heming",
+     "reactions": {
+      "Horde": [
+       4,
+       5
+      ]
+     }
+    },
     "2682": {
      "name": "Fradd Swiftgear",
      "reactions": {

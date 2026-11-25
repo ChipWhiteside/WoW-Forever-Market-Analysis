@@ -16,7 +16,7 @@ describe('vendor faction (test T4)', () => {
   it('Alliance NPC is Alliance (Edna Mullby)', () => expect(vendorFaction(S({ Alliance: [5, 6] }), new Set(['Alliance']))).toBe('alliance'));
   it('Old Man Heming (2626) is usable: Chip bought Bright Baubles from him in game (B3, V22)', () => {
     expect(vendorFaction(S({ Horde: [4] }), new Set(), 2626)).toBe('neutral');
-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 2626)).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 2626)).toBe('neutral');
   });
   // Round 2 fix 7: seen only by Horde at Neutral, outside a Steamwheedle town and not a named case: unconfirmed.
   it('seen only by Horde at Neutral elsewhere is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
@@ -27,7 +27,8 @@ describe('vendor faction (test T4)', () => {
     expect(steamwheedleTown(1452, 61.2, 37.1)).toBe('Everlook');   // Qia
     expect(steamwheedleTown(1413, 41.8, 38.6)).toBeNull();          // Kiknikle, not in Ratchet
     expect(steamwheedleTown(1434, 32.7, 29.2)).toBeNull();          // Nerrist, Grom'gol
-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 1, 'Ratchet')).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 1, 'Ratchet')).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4] }), new Set(['Horde']), 1, 'Ratchet')).toBe('horde');
     expect(vendorFaction(S({ Horde: [5], Alliance: [2] }), new Set(), 1, 'Ratchet')).toBe('horde');
   });
   it('seen by Alliance at Neutral is neutral', () => expect(vendorFaction(S({ Alliance: [4] }), new Set())).toBe('neutral'));
@@ -81,6 +82,15 @@ describe('round 2 fixes on real EG Link records', () => {
     expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 3603 ORDER BY spell_id').all()).toEqual([
       { name: 'Elixir of Minor Strength', skill: 'Alchemy' }, { name: 'Cerulean Dye', skill: 'Alchemy' }]);
     expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 4210').get()).toEqual({ name: 'Spiced Wolf Meat', skill: 'Cooking' });
+  });
+  it('round 3 D1: Creeg Bothunk (263570) stands inside the Ratchet box but EG Link records his side as Horde, so he stays Horde', () => {
+    const v = V(263570);
+    expect(v.length).toBeGreaterThan(0);
+    expect(steamwheedleTown(v[0]!.uiMap, v[0]!.x, v[0]!.y)).toBe('Ratchet');
+    expect(v.every(x => x.faction === 'horde')).toBe(true);
+  });
+  it('Old Man Heming (2626) from his real records is neutral: Bright Baubles usable', () => {
+    expect(V(2626, 6532).map(x => x.faction)).toEqual(['neutral']);
   });
   it('fix 7: Kixxle (8305), seen only by Horde at Neutral, is unconfirmed; Kzixx (3134) stays neutral as a known neutral', () => {
     expect(V(8305).every(v => v.faction === 'unconfirmed')).toBe(true);
