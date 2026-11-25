@@ -109,6 +109,11 @@ describe('Bright Baubles on Blackwater (yardstick 2)', () => {
     //   14th (0.865) does not. 13 units, 12.825 expected to sell: 12.825 x 422 - 0.175 x 1423 - 3250 = 1,913.
     expect(f.best.units).toBe(13);
     expect(f.best.expectedProfit).toBe(1913);
+    // Carryover (round 3) does not help: 422 net less a 1,485 relist deposit is under the 62c vendor price. Bad case:
+    //   under 72 hours of floors the 25% drop (375, net 318) is lower than the 480 low; half of 12.825 sell:
+    //   3250 - (6.412 x 318 + 6.588 x (62 - 1485)) = 10,585 lost, more than the 1,913 expected: high risk.
+    expect(f.best.risk.badCaseLoss).toBe(10585);
+    expect(f.best.risk.level).toBe('high');
     expect(f.best.expectedProfit).toBe(Math.round(refExpected({ mu: (48 - 4) * 10 / 24, ahead: 0, net: 422, salvage: 62, deposit: 1485, cost: 3250, n: 13 })));
     expect(f.notes.join(' ')).toMatch(/Blackwater deposit is not verified/);
     expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 13 });
