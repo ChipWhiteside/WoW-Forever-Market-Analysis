@@ -223,6 +223,12 @@ const MIGRATIONS: string[] = [
   CREATE TABLE flip_history (at INTEGER NOT NULL, key TEXT NOT NULL, expected_profit INTEGER NOT NULL, per_item INTEGER NOT NULL, units INTEGER NOT NULL, PRIMARY KEY (at, key));
   CREATE TABLE flip_runs (at INTEGER PRIMARY KEY, data_at INTEGER NOT NULL, ms INTEGER NOT NULL, complete INTEGER NOT NULL, report TEXT NOT NULL);
   `,
+  // 12. Where a recipe is learned from an item: linked by id through the game's ItemEffect table, never by name
+  `
+  ALTER TABLE recipes ADD COLUMN teach_item_id INTEGER;     -- the plans, pattern or recipe item that teaches it
+  ALTER TABLE recipes ADD COLUMN teach_skill INTEGER;       -- ItemSparse.RequiredSkillRank of that item
+  ALTER TABLE recipes ADD COLUMN learn_source TEXT;         -- trainer_alliance | trainer_horde_only | item | auto | yellow
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {
