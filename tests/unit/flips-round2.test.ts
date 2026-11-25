@@ -223,5 +223,13 @@ describe('sale events and new posts from the stored hourly counts', () => {
     expect(dm.newPerDay).toBeCloseTo(((6 * 913 + 40) / 7) * 24, 6);
     expect(dm.floorChange1h).toBeCloseTo((1900 - 2180) / 2180, 9);
     expect(dm.newLastHour).toBe(40);
+    // floors from 1 to 7 hours: 6 hours behind the 3 day low, so the bad case still assumes the 25% drop
+    expect(inputs.low3dHours!.get(111)!.get(12359)).toBe(6);
+    expect(inputs.low3d.get(111)!.get(12359)).toBe(1900);
+    // a floor recorded before the 72 hour window proves full coverage, and the low is still from inside the window
+    d.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder) VALUES (9999, 111, 12359, ?, 100, 1, 1, 1, 1, '[]')`).run(t - 80 * HOUR);
+    const later = buildFlipInputs(d, new Map([[111, [L(12359, 1900, 10)]]]), t);
+    expect(later.low3dHours!.get(111)!.get(12359)).toBe(80);
+    expect(later.low3d.get(111)!.get(12359)).toBe(1900);
   });
 });

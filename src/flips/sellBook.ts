@@ -11,7 +11,7 @@ import type { HouseRef, SellQuote } from './types.ts';
  * The sell book: what the next unit nets when sold, on one of Chip's houses or to a vendor.
  * Auction prices go through judgeSell and src/rules/price.ts, so one troll listing never sets a price and the claim is
  * never above where real sales happened. Chip posts one typical undercut below the claim; the units he expects to
- * sell overnight come from a queue (capacity below).
+ * sell overnight come from a queue (overnightQueue below, and soldCurve in evaluate.ts).
  */
 
 /**
@@ -88,18 +88,6 @@ export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
     at: (pos: number) => { if (pos <= 0) return 1; const j = Math.ceil(pos / upe - 1e-9); return j < tail.length ? tail[j]! : 0; },
     lastPos, meanEvents: mu, unitsPerEvent: upe,
   };
-}
-
-/**
- * Units Chip can expect to sell overnight if he posted without limit: the sum of the chances past the units ahead
- * (listed at or under his price, plus `used` units his higher ranked flips already posted). A vendor buys without limit.
- */
-export function capacity(q: SellQuote, horizonHours: number, used = 0): number {
-  if (q.houseId == null) return Infinity;
-  const queue = overnightQueue(q, horizonHours);
-  let sum = 0;
-  for (let p = q.ahead + used + 1; p <= queue.lastPos; p++) sum += queue.at(p);
-  return sum;
 }
 
 export class SellBook {

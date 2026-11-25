@@ -206,9 +206,10 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     demand.set(h.id, enrichDemand(db, h.id, now, demandByItem(db, h.id, { now }) as Map<number, FlipDemand>));
     typical.set(h.id, typicalFloors(db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours }));
     // The 3 day low and how many hours of floors stand behind it (round 1 finding H3: under 72, a 25 percent drop is assumed).
-    const lows = db.prepare('SELECT item_id, MIN(floor) f, MIN(published_at) first FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id')
-      .all(h.id, now - RISK.lowCoverHours * 3600_000, now) as Array<{ item_id: number; f: number; first: number }>;
-    low3d.set(h.id, new Map(lows.map(r => [r.item_id, r.f])));
+    // Coverage counts from the item's first floor ever recorded, so a reading older than the window proves 72 hours.
+    const lows = db.prepare('SELECT item_id, MIN(CASE WHEN published_at >= ? THEN floor END) f, MIN(published_at) first FROM item_stats WHERE house_id = ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id')
+      .all(now - RISK.lowCoverHours * 3600_000, h.id, now) as Array<{ item_id: number; f: number | null; first: number }>;
+    low3d.set(h.id, new Map(lows.filter(r => r.f != null).map(r => [r.item_id, r.f!])));
     low3dHours.set(h.id, new Map(lows.map(r => [r.item_id, (now - r.first) / 3600_000])));
   }
 
