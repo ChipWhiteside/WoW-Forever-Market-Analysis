@@ -2,6 +2,12 @@
 
 Read this first when resuming. The exact agent prompts to relaunch are in `docs/handoff/agent-prompts.md`. Branch `claude/gifted-albattani-10p08n`. The approved plan is `docs/flip-plan.md` (section 0 holds Chip's decisions and wins over everything). Chip's standing order: at least 3 independent check rounds per piece and 3 on the whole, using subagents; work autonomously to the end; deliver a working app plus `docs/flips-tutorial.md`.
 
+## Resumed November 25 (latest state, read this part first)
+- Collector restarted on scratchpad/live (history from November 23 to 25 kept). The suspected stall was the daily vendor price refresh: it now logs start and end and finishes in about 148 s with 0 errors.
+- Game data test round 2 done. Defects found: learn skill overstated (yellow fallback), teaching items matched by name only (119 of 206 craft flips had no learn source), poisons turned bind on pickup by hotfix (cross check ran too early), Korean names from EG Link, vendor standing gate too strict, Revered discount 0.85 should be 0.90, new build failure blocks the daily, Horde only neutral vendors. Migration 12 (18a827d) adds recipes.teach_item_id, teach_skill, learn_source.
+- Running agents (relaunch with docs/handoff/agent-prompts.md if stopped; each commits early on its own worktree branch, so check `git worktree list` and merge what is committed): sale counting (prompt 1), flip core round 2 (prompt 2, also told to use teach_item_id for setup), game data round 2 fixes (the seven defects above, same scope as the original game data build).
+- Next after they report: game data test round 3, sale counting test rounds 1 to 3, flip core test rounds 2 and 3, merge, whole system rounds 1 to 3, Flips page screenshots, tutorial.
+
 ## Done and on the branch
 1. **Plan v2, approved.** Chip's decisions: crafting is first class; one list with green crafting and blue flipping cards; only Alliance 111 and his one Blackwater house (id still unknown, P6); no gold per hour floor, time rate 0; overnight horizon 10 h with no relisting; 30 minute craft session cap on the best amount; quantity table (small, best, most); risk per flip; local only for now (chipwhiteside.com later).
 2. **Foundation** (39a8dda): migration 11 in `src/store/db.ts`, shared types in `src/flips/types.ts`.
