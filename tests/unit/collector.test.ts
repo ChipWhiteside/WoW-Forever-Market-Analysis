@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { openDb } from '../../src/store/db.ts';
-import { Collector } from '../../src/engine/collector.ts';
+import { openDb, getKv } from '../../src/store/db.ts';
+import { Collector, loadSeen, ownTrades, diagSuspects } from '../../src/engine/collector.ts';
 import { demandByItem } from '../../src/analysis/history.ts';
 import { fakeBlizzard, tempDir } from '../helpers.ts';
 
@@ -81,6 +81,75 @@ describe('collector', () => {
     const { client } = fakeBlizzard({ '/data/wow/ruleset/2/auctions/110': () => ({ body: { id: 110, auctions: [{ id: 1, item: 4308, buyout: 1, quantity: 1, time_left: 'LONG' }] }, lastModified: 'x' }) });
     const c = new Collector(client, openDb(dir, ':memory:'), dir);
     await expect(c.poll(house, 'auctions')).rejects.toThrow(/Contract violation/);
+  });
+});
+
+describe('listing ages in the collector', () => {
+  const route = '/data/wow/ruleset/2/auctions/110/commodities';
+  const at = (h: number) => `Wed, 18 Nov 2026 0${h}:25:00 GMT`;
+  const row = (id: number, quantity: number, unit_price: number, time_left: string) => ({ id, item: { id: 2770 }, quantity, unit_price, time_left });
+
+  it('keeps first sight per listing in listing_seen, survives a restart, and counts a fresh 2 hour listing that sold', async () => {
+    const dir = tempDir();
+    let lm = at(4);
+    let rows = [row(1, 20, 150, 'LONG')];
+    const { client } = fakeBlizzard({ [route]: () => ({ body: { _links: {}, auctions: rows }, lastModified: lm }) });
+    const db = openDb(dir, ':memory:');
+    await new Collector(client, db, dir).poll(house, 'commodities');
+    lm = at(5);
+    rows = [row(1, 20, 150, 'LONG'), row(2, 5, 140, 'MEDIUM')]; // a new 2 hour listing
+    const second = await new Collector(client, db, dir).poll(house, 'commodities');
+    expect(second?.stats[0]?.newNearFloor).toBe(5);
+    const seen = db.prepare('SELECT listing_id, first_seen, first_time_left FROM listing_seen ORDER BY listing_id').all() as Array<{ listing_id: number; first_seen: number; first_time_left: string }>;
+    expect(seen.map(s => [s.listing_id, s.first_time_left])).toEqual([[1, 'LONG'], [2, 'MEDIUM']]);
+    expect(seen[1]!.first_seen).toBe(Date.parse(at(5)));
+
+    // Restart: a fresh collector reads the ages back. The 2 hour listing vanished in its first hour: it sold.
+    lm = at(6);
+    rows = [row(1, 20, 150, 'LONG')];
+    const third = await new Collector(client, db, dir).poll(house, 'commodities');
+    expect(third?.stats[0]?.soldUnits).toBe(5);
+    expect(third?.stats[0]?.goneUnitsExpiring).toBe(0);
+    expect(third?.suspect).toEqual([]);
+    const stored = db.prepare(`SELECT sold_units, sweep_high, sold_value FROM item_stats WHERE published_at = ?`).get(Date.parse(at(6))) as { sold_units: number; sweep_high: number; sold_value: number };
+    expect(stored).toEqual({ sold_units: 5, sweep_high: 140, sold_value: 700 });
+    // Pruned to the current listings.
+    expect((db.prepare('SELECT listing_id FROM listing_seen').all() as Array<{ listing_id: number }>).map(r => r.listing_id)).toEqual([1]);
+  });
+
+  it('after an update with no ages stored, listings already up get an unknown age, never a fresh one', async () => {
+    const dir = tempDir();
+    let lm = at(4);
+    let rows = [row(1, 20, 150, 'LONG')];
+    const { client } = fakeBlizzard({ [route]: () => ({ body: { _links: {}, auctions: rows }, lastModified: lm }) });
+    const db = openDb(dir, ':memory:');
+    await new Collector(client, db, dir).poll(house, 'commodities');
+    lm = at(5);
+    rows = [row(1, 20, 150, 'LONG'), row(2, 5, 140, 'MEDIUM')];
+    await new Collector(client, db, dir).poll(house, 'commodities');
+    db.exec('DELETE FROM listing_seen'); // as if the engine ran before ages were recorded
+    lm = at(6);
+    rows = [row(1, 20, 150, 'LONG')];
+    const third = await new Collector(client, db, dir).poll(house, 'commodities');
+    // Age unknown and MEDIUM: it may have run out, so it is not counted as a sale.
+    expect(third?.stats[0]?.soldUnits).toBe(0);
+    expect(getKv(db, 'listing_seen_since:110:commodities')).toBe(String(Date.parse(at(5))));
+    const restored = loadSeen(db, 110, 'commodities').get(1)!;
+    expect(restored.postedAfter).toBeNull(); // seeded at 05:25, so unknown age even after a restart
+  });
+
+  it('own trades hook: settings key own_trade_listing_ids keeps listings out of sales', async () => {
+    const db = openDb(tempDir(), ':memory:');
+    expect(ownTrades(db)).toBeUndefined();
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('own_trade_listing_ids', '[5, 6]')`).run();
+    expect([...ownTrades(db)!.listingIds]).toEqual([5, 6]);
+  });
+
+  it('turns sale bound breaches and age conflicts into one suspected bug line each', () => {
+    expect(diagSuspects(111, 'commodities', { ageConflicts: 0, breaches: [] })).toEqual([]);
+    const s = diagSuspects(111, 'commodities', { ageConflicts: 3, breaches: ['item 7: 10 judged sold, only 0 left the house'] });
+    expect(s).toHaveLength(2);
+    expect(s[0]).toMatch(/exceeded what left the house on 1 item \(item 7/);
   });
 });
 

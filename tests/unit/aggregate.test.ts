@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregate, fromAuctionRows, fromCommodityRows, type Listing } from '../../src/analysis/aggregate.ts';
+import { aggregate, fromAuctionRows, fromCommodityRows, expiryChance, listingHours, nextSeen, buysFirst, type Listing, type Seen } from '../../src/analysis/aggregate.ts';
 
 const L = (id: number, itemId: number, quantity: number, unitPrice: number | null, timeLeft: Listing['timeLeft'] = 'LONG'): Listing =>
   ({ id, itemId, quantity, unitPrice, timeLeft });
@@ -94,5 +94,130 @@ describe('telling sales from expiries, relists and cancels', () => {
     const a = aggregate(cur, prev)[0]!;
     expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40);
     expect(a.soldValue).toBe(40 * 100);
+  });
+});
+
+describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => {
+  const H = 3600_000;
+  const t0 = Date.parse('2026-11-24T05:25:00Z');
+  // A listing first seen at t0, posted after the publish an hour before (age known).
+  const fresh = (tl: Listing['timeLeft']): Seen => ({ firstSeen: t0, firstTimeLeft: tl, postedAfter: t0 - H });
+
+  it('reads the listing length from the time left when first seen: MEDIUM 2, LONG 8, VERY_LONG 24 hours', () => {
+    expect(listingHours(fresh('MEDIUM'))).toBe(2);
+    expect(listingHours(fresh('LONG'))).toBe(8);
+    expect(listingHours(fresh('VERY_LONG'))).toBe(24);
+    expect(listingHours({ firstSeen: t0, firstTimeLeft: 'LONG', postedAfter: null })).toBeNull(); // age unknown: 8 or an aged 24
+    expect(listingHours({ firstSeen: t0, firstTimeLeft: 'VERY_LONG', postedAfter: null })).toBe(24); // only 24 hour listings show it
+  });
+
+  it('a 2 hour listing cannot expire in its first hour, can in its second', () => {
+    const l = L(1, 7, 1, 100, 'MEDIUM');
+    expect(expiryChance(l, fresh('MEDIUM'), t0, t0 + H).chance).toBe(0);
+    expect(expiryChance({ ...l, timeLeft: 'SHORT' }, fresh('MEDIUM'), t0 + H, t0 + 2 * H).chance).toBe(1);
+    // Unknown age falls back to the time left alone: MEDIUM (30 minutes to 2 hours) may run out within the hour.
+    expect(expiryChance(l, undefined, t0, t0 + H).chance).toBeGreaterThan(0.05);
+    expect(expiryChance(L(1, 7, 1, 100, 'LONG'), undefined, t0, t0 + H).chance).toBe(0);
+  });
+
+  it('the fastest movers count again: a fresh 2 hour listing that vanished within the hour was bought (old rule: expired)', () => {
+    const prev = [L(1, 5956, 1, 100, 'MEDIUM'), L(2, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 150, 'VERY_LONG')];
+    const cur = [L(3, 5956, 1, 150, 'VERY_LONG')];
+    const seen = new Map([[1, fresh('MEDIUM')], [2, fresh('MEDIUM')], [3, fresh('VERY_LONG')]]);
+    const a = aggregate(cur, prev, { prevAt: t0, curAt: t0 + H, seen })[0]!;
+    expect(a.soldUnits).toBe(2);
+    expect(a.soldValue).toBe(200);
+    expect(a.goneUnitsExpiring).toBe(0);
+    // Without ages (the old reading) the same two are treated as expiries.
+    expect(aggregate(cur, prev, { prevAt: t0, curAt: t0 + H })[0]!.soldUnits).toBe(0);
+  });
+
+  it('the Blacksmith Hammer relists stay out: a 2 hour listing in its last hour that vanished and came back is not a sale', () => {
+    const prev = [L(1, 5956, 1, 100, 'SHORT'), L(3, 5956, 1, 900000, 'VERY_LONG')];
+    const cur = [L(4, 5956, 1, 100, 'MEDIUM'), L(3, 5956, 1, 900000, 'VERY_LONG')];
+    const seen = new Map([[1, { firstSeen: t0 - H, firstTimeLeft: 'MEDIUM' as const, postedAfter: t0 - 2 * H }]]);
+    const a = aggregate(cur, prev, { prevAt: t0, curAt: t0 + H, seen })[0]!;
+    expect(a.soldUnits).toBe(0);
+    expect(a.goneUnitsExpiring).toBe(1);
+  });
+
+  it('commodities: newest first at one price, so an older stack that vanished behind a survivor was not bought', () => {
+    // All at 1c. The newest (id 30) was partly bought; 20 and 10 are older. 10 vanished: cancelled or expired.
+    const prev = [L(10, 2512, 200, 1, 'SHORT'), L(20, 2512, 500, 1, 'LONG'), L(30, 2512, 100, 1, 'LONG')];
+    const cur = [L(20, 2512, 500, 1, 'LONG'), L(30, 2512, 40, 1, 'LONG')];
+    const a = aggregate(cur, prev, { commodity: true })[0]!;
+    expect(a.soldUnits).toBe(60);
+    expect(buysFirst(L(30, 1, 1, 1), L(20, 1, 1, 1))).toBe(true);
+    expect(buysFirst(L(20, 1, 1, 1), L(30, 1, 1, 2))).toBe(true);
+  });
+
+  it('commodities: a sweep past 10 percent over the floor counts in full and records how high buyers paid', () => {
+    const prev = [L(1, 2770, 20, 100), L(2, 2770, 20, 104), L(3, 2770, 20, 115), L(4, 2770, 20, 130), L(5, 2770, 20, 160)];
+    const cur = [L(4, 2770, 5, 130), L(5, 2770, 20, 160)];
+    const a = aggregate(cur, prev, { commodity: true })[0]!;
+    expect(a.soldUnits).toBe(75);
+    expect(a.soldEvents).toBe(4); // three stacks bought whole, one in part
+    expect(a.sweepHigh).toBe(130);
+    expect(a.soldValue).toBe(20 * 100 + 20 * 104 + 20 * 115 + 15 * 130);
+    expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40); // the old near floor count, kept
+  });
+
+  it('commodities: a stack that could have expired but sits ahead of a stack buyers reached was bought', () => {
+    // Stack 1 shows MEDIUM (could run out this hour); buyers took all of it and part of stack 2.
+    const prev = [L(1, 7, 10, 100, 'MEDIUM'), L(2, 7, 10, 101, 'LONG')];
+    const a = aggregate([L(2, 7, 4, 101, 'LONG')], prev, { commodity: true })[0]!;
+    expect(a.soldUnits).toBe(16);
+    // A SHORT stack (under 30 minutes left) most likely ran out before a buyer came: it stays expired.
+    const b = aggregate([L(2, 7, 4, 101, 'LONG')], [L(1, 7, 10, 100, 'SHORT'), L(2, 7, 10, 101, 'LONG')], { commodity: true })[0]!;
+    expect(b.soldUnits).toBe(6);
+  });
+
+  it('deep equipment: a copy cancelled and posted cheaper under a copy already up is an undercut, not a sale', () => {
+    const others = [10, 11, 12, 13, 14].map(id => L(id, 4251, 1, 1200, 'LONG'));
+    const prev = [L(1, 4251, 1, 950, 'LONG'), L(2, 4251, 1, 1000, 'LONG'), ...others];
+    const cur = [L(1, 4251, 1, 950, 'LONG'), L(9, 4251, 1, 940, 'LONG'), ...others];
+    const a = aggregate(cur, prev)[0]!;
+    expect(a.soldUnits).toBe(0);
+    // Bought with nothing reposted under it: a sale.
+    expect(aggregate([L(1, 4251, 1, 950, 'LONG'), ...others], prev)[0]!.soldUnits).toBe(1);
+  });
+
+  it('deep commodities: a same size stack posted cheaper is not taken as an undercut (pure coincidence there, B24)', () => {
+    const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 2589, 20, 30, 'LONG'));
+    const prev = [L(1, 2589, 20, 25, 'LONG'), ...deep];
+    const cur = [L(9, 2589, 20, 24, 'LONG'), L(8, 2589, 5, 23, 'LONG'), ...deep];
+    expect(aggregate(cur, prev, { commodity: true })[0]!.soldUnits).toBe(20);
+  });
+
+  it('counts new units posted at or under 1.1 times the floor, and leaves out the own trades hook', () => {
+    const prev = [L(1, 7, 10, 100), L(2, 7, 10, 200)];
+    const cur = [L(2, 7, 10, 200), L(3, 7, 5, 105), L(4, 7, 5, 111), L(5, 7, 7, 90)];
+    const a = aggregate(cur, prev, { commodity: true, own: { listingIds: new Set([1, 5]) } })[0]!;
+    expect(a.newNearFloor).toBe(5); // 105 counts, 111 is over, 90 is an own trade
+    expect(a.soldUnits).toBe(0); // listing 1 was an own trade
+    // Razor Arrow, seen live: the 1c stacks sold out and every new post sat at 2c, the new floor. Those compete.
+    const r = aggregate([L(9, 3030, 50, 2, 'LONG'), L(8, 3030, 30, 3, 'LONG')], [L(1, 3030, 100, 1, 'LONG')], { commodity: true })[0]!;
+    expect(r.newNearFloor).toBe(50);
+  });
+
+  it('sanity bound: units judged sold never exceed previous plus new minus current units; a breach is logged and capped', () => {
+    // A stack that grew (impossible in game) makes the totals disagree with the per listing count.
+    const diag = { ageConflicts: 0, breaches: [] as string[] };
+    const a = aggregate([L(2, 7, 15, 100)], [L(1, 7, 10, 90), L(2, 7, 5, 100)], { commodity: true, diag })[0]!;
+    expect(a.boundBreach).toBe(10);
+    expect(a.soldUnits).toBe(0);
+    expect(diag.breaches[0]).toMatch(/item 7: 10 judged sold, only 0 left/);
+  });
+
+  it('first sights carry over, new listings get this publish and its predecessor, unknown ones are seeded', () => {
+    const prev = { listings: [L(1, 7, 1, 1, 'LONG')], at: t0 - H };
+    const s = nextSeen(null, [L(1, 7, 1, 1, 'LONG'), L(2, 7, 1, 1, 'MEDIUM')], t0, prev, true);
+    expect(s.get(1)).toEqual({ firstSeen: t0 - H, firstTimeLeft: 'LONG', postedAfter: null });
+    expect(s.get(2)).toEqual({ firstSeen: t0, firstTimeLeft: 'MEDIUM', postedAfter: t0 - H });
+    const s2 = nextSeen(s, [L(2, 7, 1, 1, 'SHORT')], t0 + H, { listings: [L(1, 7, 1, 1, 'LONG'), L(2, 7, 1, 1, 'MEDIUM')], at: t0 }, true);
+    expect([...s2.keys()]).toEqual([2]);
+    expect(s2.get(2)).toBe(s.get(2));
+    // After a gap the age of a new listing is unknown.
+    expect(nextSeen(null, [L(3, 7, 1, 1, 'LONG')], t0, prev, false).get(3)!.postedAfter).toBeNull();
   });
 });
