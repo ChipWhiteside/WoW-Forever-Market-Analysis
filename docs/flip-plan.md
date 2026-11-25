@@ -183,6 +183,23 @@ The first test round recomputed 13 flips to the copper, then showed the market m
 7. **Price wars are named:** a floor that fell this hour under a flood of new listings is a risk driver, not demand.
 8. **Fresh gate:** a run on data over 2 hours old is incomplete.
 
+### Refinements from the second test rounds (November 25)
+1. **Unsold stock is priced through tomorrow's queue,** not assumed to sell. A flip that mostly sells tomorrow says so and is at least medium risk.
+2. **Competition counts only listings at or under your price,** and needs 6 hours of watching like sales do.
+3. **Every profession a craft needs is listed** (a setting can limit sub crafts to your professions; a top recipe is never blocked).
+4. **Unknown learn source is shown and is a risk.**
+5. **Cooldowns cap crafts within one craft session.**
+6. **Vendor prices only from Forever data.** Items whose vendor price exists only in Classic data are held back until checked in game. Vendor flips need at least 5c and 5% margin.
+7. **Market evidence wins on binding:** an item listed on your house in the last day is tradeable, whatever a table says.
+8. **Steamwheedle towns are neutral** (Booty Bay, Ratchet, Gadgetzan, Everlook), never for an NPC recorded as Horde.
+
+### In game checks for Chip (each settles a ledger row)
+1. Vendor one Seasoned Wolf Kabob and one Barbaric Shoulders: does the vendor pay what the tool says?
+2. List one item each at 2, 8 and 24 hours on Alliance and on Blackwater: note the deposits (settles T7).
+3. Craft Coarse Dynamite a few times: how many each time?
+4. Buy from one vendor in Ratchet, Gadgetzan and Everlook (Booty Bay is proven).
+5. Tell the tool your Blackwater house (Booty Bay screenshots with prices).
+
 ### How many Chip can sell: a queue, not a flat 20%
 Units Chip can sell within the horizon at price p = low estimate of sales in that time − units listed below p − new units other sellers post at or under the floor in that time (already measured hourly as new units). The card reads, for example: "180 ahead of you, about 60 sell a day, you can expect to sell 25 in 24 hours." The 20% share stays as an upper bound until the backtest proves the queue is better.
 
