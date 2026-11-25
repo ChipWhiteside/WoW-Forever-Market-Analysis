@@ -35,8 +35,12 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   /** cautious units sold a day: the 95 percent one sided lower bound of the sale event count, times units per event,
    * over hours watched, so few sales give a low number. null under 6 hours watched (never projected). */
   lowPerDay?: number | null;
-  /** new units other sellers posted at or under 1.1 times the floor, per day (all new units for older rows) */
+  /** new units other sellers posted at or under 1.1 times the floor, per day (all new units for older rows). Reposts
+   * count: a seller who pulls a stack and posts it again adds it here and to pulledPerDay. */
   newPerDay?: number;
+  /** units within 1.1 times the floor that left without being bought (cancelled, expired, pulled to post again), per
+   * day. newPerDay minus this is the net growth of the queue near the floor. */
+  pulledPerDay?: number;
   /** highest unit price judged bought at the latest publish (the last hour), null when nothing was bought */
   sweepHigh?: number | null;
   /** lowest hourly floor in the last 3 days */

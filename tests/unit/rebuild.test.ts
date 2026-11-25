@@ -47,6 +47,9 @@ describe('rebuilding history from raw snapshots', () => {
     expect(coal.low3d).toBe(800);
     expect(coal.newPerDay).toBe(0);
     expect(d.get(5956)?.newPerDay).toBe(24); // one new hammer at the floor each hour
+    // ...and one pulled each hour (expired, then pulled and posted again), so the queue near the floor does not grow.
+    expect(d.get(5956)?.pulledPerDay).toBe(24);
+    expect(coal.pulledPerDay).toBe(0);
     // Ages handed to the collector: the last publish's listings, the hammer posted after the 09:25 publish.
     const seen = loadSeen(db, 111, 'commodities');
     expect([...seen.keys()].sort((a, b) => a - b)).toEqual([5, 6, 12]);

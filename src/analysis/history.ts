@@ -87,11 +87,12 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
   if (covered <= 0) return out;
   const events = hasSoldEvents(db) ? `COALESCE(sold_events, ${FALLBACK_EVENTS})` : FALLBACK_EVENTS;
   // New units other sellers posted near the floor; rows written before that was measured fall back to all new units.
+  // Units near the floor that left without being bought (cancelled, expired, pulled to post again).
   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
-     SUM(COALESCE(new_near_floor, new_units, 0)) fresh
+     SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
      WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
-    .all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null }>;
+    .all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
      FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000) as Array<{ item_id: number; sold: number; value: number }>)
     .map(r => [r.item_id, r]));
@@ -114,7 +115,7 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
     out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(covered, 6)) * 24, hours: hoursWatched, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,
       lowPerDay: covered < MIN_HOURS_LOW ? null : ((poissonLower(ev) * (unitsPerEvent ?? 0)) / covered) * 24,
-      newPerDay: ((r.fresh ?? 0) / covered) * 24,
+      newPerDay: ((r.fresh ?? 0) / covered) * 24, pulledPerDay: ((r.pulled ?? 0) / covered) * 24,
       sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched });
   }
   return out;
