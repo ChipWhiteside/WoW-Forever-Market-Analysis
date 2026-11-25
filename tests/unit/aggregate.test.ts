@@ -167,7 +167,11 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     const cur = [L(4, 2770, 5, 130), L(5, 2770, 20, 160)];
     const a = aggregate(cur, prev, { commodity: true })[0]!;
     expect(a.soldUnits).toBe(75);
-    expect(a.soldEvents).toBe(4); // three stacks bought whole, one in part
+    expect(a.soldEvents).toBe(1); // three stacks bought whole and one in part: one run from the front, one buyer
+    // A stack left unbought inside the run (it most likely ran out first) splits it: two runs, two events.
+    const b = aggregate([L(4, 2770, 5, 130), L(5, 2770, 20, 160)], prev.map(l => l.id === 2 ? { ...l, timeLeft: 'SHORT' as const } : l), { commodity: true })[0]!;
+    expect(b.soldUnits).toBe(55);
+    expect(b.soldEvents).toBe(2);
     expect(a.sweepHigh).toBe(130);
     expect(a.soldValue).toBe(20 * 100 + 20 * 104 + 20 * 115 + 15 * 130);
     expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40); // the old near floor count, kept
