@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openDb, type DB } from '../../src/store/db.ts';
 import { chipHouses } from '../../src/flips/houses.ts';
-import { buildFlipInputs } from '../../src/flips/inputs.ts';
+import { buildFlipInputs, recipeKey, TEACH_PREFIX } from '../../src/flips/inputs.ts';
 import { runFlips, setupFor } from '../../src/flips/run.ts';
 import { persistFlips } from '../../src/flips/persist.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
@@ -29,7 +29,12 @@ function db(): DB {
     (777, 'Honored Only', 'alliance', 'Redridge', 2589, 1, 1, 0, '7');
     INSERT INTO trainer_spells (npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost) VALUES
     (5513, 'Gelman Stonehand', 'alliance', 'Stormwind City', 51, 17, 1453, 2657, 'Smelt Copper', 'Mining', 1, 10);`);
+  // A publish of both listing kinds every hour for the first 20 hours on houses 111 and 116, so the fresh gate passes.
+  for (let h = 0; h <= 20; h++) for (const house of [111, 116]) publish(d, house, h * HOUR);
   return d;
+}
+function publish(d: DB, house: number, at: number, kinds = ['auctions', 'commodities']): void {
+  for (const k of kinds) d.prepare('INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes) VALUES (?, ?, ?, ?, ?, 0, 0, 0)').run(house, k, `${k}-${at}`, at, at);
 }
 const market = (): Map<number, Listing[]> => new Map([
   [111, [L(2589, 10, 20), L(2770, 4, 30), L(2770, 20, 50)]],
@@ -73,6 +78,30 @@ describe('buildFlipInputs', () => {
     expect(res.report.complete).toBe(false);
     expect(res.report.incompleteReason).toMatch(/no snapshot for house 116/);
     expect(res.flips).toEqual([]);
+  });
+  it('data over 2 hours old makes the run incomplete, never a list from stale prices (round 1 M1)', () => {
+    const d = db();
+    // the newest publish is at 20 hours; at 22.5 hours it is 2.5 hours old
+    const res = runFlips(buildFlipInputs(d, market(), 22.5 * HOUR));
+    expect(res.report.complete).toBe(false);
+    expect(res.report.incompleteReason).toMatch(/data is 2\.5 hours old on house 111/);
+    expect(res.flips).toEqual([]);
+    // at 21.5 hours it is 1.5 hours old: fresh enough
+    expect(runFlips(buildFlipInputs(d, market(), 21.5 * HOUR)).report.complete).toBe(true);
+  });
+  it('a house missing one listing kind, or a raw file the caller could not read, makes the run incomplete (round 1 L5)', () => {
+    const d = db();
+    d.exec('DELETE FROM snapshots WHERE house_id = 111 AND kind = \'commodities\'');
+    const res = runFlips(buildFlipInputs(d, market(), 10 * HOUR));
+    expect(res.report.complete).toBe(false);
+    expect(res.report.incompleteReason).toMatch(/house 111 has no commodities snapshot/);
+    const d2 = db();
+    const res2 = runFlips(buildFlipInputs(d2, market(), 10 * HOUR, ['house 111 commodities raw snapshot 36000000 is missing']));
+    expect(res2.report.complete).toBe(false);
+    expect(res2.report.incompleteReason).toMatch(/raw snapshot 36000000 is missing/);
+    // publishes after `now` are never used: at 3.4 hours the newest is the one at 3 hours
+    const early = buildFlipInputs(db(), market(), 3.4 * HOUR);
+    expect(early.houses.find(h => h.id === 111)!.publishedAt).toBe(3 * HOUR);
   });
   it('time rate and gold on hand come from settings', () => {
     const d = db();
@@ -121,6 +150,48 @@ describe('setup for a craft', () => {
     pure.recipeItems.set('holy protection potion', 6053);
     pure.vendors.set(6053, [{ npcId: 1, npcName: 'Alchemist Mallory', zone: 'Elwynn Forest', places: [], unitPrice: 100, bundle: 1, limited: true, minStanding: 4 }]);
     expect(setupFor(recipe(7255, 'Holy Protection Potion', 6051, [[2589, 1]], { learnSkill: 100 }), pure))
-      .toMatchObject({ rank: 100, cost: 100, where: 'Recipe: Holy Protection Potion from Alchemist Mallory, Elwynn Forest' });
+      .toMatchObject({ rank: 100, cost: 100, where: 'Recipe: Holy Protection Potion: 1s from Alchemist Mallory, Elwynn Forest', teachItem: { id: 6053 } });
+  });
+  it('teaching items by id first, any prefix by name as the fallback, with the auction price when listed (round 1 M4)', () => {
+    const LIFE = 13488, RACK = 273096;
+    const f = inputsOf({ listings: { 111: [L(LIFE, 450000, 1), L(RACK, 750, 1)] },
+      items: [item(LIFE, 'Recipe: Transmute Life to Earth', 3750), item(RACK, 'Blueprint: Tanning Rack', 375), item(7076, 'Essence of Earth', 500), item(279941, 'Tanning Rack', 100)] });
+    // linked by id (recipes.teach_item_id): the name differs ("Transmute: Life to Earth"), the link does not care
+    expect(setupFor(recipe(9950, 'Transmute: Life to Earth', 7076, [[2589, 1]], { learnSkill: 275, teachItemId: LIFE }), f))
+      .toMatchObject({ rank: 275, cost: 450000, auctionPrice: 450000, auctionHouseId: 111, teachItem: { id: LIFE, name: 'Recipe: Transmute Life to Earth' },
+        where: 'Recipe: Transmute Life to Earth: 45g on the Alliance auction house' });
+    // no id: a Blueprint: prefix matches by name, punctuation aside
+    f.recipeItems.set(recipeKey('Tanning Rack'), RACK);
+    expect(setupFor(recipe(57015, 'Tanning Rack', 279941, [[2589, 1]], { learnSkill: 125, profession: 'Leatherworking' }), f))
+      .toMatchObject({ rank: 125, cost: 750, auctionPrice: 750, where: 'Blueprint: Tanning Rack: 7s 50c on the Alliance auction house' });
+    expect(TEACH_PREFIX.exec('Blueprint: Tanning Rack')![2]).toBe('Tanning Rack');
+    for (const p of ['Recipe', 'Pattern', 'Plans', 'Formula', 'Schematic', 'Blueprint', 'Manual']) expect(TEACH_PREFIX.test(`${p}: Thing`)).toBe(true);
+    // listed and sold by a vendor: both named, the cheaper is the cost
+    f.vendors.set(RACK, [{ npcId: 9, npcName: 'Kendor', zone: 'Stormwind City', places: [], unitPrice: 1500, bundle: 1, limited: false, minStanding: 4 }]);
+    expect(setupFor(recipe(57015, 'Tanning Rack', 279941, [[2589, 1]], { learnSkill: 125, teachItemId: RACK }), f))
+      .toMatchObject({ cost: 750, where: 'Blueprint: Tanning Rack: 7s 50c on the Alliance auction house, or 15s from Kendor, Stormwind City' });
+  });
+  it('trainer rows without a spell id match by name; the rank is the recipe\'s learn skill; Horde only is said plainly', () => {
+    const f = inputsOf({ listings: { 111: [] }, items: [] });
+    f.trainers.push({ npcId: 1, npcName: 'Horde Guy', faction: 'horde', zone: 'Orgrimmar', x: null, y: null, mapId: null, spellId: null, name: 'Smelt Iron', skill: 'Mining', skillRank: 120, cost: 500 });
+    expect(setupFor(recipe(3307, 'Smelt Iron', 3575, [[2772, 1]], { learnSkill: 125, profession: 'Mining', spellId: 3307 }), f))
+      .toMatchObject({ rank: 125, cost: 500, where: 'Horde trainers only' });
+    f.trainers.push({ npcId: 2, npcName: 'Geofram Bouldertoe', faction: 'alliance', zone: 'Ironforge', x: 1, y: 2, mapId: 1455, spellId: null, name: 'Smelt Iron', skill: 'Mining', skillRank: 120, cost: 500 });
+    expect(setupFor(recipe(3307, 'Smelt Iron', 3575, [[2772, 1]], { learnSkill: 125, profession: 'Mining', spellId: 3307 }), f))
+      .toMatchObject({ rank: 125, cost: 500, where: 'Geofram Bouldertoe, Ironforge' });
+    expect(setupFor(recipe(9, 'Arcane Thing', 3575, [[2772, 1]], { learnSkill: 300, learnSource: 'trainer_horde_only' }), f)).toMatchObject({ where: 'Horde trainers only', rank: 300 });
+  });
+});
+
+describe('open N of the last 72 hours', () => {
+  it('never double counts two runs in one hour and never passes 72 (round 1 L3)', () => {
+    const d = db();
+    publish(d, 111, 100 * HOUR);
+    const key = 'auction_vendor:vendor:2589';
+    // a flip open every hour for 100 hours, two runs in each hour
+    for (let h = 0; h < 100; h++) for (const m of [0, 30]) d.prepare('INSERT INTO flip_history (at, key, expected_profit, per_item, units) VALUES (?, ?, 1, 1, 1)').run(h * HOUR + m * 60_000, key);
+    const inputs = buildFlipInputs(d, market(), 100.5 * HOUR);
+    expect(inputs.history.openHours.get(key)).toBe(71);
+    expect(runFlips(inputs).flips.find(f => f.key === key)!.openHours72).toBe(72);
   });
 });

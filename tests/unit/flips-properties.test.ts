@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
+import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
 import { Market } from '../../src/flips/market.ts';
 import { SellBook } from '../../src/flips/sellBook.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
@@ -102,35 +102,55 @@ describe('properties', () => {
       expect(loss).toBeGreaterThanOrEqual(last);
       last = loss;
     }
-    // 20 crafts cost 113,880; at the 3 day low of 50s each nets floor(5000 x 0.95) = 4750, x 20 = 95,000: a 18,880 loss
-    expect(e.at(20).risk.badCaseLoss).toBe(18880);
-    expect(e.at(20).risk.level).toBe('medium');
-    expect(e.at(1).risk.badCaseLoss).toBe(5020 - 4750);
-    // Past what sells overnight (12 a day low, none new: 5 overnight), each unsold unit adds its cost and lost deposit.
-    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, lowPerDay: 12, newPerDay: 0 } })), DYE_KEY).e;
+    // Bad case (round 1 H3): the 3 day low of 50s nets floor(5000 x 0.95) = 4750, and only half of the S(n) units expected
+    //   to sell do; the rest are salvaged at 75c and lose the 360c deposit. S(n) sums P(X >= k), X ~ Poisson(20).
+    const S = (n: number, mu = 20) => { let s = 0; for (let k = 1; k <= n; k++) s += refTail(mu, k); return s; };
+    const bad = (n: number, cost: number, mu = 20) => Math.max(0, Math.round(cost - (S(n, mu) / 2 * 4750 + (n - S(n, mu) / 2) * (75 - 360))));
+    // 20 crafts cost 113,880; S(20) = 18.22, so 9.11 sell at 4750 and 10.89 are salvaged: a 73,703 loss
+    expect(e.at(20).risk.badCaseLoss).toBe(bad(20, 113880));
+    expect(e.at(20).risk.badCaseLoss).toBe(73703);
+    expect(e.at(20).risk.level).toBe('high');
+    // one craft: 5020 spent, half of the 1.0 expected sold at 4750, half salvaged at 75 - 360: 5020 - 2375 + 142.5 = 2788
+    expect(e.at(1).risk.badCaseLoss).toBe(bad(1, 5020));
+    expect(e.at(1).risk.badCaseLoss).toBe(2788);
+    // the same with half the expected sold at the claimed price, the "at half sales" number on the card
+    expect(e.at(1).risk.halfSalesProfit).toBe(Math.round(0.5 * 7077 + 0.5 * (75 - 360) - 5020));
+    // Thin sales (12 a day middle, none new: 5 sale events overnight): each unit past the queue adds its cost and lost deposit.
+    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 12, newPerDay: 0 } })), DYE_KEY).e;
     let prev = -1;
     for (let n = 1; n <= 10; n++) { const loss = thin.at(n).risk.badCaseLoss; expect(loss).toBeGreaterThanOrEqual(prev); prev = loss; }
     expect(thin.at(10).risk.level).toBe('high');
-    // 10 crafts cost 55,440; 5 sell at 7077; the 5 unsold are worth their 75c vendor price minus the 360c deposit:
-    //   expected = 5 x 7077 - 55,440 + 5 x (75 - 360) = 35,385 - 55,440 - 1,425 = -21,480
-    //   bad case = 55,440 - (5 x 4750 + 5 x (75 - 360)) = 55,440 - 22,325 = 33,115
-    expect(thin.at(10).expectedProfit).toBe(-21480);
-    expect(thin.at(10).risk.badCaseLoss).toBe(33115);
+    // 10 crafts cost 55,440; S(10) = 4.99 of them expected to sell at 7077, the rest worth 75c less the 360c deposit
+    expect(thin.at(10).expectedProfit).toBe(Math.round(refExpected({ mu: 5, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 55440, n: 10 })));
+    expect(thin.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5));
     expect(thin.at(10).risk.drivers).toContain('more units than sell overnight');
   });
   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {
     const r = run(ceruleanAtBens({ extra: { settings: { goldOnHand: 50000 } } }));
     const f = r.flips.find(x => x.key === DYE_KEY)!;
-    // 9 crafts: 5004 + 2 x 5404 + 5 x 5604 + 5804 = 49,636 plus 4c of one spare vial = 49,640; 10 crafts cost 55,440
-    expect(f.best.units).toBe(9);
-    expect(f.best.cost).toBe(49640);
+    // Gold pays for the crafts and the 360c deposit on every dye posted (round 1 H3):
+    //   8 crafts: 5004 + 2 x 5404 + 5 x 5604 = 43,820 plus 2 vial bundles 40 = 43,840, and 8 x 360 deposits: 46,720, fits
+    //   9 crafts: 49,640 and 9 x 360: 52,880, over 50,000
+    expect(f.best.units).toBe(8);
+    expect(f.best.cost).toBe(43840);
+    expect(f.best.risk.atStake).toBe(46720);
     expect(f.notes).toContain('capped by your gold on hand');
   });
-  it('with no new listing count from sale counting, the card says the quarter of sales is a fallback', () => {
+  it('with no new listing count, none are assumed and the card says so; the 25% fallback is gone (round 1 H2)', () => {
     const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: undefined } })).flips.find(x => x.key === DYE_KEY)!;
-    // a quarter of 60 a day is 15 a day, x 10/24 = 6.25 overnight
-    expect(f.sellQuote.newOvernight).toBeCloseTo(6.25, 6);
-    expect(f.notes.join(' ')).toMatch(/about 6 new listings usually appear under you overnight \(a fallback: a quarter of the sales seen/);
+    expect(f.sellQuote.newOvernight).toBe(0);
+    expect(f.sellQuote.newDerived).toBe(true);
+    expect(f.notes).toContain('new listings under you are not measured yet for this item; none are assumed');
+    expect(f.notes.join(' ')).not.toMatch(/quarter/);
+  });
+  it('new listings overnight are the measured new units an hour times the horizon (round 1 H2)', () => {
+    // 36 new units near the floor a day, 1.5 an hour, over the 10 hour night: 15 ahead of him, and 15 fewer sale events
+    const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: 36 } })).flips.find(x => x.key === DYE_KEY)!;
+    expect(f.sellQuote.newPerHour).toBeCloseTo(1.5, 9);
+    expect(f.sellQuote.newOvernight).toBeCloseTo(15, 9);
+    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 36 } })), DYE_KEY);
+    // events overnight: (60 - 36) x 10/24 = 10
+    expect(e.at(5).expectedSold).toBe(Math.round(10 * [1, 2, 3, 4, 5].reduce((a, k) => a + refTail(10, k), 0)) / 10);
   });
   it('a time rate charges minutes; at the default 0 minutes are shown, never charged', () => {
     const free = run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!;
