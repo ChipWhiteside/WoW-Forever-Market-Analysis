@@ -60,13 +60,15 @@ export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set
 
 /**
  * Reputation discounts by standing (4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted), as Forever charges them.
- * Revered is 0.90, the same as Honored, not Classic's 0.85: 108 EG Link rows recorded at Revered next to a lower
- * standing all show 0.90 (Engineer's Ink: Revered 1800, base 2000). Exalted 0.8 is unverified.
+ * Revered is 0.90, the same as Honored, not Classic's 0.85. Checked November 25 on 126 EG Link rows recorded at Revered
+ * for an item whose Friendly or Neutral price another vendor recorded: 104 are exactly 0.90 of it, the rest 0.90 to 0.94,
+ * none 0.85 (Engineer's Ink: Revered 1800, base 2000). The 6 rows with both Honored and Revered are equal. Exalted 0.8
+ * is unverified: no row was recorded at Exalted.
  */
 export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 0.9, '7': 0.9, '8': 0.8 };
 
 /** Hangul, the Korean alphabet. EG Link rows recorded by a Korean client carry Korean names. */
-const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/;
+const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
 export const isHangul = (s: string | null | undefined): boolean => !!s && HANGUL.test(s);
 
 /**

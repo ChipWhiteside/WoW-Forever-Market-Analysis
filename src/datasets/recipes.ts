@@ -46,7 +46,7 @@ export interface BuiltRecipe {
   reagents: Array<{ itemId: number; quantity: number }>;
   castMs: number | null; cooldownMs: number | null; cooldownCategory: number | null;
   randomYield: boolean;
-  /** the skill rank it can be learned at, and where that rank came from (see learnFrom in buildRecipes) */
+  /** the skill rank it can be learned at, and where that rank came from (see learnFrom) */
   learnSkill: number | null; learnSource: LearnSource | null;
   /** the item that teaches it (ItemEffect TriggerType 6), and that item's RequiredSkillRank */
   teachItemId: number | null; teachSkill: number | null;
