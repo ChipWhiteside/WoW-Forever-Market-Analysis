@@ -77,7 +77,7 @@ export interface FlipInputs {
   typical: Map<number, Map<number, Typical>>;
   /** lowest hourly floor over 3 days per house and item, the fallback when Demand.low3d is missing */
   low3d: Map<number, Map<number, number>>;
-  /** hours of floors behind low3d per house and item (first reading in the 72 hour window to now) */
+  /** hours of floors behind low3d per house and item (the item's first floor ever recorded to now) */
   low3dHours?: Map<number, Map<number, number>>;
   drivers: Map<number, Driver>;
   trainers: TrainerRow[];

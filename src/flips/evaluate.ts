@@ -40,6 +40,7 @@ export interface Walk { steps: Step[]; trace: TraceEntry[]; exhausted: boolean; 
 
 export interface Evaluation {
   walk: Walk;
+  /** units expected to sell overnight if Chip posted without limit (the sum of every queue position's chance) */
   cap: number;
   depositEach: number;
   maxN: number;
