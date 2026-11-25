@@ -35,12 +35,12 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.get(3857)?.unitsPerDay).toBeCloseTo(80 / 6 * 24, 0); // 80 sold, projected from at least 6 hours
     expect(d.get(3857)?.soldPrice).toBe(810); // 40 at 800, 40 at 820
     expect(d.get(5956)?.unitsPerDay ?? 0).toBe(0); // the expiring hammer relists are not sales
-    // The cautious estimate is not projected from 2 hours of watching. Without a sold_events column, a commodity hour
-    // with sales is one event: 2 events of 40 units.
+    // The cautious estimate is not projected from 2 hours of watching. With sold_events (migration 13) each bought
+    // listing is one sale: stacks 1, 2, 3 and 4 of 20 units.
     const coal = d.get(3857)!;
     expect(coal.soldUnits).toBe(80);
-    expect(coal.saleEvents).toBe(2);
-    expect(coal.unitsPerEvent).toBe(40);
+    expect(coal.saleEvents).toBe(4);
+    expect(coal.unitsPerEvent).toBe(20);
     expect(coal.hoursWatched).toBe(2);
     expect(coal.lowPerDay).toBeNull();
     expect(coal.sweepHigh).toBe(820);
@@ -81,7 +81,6 @@ describe('rebuilding history from raw snapshots', () => {
   it('the low estimate counts sale events, not units: three stacks of 221, 48 and 15 are 3 sales (Clam Linguine)', () => {
     const dir = tempDir();
     const db = openDb(dir, ':memory:');
-    db.exec('ALTER TABLE item_stats ADD COLUMN sold_events INTEGER'); // the migration this needs, made here for the test
     const t0 = Date.parse('2026-11-19T08:25:00Z');
     // Seven publishes, six differenced hours. Hour 1 the three cheapest stacks sell; nothing else sells.
     const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 12210, 20, 900, 'VERY_LONG'));
@@ -111,10 +110,8 @@ describe('rebuilding history from raw snapshots', () => {
     rebuildIfRulesChanged(db, () => runs++);
     rebuildIfRulesChanged(db, () => runs++);
     expect(runs).toBe(1);
-    // A migration adding sold_events re-counts once more so the column gets filled.
-    db.exec('ALTER TABLE item_stats ADD COLUMN sold_events INTEGER');
+    // sold_events exists from migration 13, so nothing triggers a second re-count.
     rebuildIfRulesChanged(db, () => runs++);
-    rebuildIfRulesChanged(db, () => runs++);
-    expect(runs).toBe(2);
+    expect(runs).toBe(1);
   });
 });
