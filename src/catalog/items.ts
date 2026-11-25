@@ -117,17 +117,27 @@ export async function resolveItems(client: BlizzardClient, db: DB, ids: number[]
   return { fetched, notFound, errors, priceChanges, bySource, bindingFound };
 }
 
+export interface SparseCheck {
+  updated: number;
+  /** Blizzard binding vs ItemSparse.Bonding, on rows with Blizzard data (forever or classic1x) */
+  compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }>;
+  /** Blizzard sell price vs ItemSparse.SellPrice, on rows with Forever data only (Classic prices are another game's) */
+  sellCompared: number; sellDisagree: Array<{ id: number; blizzard: number | null; sparse: number }>;
+}
+
 /**
  * Copy bonding, stack size and vendor bundle size from the game's item table onto every catalog row it knows,
- * and cross check Blizzard's binding against ItemSparse.Bonding where both exist (B23). The binding column keeps
- * Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before.
+ * and cross check Blizzard's binding (B23) and sell price against ItemSparse where both exist. The binding column
+ * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. Run it after the
+ * vendor price refresh, so the live API side is today's: a server hotfix shows up as a disagreement here.
  */
-export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): { updated: number; compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }> } {
+export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCheck {
   sparseCache = game.items;
-  const rows = db.prepare('SELECT id, binding, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; data_source: string | null; status: number }>;
+  const rows = db.prepare('SELECT id, binding, sell_price, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; sell_price: number | null; data_source: string | null; status: number }>;
   const set = db.prepare('UPDATE items SET bonding = ?, stack_size = ?, vendor_stack = ? WHERE id = ?');
-  let updated = 0, compared = 0;
-  const disagree: Array<{ id: number; blizzard: string | null; bonding: number }> = [];
+  let updated = 0, compared = 0, sellCompared = 0;
+  const disagree: SparseCheck['disagree'] = [];
+  const sellDisagree: SparseCheck['sellDisagree'] = [];
   tx(db, () => {
     for (const r of rows) {
       const sp = game.items.get(r.id);
@@ -138,9 +148,13 @@ export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): { update
         compared++;
         if ((BONDING_TO_BINDING[sp.bonding] ?? null) !== r.binding) disagree.push({ id: r.id, blizzard: r.binding, bonding: sp.bonding });
       }
+      if (r.status === 200 && r.data_source === 'forever') {
+        sellCompared++;
+        if ((r.sell_price ?? 0) !== sp.sellPrice) sellDisagree.push({ id: r.id, blizzard: r.sell_price, sparse: sp.sellPrice });
+      }
     }
   });
-  return { updated, compared, disagree };
+  return { updated, compared, disagree, sellCompared, sellDisagree };
 }
 
 /** Resolve icon urls for items that have a media id but no icon yet. */

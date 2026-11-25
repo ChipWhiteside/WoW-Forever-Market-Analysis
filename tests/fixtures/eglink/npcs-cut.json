@@ -1,0 +1,809 @@
+{
+ "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210.",
+ "builds": [
+  {
+   "build": "1.60.1.70205",
+   "vendors": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-10-03",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7733,
+       "mapY": 0.3868,
+       "uiMap": 1458,
+       "worldX": 1630.3,
+       "worldY": 131.4
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "4": 2000
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70450",
+   "vendors": {},
+   "npcs": {},
+   "creatures": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       5
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70790",
+   "vendors": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "lastSeen": "2026-11-06",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.419,
+       "mapY": 0.6706,
+       "uiMap": 1429,
+       "worldX": -9491.8,
+       "worldY": 81.1
+      }
+     ],
+     "entries": {
+      "item:2324": {
+       "costs": {
+        "5": 25
+       },
+       "itemId": 2324,
+       "name": "Bleach",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4164": {
+     "name": "Cylania",
+     "lastSeen": "2026-11-05",
+     "positions": [
+      {
+       "instance": 1,
+       "mapX": 0.5908,
+       "mapY": 0.4593,
+       "uiMap": 1457,
+       "worldX": 9914.2,
+       "worldY": 2313.1
+      }
+     ],
+     "entries": {
+      "item:1839": {
+       "costs": {
+        "5": 184
+       },
+       "itemId": 1839,
+       "name": "Rough Leather Belt",
+       "sources": 1,
+       "stack": 1
+      },
+      "item:1840": {
+       "costs": {
+        "5": 185
+       },
+       "itemId": 1840,
+       "name": "Rough Leather Bracers",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-05",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7725,
+       "mapY": 0.3859,
+       "uiMap": 1458,
+       "worldX": 1630.9,
+       "worldY": 132.1
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "4": 2000
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "side": "Alliance"
+    },
+    "4164": {
+     "name": "Cylania",
+     "side": "Alliance"
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "reactions": {
+      "Alliance": [
+       5
+      ]
+     }
+    },
+    "4164": {
+     "name": "Cylania",
+     "reactions": {
+      "Alliance": [
+       5
+      ]
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       4,
+       5
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70840",
+   "vendors": {},
+   "npcs": {},
+   "creatures": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       6
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70862",
+   "vendors": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-08",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7738,
+       "mapY": 0.3856,
+       "uiMap": 1458,
+       "worldX": 1631.1,
+       "worldY": 130.9
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "6": 1800
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "8305": {
+     "name": "Kixxle",
+     "lastSeen": "2026-11-08",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.502,
+       "mapY": 0.3786,
+       "uiMap": 1437,
+       "worldX": -3191.6,
+       "worldY": -2465.4
+      }
+     ],
+     "entries": {
+      "item:18256": {
+       "costs": {
+        "4": 30000
+       },
+       "itemId": 18256,
+       "name": "Imbued Vial",
+       "sources": 2,
+       "stack": 5
+      },
+      "item:2449": {
+       "costs": {
+        "4": 80
+       },
+       "itemId": 2449,
+       "limited": true,
+       "name": "Earthroot",
+       "sources": 1,
+       "stack": 1,
+       "stockMax": 3
+      }
+     }
+    }
+   },
+   "npcs": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    },
+    "8305": {
+     "name": "Kixxle"
+    }
+   },
+   "creatures": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       6
+      ]
+     }
+    },
+    "8305": {
+     "name": "Kixxle",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70888",
+   "vendors": {
+    "3134": {
+     "name": "Kzixx",
+     "lastSeen": "2026-11-11",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.8173,
+       "mapY": 0.1988,
+       "uiMap": 1431,
+       "worldX": -10074.5,
+       "worldY": -1373.3
+      }
+     ],
+     "entries": {
+      "item:6053": {
+       "costs": {
+        "4": 800
+       },
+       "itemId": 6053,
+       "name": "Recipe: Holy Protection Potion",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-11",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.773,
+       "mapY": 0.3852,
+       "uiMap": 1458,
+       "worldX": 1631.4,
+       "worldY": 131.6
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "6": 1800
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "3134": {
+     "name": "Kzixx"
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "3134": {
+     "name": "Kzixx",
+     "reactions": {
+      "Horde": [
+       4
+      ]
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       6
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70938",
+   "vendors": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "lastSeen": "2026-11-17",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.4194,
+       "mapY": 0.6711,
+       "uiMap": 1429,
+       "worldX": -9492.8,
+       "worldY": 79.9
+      }
+     ],
+     "entries": {
+      "item:2324": {
+       "costs": {
+        "5": 25,
+        "6": 23
+       },
+       "itemId": 2324,
+       "name": "Bleach",
+       "sources": 3,
+       "stack": 1
+      }
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-16",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7714,
+       "mapY": 0.387,
+       "uiMap": 1458,
+       "worldX": 1630.2,
+       "worldY": 133.1
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "5": 2000,
+        "6": 1800
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 2,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "side": "Alliance"
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "66": {
+     "name": "Tharynn Bouden",
+     "reactions": {
+      "Alliance": [
+       5,
+       6
+      ]
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       5,
+       6
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.70959",
+   "vendors": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "lastSeen": "2026-11-18",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.264,
+       "mapY": 0.2584,
+       "uiMap": 1437,
+       "worldX": -2860.2,
+       "worldY": -1481.2
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "5": 2000
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-20",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7719,
+       "mapY": 0.3848,
+       "uiMap": 1458,
+       "worldX": 1631.7,
+       "worldY": 132.6
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "7": 1800
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "side": "Alliance"
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "reactions": {
+      "Alliance": [
+       5
+      ]
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       5,
+       7
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  },
+  {
+   "build": "1.60.1.71037",
+   "vendors": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "lastSeen": "2026-11-21",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.2639,
+       "mapY": 0.2581,
+       "uiMap": 1437,
+       "worldX": -2859.4,
+       "worldY": -1481.1
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "5": 2000
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4164": {
+     "name": "키라니아",
+     "lastSeen": "2026-11-24",
+     "positions": [
+      {
+       "instance": 1,
+       "mapX": 0.5898,
+       "mapY": 0.4604,
+       "uiMap": 1457,
+       "worldX": 9913.4,
+       "worldY": 2314.1
+      }
+     ],
+     "entries": {
+      "item:1839": {
+       "costs": {
+        "6": 166
+       },
+       "itemId": 1839,
+       "name": "조잡한 가죽 허리띠",
+       "sources": 1,
+       "stack": 1
+      },
+      "item:1840": {
+       "costs": {
+        "6": 167
+       },
+       "itemId": 1840,
+       "name": "조잡한 가죽 팔보호구",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "lastSeen": "2026-11-24",
+     "positions": [
+      {
+       "instance": 0,
+       "mapX": 0.7761,
+       "mapY": 0.3858,
+       "uiMap": 1458,
+       "worldX": 1631,
+       "worldY": 128.6
+      }
+     ],
+     "entries": {
+      "item:10647": {
+       "costs": {
+        "7": 1800
+       },
+       "itemId": 10647,
+       "name": "Engineer's Ink",
+       "sources": 1,
+       "stack": 1
+      }
+     }
+    }
+   },
+   "npcs": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "side": "Alliance"
+    },
+    "3603": {
+     "name": "킨드라 카인드위스퍼",
+     "side": "Alliance"
+    },
+    "4164": {
+     "name": "키라니아",
+     "side": "Alliance"
+    },
+    "4210": {
+     "name": "알레고른",
+     "side": "Alliance"
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "side": "Horde"
+    }
+   },
+   "creatures": {
+    "2682": {
+     "name": "Fradd Swiftgear",
+     "reactions": {
+      "Alliance": [
+       5
+      ]
+     }
+    },
+    "3603": {
+     "name": "킨드라 카인드위스퍼",
+     "reactions": {
+      "Alliance": [
+       6
+      ]
+     }
+    },
+    "4164": {
+     "name": "키라니아",
+     "reactions": {
+      "Alliance": [
+       6
+      ]
+     }
+    },
+    "4210": {
+     "name": "알레고른",
+     "reactions": {
+      "Alliance": [
+       6
+      ]
+     }
+    },
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       7
+      ]
+     }
+    }
+   },
+   "trainers": {
+    "3603": {
+     "name": "킨드라 카인드위스퍼",
+     "tradeskill": true,
+     "trainerType": 2,
+     "positions": [
+      {
+       "instance": 1,
+       "mapX": 0.5763,
+       "mapY": 0.6066,
+       "uiMap": 1438,
+       "worldX": 9772.8,
+       "worldY": 880.1
+      }
+     ],
+     "services": {
+      "2329": {
+       "category": "비약",
+       "costs": {
+        "6": 45
+       },
+       "icon": 134836,
+       "level": 0,
+       "name": "최하급 힘의 비약",
+       "skill": "연금술",
+       "skillRank": 15,
+       "sources": 1,
+       "spellId": 2329
+      },
+      "1249630": {
+       "category": "재료",
+       "costs": {
+        "6": 135
+       },
+       "icon": 1021860,
+       "level": 0,
+       "name": "감청색 염료",
+       "skill": "연금술",
+       "skillRank": 40,
+       "sources": 1,
+       "spellId": 1249630
+      }
+     }
+    },
+    "4210": {
+     "name": "알레고른",
+     "tradeskill": true,
+     "trainerType": 2,
+     "positions": [
+      {
+       "instance": 1,
+       "mapX": 0.4937,
+       "mapY": 0.2107,
+       "uiMap": 1457,
+       "worldX": 10089.6,
+       "worldY": 2415.9
+      }
+     ],
+     "services": {
+      "2539": {
+       "category": "민첩성 음식",
+       "costs": {
+        "6": 45
+       },
+       "icon": 134021,
+       "level": 0,
+       "name": "늑대 양념 구이",
+       "skill": "요리",
+       "skillRank": 10,
+       "sources": 1,
+       "spellId": 2539
+      }
+     }
+    }
+   }
+  },
+  {
+   "build": "1.60.1.71091",
+   "vendors": {},
+   "npcs": {},
+   "creatures": {
+    "4581": {
+     "name": "Salazar Bloch",
+     "reactions": {
+      "Horde": [
+       7
+      ]
+     }
+    }
+   },
+   "trainers": {}
+  }
+ ]
+}

@@ -87,4 +87,50 @@ describe('fetchGameData', () => {
     await expect(fetchGameData(dir, { fetchFn: bad })).rejects.toThrow(/SkillLineAbility has no Spell column/);
     expect(existsSync(join(dir, 'datasets', 'wago', BUILD, 'SkillLineAbility.csv'))).toBe(false);
   });
+
+  // Round 2 fix 6: a new build that fails must not make the daily refresh throw every 30 minutes.
+  const NEW = '1.60.1.99999';
+  const newBuild = (table: (name: string) => Response | null) => (async (input: string | URL) => {
+    const url = String(input);
+    if (url.endsWith('/api/builds')) return new Response(JSON.stringify({ wowf: [{ version: NEW }] }));
+    const name = url.match(/db2\/(\w+)\//)![1]!;
+    return table(name) ?? new Response(readFileSync(join(FIXTURES, `${name}.csv`), 'utf8'));
+  }) as typeof fetch;
+
+  it('a new build whose table fails its shape check falls back to the newest complete cached build, warns, and is marked stale', async () => {
+    const dir = tempDir();
+    await fetchGameData(dir, { fetchFn: serve([]) });
+    const logs: string[] = [];
+    const g = await fetchGameData(dir, { fetchFn: newBuild(n => (n === 'ItemSparse' ? new Response('ID,Display_lang,Bonding\n1,x,0') : null)), log: m => logs.push(m) });
+    expect(g.build).toBe(BUILD);
+    expect(g.stale).toMatchObject({ wanted: NEW });
+    expect(g.stale!.reason).toMatch(/ItemSparse has no Stackable column/);
+    expect(logs.some(l => /WARNING: build 1\.60\.1\.99999 unusable .* using cached build 1\.60\.1\.71037, marked stale/.test(l))).toBe(true);
+    expect(existsSync(join(dir, 'datasets', 'wago', NEW, 'ItemSparse.csv'))).toBe(false);
+  });
+
+  it('a new build whose download fails falls back the same way', async () => {
+    const dir = tempDir();
+    await fetchGameData(dir, { fetchFn: serve([]) });
+    const g = await fetchGameData(dir, { fetchFn: newBuild(n => (n === 'SpellEffect' ? new Response('busy', { status: 503 }) : null)) });
+    expect(g.build).toBe(BUILD);
+    expect(g.stale).toEqual({ wanted: NEW, reason: 'wago SpellEffect returned 503' });
+  });
+
+  it('with no cached build to fall back on, a failing new build still throws', async () => {
+    await expect(fetchGameData(tempDir(), { fetchFn: newBuild(n => (n === 'Spell' ? new Response('x', { status: 500 }) : null)) })).rejects.toThrow(/wago Spell returned 500/);
+  });
+});
+
+describe('ItemSparse skill and reputation columns (round 2 fixes 1 and 4)', () => {
+  const sparse = readFileSync(join(FIXTURES, 'ItemSparse.csv'), 'utf8');
+  it('a missing RequiredSkillRank or MinFactionID column throws naming it', () => {
+    expect(() => parseTable('ItemSparse', sparse.replace('RequiredSkillRank', 'ReqSkillRank'))).toThrow(/ItemSparse has no RequiredSkillRank column/);
+    expect(() => parseTable('ItemSparse', sparse.replace('MinFactionID', 'MinFaction'))).toThrow(/ItemSparse has no MinFactionID column/);
+  });
+  it('real rows: Recipe: Swiftness Potion needs Alchemy (171) 60; Empty Vial needs no reputation', () => {
+    const g = loadGameDataFromDir(FIXTURES, BUILD);
+    expect(g.items.get(2555)).toMatchObject({ requiredSkill: 171, requiredSkillRank: 60, minFactionId: 0, minReputation: 0 });
+    expect(g.items.get(3371)).toMatchObject({ requiredSkillRank: 0, minFactionId: 0 });
+  });
 });

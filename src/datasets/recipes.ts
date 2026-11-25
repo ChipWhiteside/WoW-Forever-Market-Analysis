@@ -1,8 +1,9 @@
 import type { BlizzardClient } from '../blizzard/client.ts';
 import { ProfessionIndex, Profession, SkillTier, Recipe } from '../blizzard/contracts.ts';
 import { type DB, tx } from '../store/db.ts';
-import { pool, resolveItems, applyItemSparse, type ResolveResult } from '../catalog/items.ts';
-import { fetchGameData, parseCsv, type GameData } from './gamedata.ts';
+import { pool, resolveItems, applyItemSparse, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
+import { fetchGameData, loadNewestCachedGameData, parseCsv, type GameData } from './gamedata.ts';
+import { applyGameToEgLink, type GameFixes } from './eglink.ts';
 
 /**
  * Recipes, built from two sources and checked against each other (docs/flip-plan.md section 4).
@@ -45,15 +46,27 @@ export interface BuiltRecipe {
   reagents: Array<{ itemId: number; quantity: number }>;
   castMs: number | null; cooldownMs: number | null; cooldownCategory: number | null;
   randomYield: boolean;
-  learnSkill: number | null; learnFrom: 'trainer' | 'yellow' | null;
+  /** the skill rank it can be learned at, and where that rank came from (see learnFrom in buildRecipes) */
+  learnSkill: number | null; learnSource: LearnSource | null;
+  /** the item that teaches it (ItemEffect TriggerType 6), and that item's RequiredSkillRank */
+  teachItemId: number | null; teachSkill: number | null;
   yellow: number | null; green: number | null; grey: number | null; thresholdSource: string | null;
   source: 'wago' | 'blizzard' | 'both'; disagreement: string | null;
   live: boolean;
 }
 
+/**
+ * Where a recipe is learned. trainer_alliance: an Alliance or neutral trainer (EG Link). item: a plans, pattern or
+ * recipe item. auto: SkillLineAbility AcquireMethod 1, learned on reaching the rank. trainer_horde_only: only Horde
+ * trainers were recorded teaching it. yellow: none of these, so the yellow threshold is the best guess.
+ */
+export type LearnSource = 'trainer_alliance' | 'trainer_horde_only' | 'item' | 'auto' | 'yellow';
+
 export interface RecipeReport {
   build: string;
   recipes: number;
+  /** recipes by where they are learned; `teachItem` counts recipes with a teaching item whatever won */
+  learn: Record<LearnSource | 'none', number> & { teachItem: number };
   byProfession: Record<string, { total: number; live: number }>;
   source: { wago: number; blizzard: number; both: number };
   dropped: { test: Array<{ id: number; name: string }>; seasonOfDiscovery: number };
@@ -63,7 +76,53 @@ export interface RecipeReport {
   randomYield: Array<{ id: number; name: string }>;
   live: number; notLive: number;
   /** conversions kept, left out because an item is not in Forever, because an item cannot be traded, or because the data does not prove the counts */
-  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; unproven: Array<{ spellId: number; name: string; why: string }> };
+  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; boundByApiOnly: number; unproven: Array<{ spellId: number; name: string; why: string }> };
+}
+
+/** Blizzard binding words that mean an item can never reach the auction house. */
+const BOUND_WORDS = new Set(['ON_ACQUIRE', 'QUEST']);
+
+export interface RecipeBuildOpts {
+  /** craft spell -> lowest rank an Alliance or neutral trainer teaches it at (EG Link) */
+  trainerRanks: Map<number, number>;
+  /** craft spell -> lowest rank a Horde trainer teaches it at, used only when nothing Alliance can use teaches it */
+  hordeRanks?: Map<number, number>;
+  /** whether an item is in Forever (B27) */
+  exists: (itemId: number) => boolean;
+  /** the live API's binding for an item (ON_ACQUIRE, QUEST...), from the items table; a hotfix can bind what ItemSparse leaves unbound */
+  apiBinding?: (itemId: number) => string | null | undefined;
+}
+
+/**
+ * The item that teaches a craft spell: of the Forever items whose learn effect casts it, the one needing the lowest
+ * RequiredSkillRank, then the lowest id. Its rank is that RequiredSkillRank (0 means no rank needed, so 1).
+ */
+export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, exists: (itemId: number) => boolean): { itemId: number; skill: number } | null {
+  if (spellId == null) return null;
+  let best: { itemId: number; skill: number } | null = null;
+  for (const itemId of game.teachers.get(spellId) ?? []) {
+    const it = game.items.get(itemId);
+    if (!it || !exists(itemId)) continue;
+    const skill = Math.max(1, it.requiredSkillRank);
+    if (!best || skill < best.skill || (skill === best.skill && itemId < best.itemId)) best = { itemId, skill };
+  }
+  return best;
+}
+
+/**
+ * The rank a recipe is learned at, and from where. The lowest of: an Alliance or neutral trainer, the teaching item,
+ * and the automatic rank for AcquireMethod 1 (ties go to auto, then trainer, then item). Failing all three, a Horde
+ * only trainer's rank, flagged as such. Failing that, the yellow threshold, the last guess.
+ */
+export function learnFrom(c: { trainer?: number | null; horde?: number | null; teach?: number | null; auto?: number | null; yellow?: number | null }): { skill: number | null; source: LearnSource | null } {
+  const opts: Array<{ skill: number; source: LearnSource }> = [];
+  if (c.auto != null) opts.push({ skill: c.auto, source: 'auto' });
+  if (c.trainer != null) opts.push({ skill: c.trainer, source: 'trainer_alliance' });
+  if (c.teach != null) opts.push({ skill: c.teach, source: 'item' });
+  if (opts.length) return opts.reduce((a, b) => (b.skill < a.skill ? b : a));
+  if (c.horde != null) return { skill: c.horde, source: 'trainer_horde_only' };
+  if (c.yellow != null) return { skill: c.yellow, source: 'yellow' };
+  return { skill: null, source: null };
 }
 
 /** Rogue poisons are crafted from vendor and auction reagents and sell, though Blizzard's profession index omits them. */
@@ -83,14 +142,16 @@ function sameReagents(a: Array<{ itemId: number; quantity: number }>, b: Array<{
 
 /**
  * Join the two sources into one recipe list. Pure: every input is passed in, so the tests run on real cut fixtures.
- * `trainerRanks` maps a craft spell to the lowest skill rank any trainer teaches it at (EG Link trainers).
- * `exists` says whether an item is in Forever (B27); a recipe is live only if its product and every reagent pass.
+ * `trainerRanks` maps a craft spell to the lowest skill rank an Alliance or neutral trainer teaches it at (EG Link
+ * trainers), `hordeRanks` the same for Horde trainers. `exists` says whether an item is in Forever (B27); a recipe is
+ * live only if its product and every reagent pass.
  */
 export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id: number; name: string }>; recipes: BlizzardRecipe[] },
-  opts: { trainerRanks: Map<number, number>; exists: (itemId: number) => boolean }): { recipes: BuiltRecipe[]; report: RecipeReport } {
+  opts: RecipeBuildOpts): { recipes: BuiltRecipe[]; report: RecipeReport } {
   const report: RecipeReport = {
-    build: game.build, recipes: 0, byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
-    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, unproven: [] },
+    build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, none: 0, teachItem: 0 },
+    byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
+    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, boundByApiOnly: 0, unproven: [] },
   };
   const profLines = new Map<number, string>();
   for (const p of blizzard.professions) profLines.set(p.id, p.name);
@@ -153,14 +214,21 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
     const cd = spell != null ? game.cooldowns.get(spell) : undefined;
     const hasThresholds = !!s && (s.yellow > 0 || s.grey > 0);
     const yellow = hasThresholds ? s!.yellow : null, grey = hasThresholds ? s!.grey : null;
-    const trainer = spell != null ? opts.trainerRanks.get(spell) : undefined;
+    const teach = teachingItem(game, spell, opts.exists);
+    const learn = learnFrom({
+      trainer: spell != null ? opts.trainerRanks.get(spell) : null,
+      horde: spell != null ? opts.hordeRanks?.get(spell) : null,
+      teach: teach?.skill,
+      auto: s?.acquire === 1 ? Math.max(1, s.minRank) : null,
+      yellow,
+    });
     const r: BuiltRecipe = {
       id, name, professionId: b?.professionId ?? s?.skillLine ?? null, profession, category, kind: 'profession', spellId: spell,
       craftedItemId, qtyMin, qtyMax, reagents,
       castMs: spell != null ? game.castMs.get(spell) ?? null : null,
       cooldownMs: cd ? Math.max(cd.recoveryMs, cd.categoryRecoveryMs) : null, cooldownCategory: cd?.category ?? null,
       randomYield,
-      learnSkill: trainer ?? yellow, learnFrom: trainer != null ? 'trainer' : yellow != null ? 'yellow' : null,
+      learnSkill: learn.skill, learnSource: learn.source, teachItemId: teach?.itemId ?? null, teachSkill: teach?.skill ?? null,
       yellow, green: hasThresholds ? Math.round((s!.yellow + s!.grey) / 2) : null, grey,
       thresholdSource: hasThresholds ? `wago wowf ${game.build}` : null,
       source, disagreement: diffs.length ? diffs.join('; ') : null,
@@ -168,9 +236,10 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
     };
     out.push(r);
   }
-  out.push(...buildConversions(game, opts.exists, report));
+  out.push(...buildConversions(game, opts.exists, report, opts.apiBinding));
   for (const r of out) {
     report.recipes++;
+    if (r.kind === 'profession') { report.learn[r.learnSource ?? 'none']++; if (r.teachItemId != null) report.learn.teachItem++; }
     report.source[r.source]++;
     const p = (report.byProfession[r.profession] ??= { total: 0, live: 0 });
     p.total++;
@@ -191,7 +260,7 @@ const NUMBER_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, thre
  * names every count above 1, so inputs and outputs are proven from data, only when every item is in Forever, and
  * only when the game table shows every item can be traded (quest spells like "fill the flask" are left out).
  */
-export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport): BuiltRecipe[] {
+export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, apiBinding?: RecipeBuildOpts['apiBinding']): BuiltRecipe[] {
   const slaSpells = new Set([...game.sla.values()].map(s => s.spellId));
   const bySpell = new Map<number, Array<{ itemId: number; inputs: Array<{ itemId: number; quantity: number }> }>>();
   for (const u of game.itemUses) {
@@ -228,9 +297,12 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
     const live = exists(product) && inputs.every(i => exists(i.itemId));
     if (!live) { if (report) report.conversions.notLive++; continue; }
     // Quest items (fill a flask, sign a paper) pass every rule above but can never be bought or sold. Keep a conversion
-    // only when the game table shows every item it touches can be traded: bonding none, on equip or on use.
-    const bound = [product, ...inputs.map(i => i.itemId)].filter(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
-    if (bound.length) { if (report) report.conversions.bound++; continue; }
+    // only when every item it touches can be traded: bound if EITHER the game table (bonding pickup or quest, or no row)
+    // OR the live API says pickup or quest, since a server hotfix can bind what ItemSparse leaves unbound (Rogue poisons).
+    const touched = [product, ...inputs.map(i => i.itemId)];
+    const sparseBound = touched.some(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
+    const apiBound = touched.some(i => BOUND_WORDS.has(apiBinding?.(i) ?? ''));
+    if (sparseBound || apiBound) { if (report) { report.conversions.bound++; if (!sparseBound) report.conversions.boundByApiOnly++; } continue; }
     const cd = game.cooldowns.get(spellId);
     const id = CONVERSION_ID_BASE + spellId;
     out.push({
@@ -238,7 +310,7 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
       craftedItemId: product, qtyMin: outQty, qtyMax: outQty, reagents: inputs,
       castMs: game.castMs.get(spellId) ?? null,
       cooldownMs: cd ? Math.max(cd.recoveryMs, cd.categoryRecoveryMs) : null, cooldownCategory: cd?.category ?? null,
-      randomYield: false, learnSkill: null, learnFrom: null, yellow: null, green: null, grey: null, thresholdSource: null,
+      randomYield: false, learnSkill: null, learnSource: null, teachItemId: null, teachSkill: null, yellow: null, green: null, grey: null, thresholdSource: null,
       source: 'wago', disagreement: null, live: true,
     });
     report?.conversions.kept.push({ id, name });
@@ -251,12 +323,13 @@ export function writeRecipes(db: DB, recipes: BuiltRecipe[], note: { version: st
   tx(db, () => {
     db.exec('DELETE FROM recipes; DELETE FROM recipe_reagents;');
     const ir = db.prepare(`INSERT INTO recipes (id, name, profession_id, profession, category, crafted_item_id, qty_min, qty_max, learn_skill, yellow, green, grey,
-        threshold_source, spell_id, cast_ms, cooldown_ms, cooldown_category, random_yield, live, kind, source, disagreement)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        threshold_source, spell_id, cast_ms, cooldown_ms, cooldown_category, random_yield, live, kind, source, disagreement, teach_item_id, teach_skill, learn_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const ig = db.prepare('INSERT INTO recipe_reagents (recipe_id, item_id, quantity) VALUES (?, ?, ?)');
     for (const r of recipes) {
       ir.run(r.id, r.name, r.professionId, r.profession, r.category, r.craftedItemId, r.qtyMin, r.qtyMax, r.learnSkill, r.yellow, r.green, r.grey,
-        r.thresholdSource, r.spellId, r.castMs, r.cooldownMs, r.cooldownCategory, r.randomYield ? 1 : 0, r.live ? 1 : 0, r.kind, r.source, r.disagreement);
+        r.thresholdSource, r.spellId, r.castMs, r.cooldownMs, r.cooldownCategory, r.randomYield ? 1 : 0, r.live ? 1 : 0, r.kind, r.source, r.disagreement,
+        r.teachItemId, r.teachSkill, r.learnSource);
       for (const g of r.reagents) ig.run(r.id, g.itemId, g.quantity);
     }
     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('recipes', ?, ?, ?, ?)`).run(note.version, Date.now(), recipes.length, note.note);
@@ -303,18 +376,49 @@ export function foreverItems(db: DB, game: Pick<GameData, 'items'>): (itemId: nu
 export interface SyncRecipesResult {
   recipes: number; withThresholds: number; unmatched: number;
   report: RecipeReport; items: ResolveResult;
-  sparse: { updated: number; compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }> };
+  sparse: SparseCheck;
   blizzard: { refs: number; fetched: number; failed: number };
+  /** the game build used, and why it is an older cached one when it is */
+  build: string; stale: GameData['stale'] | null;
+  /** fixes applied to EG Link trainer and vendor rows from the game tables */
+  eglink: GameFixes;
 }
 
 /** One log line for the daily refresh. */
 export function summarizeRecipes(r: SyncRecipesResult): string {
   const p = r.report;
+  const l = p.learn;
   return `${r.recipes} recipes (${p.source.both} both sources, ${p.source.wago} wago only, ${p.source.blizzard} blizzard only), ${p.live} live, `
-    + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions, `
-    + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; items ${r.items.bySource.forever} forever, `
-    + `${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
-    + `binding vs ItemSparse disagree on ${r.sparse.disagree.length} of ${r.sparse.compared}`;
+    + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions `
+    + `(${p.conversions.bound} left out as bound, ${p.conversions.boundByApiOnly} of them by the live API only), `
+    + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; learned from: ${l.trainer_alliance} Alliance trainer, `
+    + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.none} unknown; ${l.teachItem} have a teaching item; `
+    + `items ${r.items.bySource.forever} forever, ${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
+    + `binding vs ItemSparse disagree on ${r.sparse.disagree.length} of ${r.sparse.compared} before the price refresh`
+    + (r.stale ? `; STALE game data: build ${r.stale.wanted} failed (${r.stale.reason}), using ${r.build}` : '');
+}
+
+/** The last game data loaded, so the item check after the vendor price refresh needs no second load. */
+let lastGame: GameData | null = null;
+
+/**
+ * Cross check the item catalog against ItemSparse after the daily vendor price refresh, so the live API's binding and
+ * sell price are today's (a hotfix made 20 Rogue poisons bind on pickup with sell price 0 while ItemSparse still says
+ * unbound). Both disagreement counts go in the log line and the gamedata dataset note.
+ */
+export function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}): string {
+  const game = lastGame ?? loadNewestCachedGameData(dataDir, { log });
+  if (!game) throw new Error('no game tables cached yet, the recipes step fills them');
+  const c = applyItemSparse(db, game);
+  const sample = (a: Array<{ id: number }>) => a.slice(0, 8).map(x => x.id).join(', ');
+  const text = `binding disagrees with ItemSparse on ${c.disagree.length} of ${c.compared}${c.disagree.length ? ` (${sample(c.disagree)})` : ''}; `
+    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}`;
+  db.prepare(`UPDATE datasets SET note = ? WHERE name = 'gamedata'`).run(gamedataNote(game, text));
+  return text;
+}
+
+function gamedataNote(game: GameData, check: string): string {
+  return `${game.stale ? `STALE: build ${game.stale.wanted} failed (${game.stale.reason}), using cached ${game.build}; ` : ''}wago wowf tables; ${check}`;
 }
 
 /**
@@ -324,24 +428,52 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
 export async function syncRecipes(client: BlizzardClient, db: DB, dataDir: string, log: (m: string) => void = () => {},
   opts: { game?: GameData; fetchFn?: typeof fetch } = {}): Promise<SyncRecipesResult> {
   const game = opts.game ?? await fetchGameData(dataDir, { fetchFn: opts.fetchFn, log });
+  lastGame = game;
+  // English names, profession words and the vendor standing gate from the game tables (EG Link rows can be Korean).
+  const eglink = applyGameToEgLink(db, game);
   const bz = await fetchBlizzardRecipes(client, log);
   if (bz.failed > bz.refs * 0.05) throw new Error(`Blizzard recipe fetch failed for ${bz.failed} of ${bz.refs}, will retry`);
-  const trainerRanks = new Map<number, number>();
-  for (const r of db.prepare('SELECT spell_id, MIN(skill_rank) AS rank FROM trainer_spells WHERE skill_rank IS NOT NULL GROUP BY spell_id').all() as Array<{ spell_id: number; rank: number }>) trainerRanks.set(r.spell_id, r.rank);
+  const { trainerRanks, hordeRanks } = trainerRankMaps(db);
   // First pass only to learn which items the recipes touch, so every one is in the catalog before the live filter.
-  const draft = buildRecipes(game, bz, { trainerRanks, exists: () => true });
+  // Teaching items are resolved too, so the flip engine can name them and price them.
+  const draft = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: () => true });
   const ids = new Set<number>();
-  for (const r of draft.recipes) { if (r.craftedItemId) ids.add(r.craftedItemId); for (const g of r.reagents) ids.add(g.itemId); }
+  for (const r of draft.recipes) {
+    if (r.craftedItemId) ids.add(r.craftedItemId);
+    for (const g of r.reagents) ids.add(g.itemId);
+    if (r.teachItemId) ids.add(r.teachItemId);
+  }
   const items = await resolveItems(client, db, [...ids], { maxAgeMs: Infinity, game });
   log(`recipes: ${ids.size} recipe items, ${items.fetched} fetched (${items.bySource.forever} forever, ${items.bySource.classic1x} classic1x), ${items.bySource.wago} from the game table only, ${items.bySource.none} unknown, ${items.errors} errors, ${client.throttled} throttled so far`);
   const sparse = applyItemSparse(db, game);
-  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, exists: foreverItems(db, game) });
+  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), apiBinding: apiBindings(db) });
   const withThresholds = recipes.filter(r => r.yellow != null).length;
   writeRecipes(db, recipes, {
     version: `wago ${game.build} + blizzard`,
     note: `${report.source.both} both, ${report.source.wago} wago only, ${report.source.blizzard} blizzard only; ${report.live} live; ${report.disagreements.length} disagree; dropped ${report.dropped.test.length} test and ${report.dropped.seasonOfDiscovery} Season of Discovery; ${report.conversions.kept.length} conversions`,
   });
   db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', ?, ?, ?, ?)`)
-    .run(game.build, Date.now(), game.items.size, `wago wowf tables; binding agrees with ItemSparse on ${sparse.compared - sparse.disagree.length} of ${sparse.compared}`);
-  return { recipes: recipes.length, withThresholds, unmatched: bz.failed, report, items, sparse, blizzard: { refs: bz.refs, fetched: bz.recipes.length, failed: bz.failed } };
+    .run(game.build, Date.now(), game.items.size, gamedataNote(game, `binding agrees with ItemSparse on ${sparse.compared - sparse.disagree.length} of ${sparse.compared} before the price refresh`));
+  return { recipes: recipes.length, withThresholds, unmatched: bz.failed, report, items, sparse, blizzard: { refs: bz.refs, fetched: bz.recipes.length, failed: bz.failed },
+    build: game.build, stale: game.stale ?? null, eglink };
+}
+
+/**
+ * Lowest trainer rank per craft spell, split by who can use the trainer. Alliance and neutral trainers count for Chip.
+ * Horde trainers, and trainers only Horde players saw at Neutral (faction unconfirmed), count only as a last resort.
+ */
+export function trainerRankMaps(db: DB): { trainerRanks: Map<number, number>; hordeRanks: Map<number, number> } {
+  const trainerRanks = new Map<number, number>(), hordeRanks = new Map<number, number>();
+  for (const r of db.prepare(`SELECT spell_id, faction, MIN(skill_rank) AS rank FROM trainer_spells WHERE skill_rank IS NOT NULL GROUP BY spell_id, faction`).all() as Array<{ spell_id: number; faction: string; rank: number }>) {
+    const m = r.faction === 'alliance' || r.faction === 'neutral' ? trainerRanks : r.faction === 'horde' || r.faction === 'unconfirmed' ? hordeRanks : null;
+    if (m && (m.get(r.spell_id) ?? Infinity) > r.rank) m.set(r.spell_id, r.rank);
+  }
+  return { trainerRanks, hordeRanks };
+}
+
+/** The live API's binding per item, from the catalog. */
+export function apiBindings(db: DB): (itemId: number) => string | null {
+  const m = new Map<number, string>();
+  for (const r of db.prepare(`SELECT id, binding FROM items WHERE status = 200 AND binding IS NOT NULL`).all() as Array<{ id: number; binding: string }>) m.set(r.id, r.binding);
+  return id => m.get(id) ?? null;
 }

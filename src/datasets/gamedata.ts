@@ -17,6 +17,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
  *  - SpellCooldowns has RecoveryTime and CategoryRecoveryTime in ms. SpellCategories.Category groups spells
  *    that share a cooldown (transmutes share category 310 "Transmute - Alchemy").
  *  - ItemSparse.Bonding: 0 none, 1 pickup, 2 equip, 3 use, 4 quest.
+ *  - ItemSparse.RequiredSkill and RequiredSkillRank: the profession and rank an item needs. On a recipe item this is
+ *    the rank it teaches at (Pattern: Mooncloth 14526: skill 197 Tailoring, rank 230).
+ *  - ItemSparse.MinFactionID and MinReputation: the reputation an item needs to buy and use. MinReputation counts from
+ *    0 Hated, so 3 Neutral, 4 Friendly, 5 Honored, 6 Revered, 7 Exalted (one below EG Link's standing keys).
+ *  - ItemEffect TriggerType 6 is "learn": its SpellID is the craft spell the item teaches, joined to the item through
+ *    ItemXItemEffect (Pattern: Mooncloth 14526 -> spell 18560, the Mooncloth craft).
  */
 export const WAGO_TABLES = {
   SkillLineAbility: ['ID', 'SkillLine', 'Spell', 'MinSkillLineRank', 'TrivialSkillLineRankLow', 'TrivialSkillLineRankHigh', 'TradeSkillCategoryID', 'AcquireMethod'],
@@ -30,7 +36,7 @@ export const WAGO_TABLES = {
   SpellCastTimes: ['ID', 'Base', 'Minimum'],
   SpellCooldowns: ['SpellID', 'DifficultyID', 'RecoveryTime', 'CategoryRecoveryTime'],
   SpellCategories: ['SpellID', 'DifficultyID', 'Category'],
-  ItemSparse: ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID'],
+  ItemSparse: ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID', 'RequiredSkill', 'RequiredSkillRank', 'MinFactionID', 'MinReputation'],
   Item: ['ID', 'ClassID', 'SubclassID'],
   ItemEffect: ['ID', 'TriggerType', 'Charges', 'SpellID'],
   ItemXItemEffect: ['ItemEffectID', 'ItemID'],
@@ -84,7 +90,13 @@ export function parseTable(name: WagoTable, text: string): Table {
 }
 
 export interface SlaRow { id: number; skillLine: number; spellId: number; minRank: number; yellow: number; grey: number; categoryId: number; acquire: number }
-export interface SparseItem { id: number; name: string; bonding: number; stackable: number; vendorStack: number; buyPrice: number; sellPrice: number; quality: number }
+export interface SparseItem {
+  id: number; name: string; bonding: number; stackable: number; vendorStack: number; buyPrice: number; sellPrice: number; quality: number;
+  /** profession skill line and rank the item needs; on a recipe item, the rank it teaches at */
+  requiredSkill: number; requiredSkillRank: number;
+  /** reputation needed to buy it: faction id (0 none) and MinReputation (3 Neutral, 4 Friendly, 5 Honored, 6 Revered, 7 Exalted) */
+  minFactionId: number; minReputation: number;
+}
 export interface Create { itemId: number; base: number; variance: number }
 export interface Cooldown { recoveryMs: number; categoryRecoveryMs: number; category: number | null }
 export interface ItemUse { itemId: number; spellId: number; trigger: number; charges: number }
@@ -107,6 +119,10 @@ export interface GameData {
   items: Map<number, SparseItem>;
   itemClass: Map<number, { classId: number; subclassId: number }>;
   itemUses: ItemUse[];
+  /** craft spell -> the items that teach it (ItemEffect TriggerType 6), lowest item id first */
+  teachers: Map<number, number[]>;
+  /** set when the newest build could not be downloaded or failed its shape check, so an older cached build is in use */
+  stale?: { wanted: string; reason: string };
 }
 
 const num = (s: string | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
@@ -178,8 +194,16 @@ export function buildGameData(build: string, t: Record<WagoTable, Table>): GameD
       cooldowns.set(spell, { recoveryMs: rec, categoryRecoveryMs: crec, category: crec > 0 && cat > 0 ? cat : null });
     } }
   const items = new Map<number, SparseItem>();
-  { const s = t.ItemSparse; const [iId, iN, iB, iS, iV, iBuy, iSell, iQ] = ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID'].map(c => s.col(c));
-    for (const r of s.rows) items.set(num(r[iId!]), { id: num(r[iId!]), name: r[iN!] ?? '', bonding: num(r[iB!]), stackable: num(r[iS!]), vendorStack: num(r[iV!]), buyPrice: num(r[iBuy!]), sellPrice: num(r[iSell!]), quality: num(r[iQ!]) }); }
+  { const s = t.ItemSparse; const [iId, iN, iB, iS, iV, iBuy, iSell, iQ, iRs, iRr, iMf, iMr] = ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID',
+      'RequiredSkill', 'RequiredSkillRank', 'MinFactionID', 'MinReputation'].map(c => s.col(c));
+    for (const r of s.rows) items.set(num(r[iId!]), { id: num(r[iId!]), name: r[iN!] ?? '', bonding: num(r[iB!]), stackable: num(r[iS!]), vendorStack: num(r[iV!]), buyPrice: num(r[iBuy!]), sellPrice: num(r[iSell!]), quality: num(r[iQ!]),
+      requiredSkill: num(r[iRs!]), requiredSkillRank: num(r[iRr!]), minFactionId: num(r[iMf!]), minReputation: num(r[iMr!]) });
+    // Shape check on values, not only names (ledger rule 2): a skill rank above any profession cap, or a reputation
+    // outside Hated..Exalted, means the columns moved.
+    for (const it of items.values()) {
+      if (it.requiredSkillRank < 0 || it.requiredSkillRank > 1000) throw new Error(`wago ItemSparse ${it.id} RequiredSkillRank ${it.requiredSkillRank} is out of range, the table shape changed`);
+      if (it.minFactionId > 0 && (it.minReputation < 0 || it.minReputation > 7)) throw new Error(`wago ItemSparse ${it.id} MinReputation ${it.minReputation} is out of range, the table shape changed`);
+    } }
   const itemClass = new Map<number, { classId: number; subclassId: number }>();
   { const s = t.Item; const iId = s.col('ID'), iC = s.col('ClassID'), iS = s.col('SubclassID');
     for (const r of s.rows) itemClass.set(num(r[iId]), { classId: num(r[iC]), subclassId: num(r[iS]) }); }
@@ -192,7 +216,15 @@ export function buildGameData(build: string, t: Record<WagoTable, Table>): GameD
       if (!ef || num(ef[iS]) <= 0) continue;
       itemUses.push({ itemId: num(r[iI]), spellId: num(ef[iS]), trigger: num(ef[iT]), charges: num(ef[iC]) });
     } }
-  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses };
+  const teachers = new Map<number, number[]>();
+  for (const u of itemUses) {
+    if (u.trigger !== 6) continue;
+    const a = teachers.get(u.spellId) ?? [];
+    if (!a.includes(u.itemId)) a.push(u.itemId);
+    teachers.set(u.spellId, a);
+  }
+  for (const a of teachers.values()) a.sort((x, y) => x - y);
+  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses, teachers };
 }
 
 /** Read every table from one directory (a cached build, or a test fixture) and index it. */
@@ -216,38 +248,71 @@ export async function latestWowfBuild(fetchFn: typeof fetch = fetch): Promise<st
   return build;
 }
 
+/** Cached builds with every table on disk, oldest first. */
+export function completeCachedBuilds(dataDir: string): string[] {
+  const root = join(dataDir, 'datasets', 'wago');
+  return existsSync(root) ? readdirSync(root).filter(d => TABLE_NAMES.every(n => existsSync(join(root, d, `${n}.csv`)))).sort(compareBuilds) : [];
+}
+
+/**
+ * The newest complete cached build that loads and passes its shape check, newest first, skipping `except`.
+ * Null when there is none. Never touches the network.
+ */
+export function loadNewestCachedGameData(dataDir: string, opts: { except?: string; log?: (m: string) => void } = {}): GameData | null {
+  const root = join(dataDir, 'datasets', 'wago');
+  for (const b of completeCachedBuilds(dataDir).reverse()) {
+    if (b === opts.except) continue;
+    try { return loadGameDataFromDir(join(root, b), b); } catch (e) { opts.log?.(`gamedata: cached build ${b} does not load (${(e as Error).message}), trying an older one`); }
+  }
+  return null;
+}
+
 /**
  * Make sure every table of the latest build is on disk, downloading what is missing, then load it.
- * If wago.tools cannot be reached, the newest complete cached build is used and the caller is told.
+ * If wago.tools cannot be reached, or the new build's download or shape check fails, the newest complete cached
+ * build is used, a warning is logged and the result carries `stale`, so the daily refresh never throws every
+ * 30 minutes over one bad build. With no cached build to fall back on, it throws.
  */
 export async function fetchGameData(dataDir: string, opts: { fetchFn?: typeof fetch; log?: (m: string) => void } = {}): Promise<GameData> {
   const fetchFn = opts.fetchFn ?? fetch;
   const log = opts.log ?? (() => {});
   const root = join(dataDir, 'datasets', 'wago');
+  const fallBack = (wanted: string, e: unknown): GameData => {
+    const reason = (e as Error).message;
+    const g = loadNewestCachedGameData(dataDir, { except: wanted, log });
+    if (!g) throw e;
+    log(`gamedata WARNING: build ${wanted} unusable (${reason}), using cached build ${g.build}, marked stale`);
+    g.stale = { wanted, reason };
+    return g;
+  };
   let build: string;
   try {
     build = await latestWowfBuild(fetchFn);
   } catch (e) {
-    const cached = existsSync(root) ? readdirSync(root).filter(d => TABLE_NAMES.every(n => existsSync(join(root, d, `${n}.csv`)))).sort(compareBuilds) : [];
+    const cached = completeCachedBuilds(dataDir);
     const last = cached[cached.length - 1];
     if (!last) throw e;
     log(`gamedata: wago builds unreachable (${(e as Error).message}), using cached build ${last}`);
     build = last;
   }
   const dir = join(root, build);
-  mkdirSync(dir, { recursive: true });
-  for (const name of TABLE_NAMES) {
-    const file = join(dir, `${name}.csv`);
-    if (existsSync(file)) continue;
-    const res = await fetchFn(`https://wago.tools/db2/${name}/csv?build=${build}`);
-    if (!res.ok) throw new Error(`wago ${name} returned ${res.status}`);
-    const text = await res.text();
-    parseTable(name, text); // check the shape before it is cached
-    writeFileSync(file + '.part', text);
-    renameSync(file + '.part', file);
-    log(`gamedata: ${name} ${build} downloaded, ${text.length} bytes`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of TABLE_NAMES) {
+      const file = join(dir, `${name}.csv`);
+      if (existsSync(file)) continue;
+      const res = await fetchFn(`https://wago.tools/db2/${name}/csv?build=${build}`);
+      if (!res.ok) throw new Error(`wago ${name} returned ${res.status}`);
+      const text = await res.text();
+      parseTable(name, text); // check the shape before it is cached
+      writeFileSync(file + '.part', text);
+      renameSync(file + '.part', file);
+      log(`gamedata: ${name} ${build} downloaded, ${text.length} bytes`);
+    }
+    return loadGameDataFromDir(dir, build);
+  } catch (e) {
+    return fallBack(build, e);
   }
-  return loadGameDataFromDir(dir, build);
 }
 
 function compareBuilds(a: string, b: string): number {

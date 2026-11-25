@@ -3,7 +3,7 @@ import { openDb } from '../store/db.ts';
 import { BlizzardClient, sleep } from '../blizzard/client.ts';
 import { Engine } from './engine.ts';
 import { syncEgLink } from '../datasets/eglink.ts';
-import { syncRecipes, summarizeRecipes } from '../datasets/recipes.ts';
+import { syncRecipes, summarizeRecipes, checkItemsAfterRefresh } from '../datasets/recipes.ts';
 import { dailyMaintenance } from './daily.ts';
 import { startServer } from '../server/server.ts';
 import { rebuildIfRulesChanged } from './rebuild.ts';
@@ -43,6 +43,8 @@ async function main() {
       await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names, ${r.questItems} quest items from ${r.builds} builds`; }),
       await step('recipes', async () => summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))),
       await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
+      // After the price refresh, so a server hotfix to binding or sell price shows against ItemSparse the same day.
+      await step('item check', async () => checkItemsAfterRefresh(db, cfg.dataDir, log)),
       await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
     ];
     // Mark done only when every step worked, otherwise the next round retries the whole set.

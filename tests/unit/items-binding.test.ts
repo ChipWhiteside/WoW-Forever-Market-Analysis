@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkItemsAfterRefresh } from '../../src/datasets/recipes.ts';
 import { BlizzardClient } from '../../src/blizzard/client.ts';
 import { ItemResponse } from '../../src/blizzard/contracts.ts';
 import { resolveItems, applyItemSparse, getItem } from '../../src/catalog/items.ts';
@@ -10,7 +12,8 @@ import { tempDir } from '../helpers.ts';
 
 /** Real item responses recorded November 24 from us.api.blizzard.com (tests/fixtures/blizzard). */
 const fixture = (f: string) => readFileSync(fileURLToPath(new URL(`../fixtures/blizzard/${f}`, import.meta.url)), 'utf8');
-const game = loadGameDataFromDir(fileURLToPath(new URL('../fixtures/wago', import.meta.url)), '1.60.1.71037');
+const FIXTURE_DIR = fileURLToPath(new URL('../fixtures/wago', import.meta.url));
+const game = loadGameDataFromDir(FIXTURE_DIR, '1.60.1.71037');
 
 /** A fake Blizzard that answers by item id and namespace, and records what it was asked. */
 function fake(routes: Record<string, { status: number; body: string; headers?: Record<string, string> } | Array<{ status: number; body: string; headers?: Record<string, string> }>>) {
@@ -64,7 +67,7 @@ describe('the Classic item data fallback (B25)', () => {
   it('known to neither Blizzard source: the game table row fills the name and binding, data_source wago', async () => {
     const db = openDb(tempDir(), ':memory:');
     const { client } = fake({});
-    const items = new Map<number, SparseItem>([[999001, { id: 999001, name: 'Test Thing', bonding: 1, stackable: 1, vendorStack: 1, buyPrice: 40, sellPrice: 10, quality: 1 }]]);
+    const items = new Map<number, SparseItem>([[999001, { id: 999001, name: 'Test Thing', bonding: 1, stackable: 1, vendorStack: 1, buyPrice: 40, sellPrice: 10, quality: 1, requiredSkill: 0, requiredSkillRank: 0, minFactionId: 0, minReputation: 0 }]]);
     await resolveItems(client, db, [999001, 999002], { game: { items } });
     expect(getItem(db, 999001)).toMatchObject({ name: 'Test Thing', name_source: 'wago', data_source: 'wago', status: 404, binding: 'ON_ACQUIRE', bonding: 1, quality: 'COMMON' });
     expect(getItem(db, 999002)).toMatchObject({ name: null, status: 404, data_source: 'none' });
@@ -104,5 +107,32 @@ describe('binding against ItemSparse.Bonding (B23)', () => {
     expect(r.compared).toBe(2); // 720 and 999 are not in the game table
     expect(r.disagree).toEqual([{ id: 3371, blizzard: 'ON_ACQUIRE', bonding: 0 }]);
     expect(getItem(db, 3371)).toMatchObject({ bonding: 0, stack_size: 20, vendor_stack: 5 });
+  });
+
+  // Round 2 fix 2. The live Forever API (recorded November 25) binds Instant Poison on pickup with sell price 0,
+  // while ItemSparse of build 1.60.1.71037 still says Bonding 0 and SellPrice 5: a server hotfix.
+  it('a hotfixed poison shows as both a binding and a sell price disagreement once the API side is refreshed', async () => {
+    const db = openDb(tempDir(), ':memory:');
+    const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json'), '2589:static-forever-us': ok('item-2589-forever.json') });
+    await resolveItems(client, db, [6947, 2589], { game });
+    expect(getItem(db, 6947)).toMatchObject({ name: 'Instant Poison', binding: 'ON_ACQUIRE', sell_price: 0, bonding: 0 });
+    expect(game.items.get(6947)).toMatchObject({ bonding: 0, sellPrice: 5 });
+    const r = applyItemSparse(db, game);
+    expect(r.disagree).toEqual([{ id: 6947, blizzard: 'ON_ACQUIRE', bonding: 0 }]);
+    expect(r).toMatchObject({ sellCompared: 2, sellDisagree: [{ id: 6947, blizzard: 0, sparse: 5 }] });
+  });
+
+  it('the daily item check runs on cached game tables, logs both counts and writes them into the gamedata note', async () => {
+    const dir = tempDir();
+    const wago = join(dir, 'datasets', 'wago', '1.60.1.71037');
+    mkdirSync(wago, { recursive: true });
+    for (const f of readdirSync(FIXTURE_DIR)) copyFileSync(join(FIXTURE_DIR, f), join(wago, f));
+    const db = openDb(dir, ':memory:');
+    db.exec(`INSERT INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', '1.60.1.71037', 0, 0, 'old')`);
+    const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
+    await resolveItems(client, db, [6947], { game });
+    const line = checkItemsAfterRefresh(db, dir);
+    expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947)');
+    expect((db.prepare(`SELECT note FROM datasets WHERE name = 'gamedata'`).get() as { note: string }).note).toBe(`wago wowf tables; ${line}`);
   });
 });
