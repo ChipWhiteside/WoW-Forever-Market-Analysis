@@ -1,0 +1,2278 @@
+diff --git a/src/catalog/items.ts b/src/catalog/items.ts
+index 6a042bb..d56299d 100644
+--- a/src/catalog/items.ts
++++ b/src/catalog/items.ts
+@@ -117,17 +117,27 @@ export async function resolveItems(client: BlizzardClient, db: DB, ids: number[]
+   return { fetched, notFound, errors, priceChanges, bySource, bindingFound };
+ }
+ 
++export interface SparseCheck {
++  updated: number;
++  /** Blizzard binding vs ItemSparse.Bonding, on rows with Blizzard data (forever or classic1x) */
++  compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }>;
++  /** Blizzard sell price vs ItemSparse.SellPrice, on rows with Forever data only (Classic prices are another game's) */
++  sellCompared: number; sellDisagree: Array<{ id: number; blizzard: number | null; sparse: number }>;
++}
++
+ /**
+  * Copy bonding, stack size and vendor bundle size from the game's item table onto every catalog row it knows,
+- * and cross check Blizzard's binding against ItemSparse.Bonding where both exist (B23). The binding column keeps
+- * Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before.
++ * and cross check Blizzard's binding (B23) and sell price against ItemSparse where both exist. The binding column
++ * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. Run it after the
++ * vendor price refresh, so the live API side is today's: a server hotfix shows up as a disagreement here.
+  */
+-export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): { updated: number; compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }> } {
++export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCheck {
+   sparseCache = game.items;
+-  const rows = db.prepare('SELECT id, binding, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; data_source: string | null; status: number }>;
++  const rows = db.prepare('SELECT id, binding, sell_price, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; sell_price: number | null; data_source: string | null; status: number }>;
+   const set = db.prepare('UPDATE items SET bonding = ?, stack_size = ?, vendor_stack = ? WHERE id = ?');
+-  let updated = 0, compared = 0;
+-  const disagree: Array<{ id: number; blizzard: string | null; bonding: number }> = [];
++  let updated = 0, compared = 0, sellCompared = 0;
++  const disagree: SparseCheck['disagree'] = [];
++  const sellDisagree: SparseCheck['sellDisagree'] = [];
+   tx(db, () => {
+     for (const r of rows) {
+       const sp = game.items.get(r.id);
+@@ -138,9 +148,13 @@ export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): { update
+         compared++;
+         if ((BONDING_TO_BINDING[sp.bonding] ?? null) !== r.binding) disagree.push({ id: r.id, blizzard: r.binding, bonding: sp.bonding });
+       }
++      if (r.status === 200 && r.data_source === 'forever') {
++        sellCompared++;
++        if ((r.sell_price ?? 0) !== sp.sellPrice) sellDisagree.push({ id: r.id, blizzard: r.sell_price, sparse: sp.sellPrice });
++      }
+     }
+   });
+-  return { updated, compared, disagree };
++  return { updated, compared, disagree, sellCompared, sellDisagree };
+ }
+ 
+ /** Resolve icon urls for items that have a media id but no icon yet. */
+diff --git a/src/datasets/eglink.ts b/src/datasets/eglink.ts
+index 04cbd5e..c489327 100644
+--- a/src/datasets/eglink.ts
++++ b/src/datasets/eglink.ts
+@@ -2,6 +2,7 @@ import { join } from 'node:path';
+ import { fetchCached } from './fetchcache.ts';
+ import { type DB, tx } from '../store/db.ts';
+ import { zoneName } from './zones.ts';
++import { loadNewestCachedGameData, type GameData } from './gamedata.ts';
+ 
+ /**
+  * EG Link output: player recorded WoW Forever data, CC BY 4.0, by Efficient Games.
+@@ -24,34 +25,89 @@ export interface EgLootSource { windows?: number; items?: Record<string, EgLootI
+ export interface EgQuest { title?: string; level?: number; minLevel?: number; zoneAreaId?: number; startItemId?: number; objectives?: Array<{ type?: string; objectId?: number; amount?: number }> }
+ export interface EgKills { deaths?: number; empty?: number; unknown?: number; levels?: Record<string, number> }
+ 
+-export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unknown';
++export type VendorFaction = 'alliance' | 'horde' | 'neutral' | 'unconfirmed' | 'unknown';
++
++/**
++ * NPCs held neutral although only Horde players recorded them, each with its reason. Kzixx (3134) is a goblin in
++ * Duskwood, an Alliance zone, and Horde players saw him at Neutral; he was named known neutral by the round 2 review.
++ * Add one only with a reason a person can check.
++ */
++export const KNOWN_NEUTRAL: Record<number, string> = {
++  3134: 'Kzixx, Duskwood goblin: Neutral to Horde in an Alliance zone, known neutral (round 2 review)',
++};
+ 
+ /**
+  * Who can use a vendor, from which faction's players saw it and how it reacted to them.
+  * Reaction numbers: 4 Neutral, 5 Friendly and up. A Horde only NPC shows 5+ to Horde and is never seen by Alliance.
++ * A vendor only Horde players saw, at exactly Neutral, may be a neutral goblin or may be hostile to Alliance: nothing
++ * Alliance side proves it (Kixxle 8305 was neutral only by this guess). It is 'unconfirmed', never usable, until an
++ * Alliance player records it. EG Link creatures carry no faction id, and wago's Creature table holds only pets, so
++ * an Alliance observation is the only proof there is.
+  */
+-export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>): VendorFaction {
++export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set<string>, npcId?: number | string): VendorFaction {
+   const a = [...(reactions['Alliance'] ?? [])];
+   const h = [...(reactions['Horde'] ?? [])];
+   const aOk = a.some(r => r >= 4) || sides.has('Alliance');
+   const hOk = h.some(r => r >= 4) || sides.has('Horde');
+   if (aOk && hOk) return 'neutral';
+-  // A vendor opened at exactly Neutral (4) belongs to a neutral faction such as the goblins of
+-  // Booty Bay or Ratchet: the other faction's own NPCs are Friendly or better to their players.
+-  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'neutral';
++  if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return npcId != null && KNOWN_NEUTRAL[Number(npcId)] ? 'neutral' : 'unconfirmed';
++  // Alliance players saw it at exactly Neutral: a neutral faction, and usable by Alliance either way.
+   if (aOk && a.length && Math.max(...a) === 4 && !sides.has('Alliance')) return 'neutral';
+   if (aOk) return 'alliance';
+   if (hOk) return 'horde';
+   return 'unknown';
+ }
+ 
+-/** Classic reputation discounts by standing (4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted). */
+-export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 0.9, '7': 0.85, '8': 0.8 };
++/**
++ * Reputation discounts by standing (4 Neutral, 5 Friendly, 6 Honored, 7 Revered, 8 Exalted), as Forever charges them.
++ * Revered is 0.90, the same as Honored, not Classic's 0.85. Checked November 25 on 126 EG Link rows recorded at Revered
++ * for an item whose Friendly or Neutral price another vendor recorded: 104 are exactly 0.90 of it, the rest 0.90 to 0.94,
++ * none 0.85 (Engineer's Ink: Revered 1800, base 2000). The 6 rows with both Honored and Revered are equal. Exalted 0.8
++ * is unverified: no row was recorded at Exalted.
++ */
++export const STANDING_DISCOUNT: Record<string, number> = { '4': 1, '5': 1, '6': 0.9, '7': 0.9, '8': 0.8 };
++
++/** Hangul, the Korean alphabet. EG Link rows recorded by a Korean client carry Korean names. */
++const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
++export const isHangul = (s: string | null | undefined): boolean => !!s && HANGUL.test(s);
++
++/**
++ * Korean profession names as the Korean client writes them, to Blizzard's English names. The first four are the ones
++ * EG Link recorded (November 25), each checked by spell id (2329 Alchemy, 2368 Herbalism, 7731 Fishing, 2539 Cooking).
++ * The rest are the client's names for the other professions, not yet seen in the data.
++ */
++export const KOREAN_PROFESSIONS: Record<string, string> = {
++  '연금술': 'Alchemy', '약초채집': 'Herbalism', '낚시': 'Fishing', '요리': 'Cooking', '대장기술': 'Blacksmithing',
++  '가죽세공': 'Leatherworking', '재봉술': 'Tailoring', '기계공학': 'Engineering', '마법부여': 'Enchanting', '채광': 'Mining',
++  '무두질': 'Skinning', '응급치료': 'First Aid',
++};
++
++/**
++ * One display name per NPC: the newest English name seen in any build, from the vendor or trainer record, the NPC
++ * record or the creature record. A Korean name is kept only when no English one exists anywhere.
++ */
++export function npcNames(builds: Array<{ build: string; vendors?: Record<string, { name?: string }>; trainers?: Record<string, { name?: string }>; npcs?: Record<string, EgNpc>; creatures?: Record<string, EgCreature> }>): Map<string, string> {
++  const english = new Map<string, string>(), any = new Map<string, string>();
++  for (const b of [...builds].sort((x, y) => cmpBuild(x.build, y.build))) {
++    for (const src of [b.creatures, b.npcs, b.trainers, b.vendors]) {
++      for (const [id, o] of Object.entries(src ?? {})) {
++        if (!o?.name) continue;
++        any.set(id, o.name);
++        if (!isHangul(o.name)) english.set(id, o.name);
++      }
++    }
++  }
++  for (const [id, n] of english) any.set(id, n);
++  return any;
++}
+ 
+ export interface MergedVendorItem {
+   npcId: number; npcName: string; faction: VendorFaction; zone: string | null; x: number | null; y: number | null; uiMap: number | null;
+   itemId: number; stack: number; costs: Record<string, number>; limited: boolean; lastSeen: string;
+-  /** lowest standing a price was recorded at, 4 Neutral to 8 Exalted */
++  /**
++   * Lowest standing a price was recorded at, 4 Neutral to 8 Exalted. Information only: it is whoever happened to
++   * record the vendor, not a requirement. The gate is the item's MinFactionID and MinReputation (vendorGate).
++   */
+   minStanding: number;
+ }
+ 
+@@ -93,6 +149,14 @@ export interface MergedTrainerSpell {
+ export function mergeTrainers(builds: Array<{ build: string; trainers: Record<string, EgTrainer>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature> }>): MergedTrainerSpell[] {
+   const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
+   const { reactions, sides } = factionIndex(sorted);
++  const names = npcNames(sorted);
++  // English spell and skill names per spell from any trainer in any build, for rows a Korean client recorded.
++  const spellEn = new Map<number, string>(), skillEn = new Map<number, string>();
++  for (const b of sorted) for (const t of Object.values(b.trainers)) for (const sv of Object.values(t.services ?? {})) {
++    if (sv.spellId == null) continue;
++    if (sv.name && !isHangul(sv.name)) spellEn.set(sv.spellId, sv.name);
++    if (sv.skill && !isHangul(sv.skill)) skillEn.set(sv.spellId, sv.skill);
++  }
+   const out = new Map<string, MergedTrainerSpell>();
+   for (const b of sorted) {
+     for (const [npcId, t] of Object.entries(b.trainers)) {
+@@ -101,14 +165,16 @@ export function mergeTrainers(builds: Array<{ build: string; trainers: Record<st
+       for (const sv of Object.values(t.services ?? {})) {
+         if (sv.spellId == null || !sv.name) continue;
+         const costs = sv.costs && Object.keys(sv.costs).length ? sv.costs : null;
++        const name = isHangul(sv.name) ? spellEn.get(sv.spellId) ?? sv.name : sv.name;
++        const skill = sv.skill == null ? null : isHangul(sv.skill) ? KOREAN_PROFESSIONS[sv.skill] ?? skillEn.get(sv.spellId) ?? sv.skill : sv.skill;
+         out.set(`${npcId}:${sv.spellId}`, {
+-          npcId: Number(npcId), npcName: t.name ?? `NPC ${npcId}`,
+-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set()),
++          npcId: Number(npcId), npcName: names.get(npcId) ?? t.name ?? `NPC ${npcId}`,
++          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId),
+           zone: zoneName(pos?.uiMap),
+           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
+           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
+           uiMap: pos?.uiMap ?? null,
+-          spellId: sv.spellId, name: sv.name, skill: sv.skill ?? null, skillRank: sv.skillRank ?? null,
++          spellId: sv.spellId, name, skill, skillRank: sv.skillRank ?? null,
+           cost: costs ? vendorUnitPrice(costs, 1) : null,
+         });
+       }
+@@ -122,6 +188,7 @@ export function mergeVendors(
+ ): MergedVendorItem[] {
+   const sorted = [...builds].sort((a, b) => cmpBuild(a.build, b.build));
+   const { reactions, sides } = factionIndex(sorted);
++  const names = npcNames(sorted);
+   // Newest build that lists an NPC with entries defines that NPC's whole inventory, so an item removed or
+   // repriced by a hotfix does not linger from an older build (review finding 5).
+   const newest = new Map<string, EgVendor>();
+@@ -136,8 +203,8 @@ export function mergeVendors(
+         const key = `${npcId}:${e.itemId}`;
+         out.set(key, {
+           npcId: Number(npcId),
+-          npcName: v.name ?? `NPC ${npcId}`,
+-          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set()),
++          npcName: names.get(npcId) ?? v.name ?? `NPC ${npcId}`,
++          faction: vendorFaction(reactions.get(npcId) ?? {}, sides.get(npcId) ?? new Set(), npcId),
+           zone: zoneName(pos?.uiMap),
+           x: pos?.mapX != null ? Math.round(pos.mapX * 1000) / 10 : null,
+           y: pos?.mapY != null ? Math.round(pos.mapY * 1000) / 10 : null,
+@@ -155,17 +222,40 @@ export function mergeVendors(
+   return [...out.values()];
+ }
+ 
++/**
++ * The base price (Friendly, else Neutral) of a vendor entry. A recorded Friendly or Neutral price is used as is.
++ * Only when none was recorded is it backed out of the lowest discounted standing, rounded to the nearest copper:
++ * the game rounds the discounted price, so backing it out can land a copper off, and taking the largest back out
++ * of several standings, as before, picked the copper that rounds up.
++ */
++export function vendorBasePrice(costs: Record<string, number>): number {
++  const plain = ['5', '4', '3'].map(k => costs[k]).find(c => c != null);
++  if (plain != null) return plain;
++  const st = Object.keys(costs).map(Number).filter(Number.isFinite).sort((a, b) => a - b)[0];
++  if (st == null) return NaN;
++  return Math.round(costs[String(st)]! / (STANDING_DISCOUNT[String(st)] ?? 1));
++}
++
+ /**
+  * Price per unit. At a known standing with a recorded price, that price. Otherwise the base price
+- * (Neutral or Friendly) backed out of whatever standings were recorded, which is the most Chip pays.
++ * (Friendly or Neutral), backed out of a discounted standing only when no base price was recorded.
+  */
+ export function vendorUnitPrice(costs: Record<string, number>, stack: number, standing?: number | null): number {
+   const exact = standing != null ? costs[String(standing)] : undefined;
+-  const base = Math.max(...Object.entries(costs).map(([st, c]) => c / (STANDING_DISCOUNT[st] ?? 1)));
+-  const price = exact ?? base * (standing != null ? STANDING_DISCOUNT[String(standing)] ?? 1 : 1);
++  const price = exact ?? vendorBasePrice(costs) * (standing != null ? STANDING_DISCOUNT[String(standing)] ?? 1 : 1);
+   return Math.ceil(Math.round(price) / Math.max(1, stack));
+ }
+ 
++/**
++ * The standing a vendor item needs, as EG Link writes standings (4 Neutral .. 8 Exalted), from the item's own
++ * ItemSparse.MinFactionID and MinReputation (MinReputation counts from 0 Hated, so EG Link's standing is one more).
++ * An item with no faction requirement needs nothing: '4'. Null when the game table lacks the item.
++ */
++export function vendorGate(item: { minFactionId: number; minReputation: number } | undefined): string | null {
++  if (!item) return null;
++  return item.minFactionId > 0 ? String(item.minReputation + 1) : '4';
++}
++
+ export interface MergedLoot {
+   kind: string; sourceId: number; spell: number | null; itemId: number;
+   /** expected units of the item per kill or per open */
+@@ -249,8 +339,62 @@ export function cmpBuild(a: string, b: string): number {
+ 
+ interface EgIndex { products: Record<string, Record<string, Record<string, { records: number }>>> }
+ 
++export interface GameFixes {
++  /** trainer rows whose Korean spell name or skill was replaced from the game tables */
++  trainerNames: number; trainerSkills: number;
++  /** trainer rows still holding Korean text because no English value exists anywhere */
++  trainerKorean: number;
++  /** vendor rows gated by the item's own reputation requirement, and rows whose gate changed */
++  vendorGated: number; vendorGateChanged: number;
++  /** vendor rows whose item the game table lacks, so they keep the recorded standing */
++  vendorNoItem: number;
++}
++
++/**
++ * Fill what EG Link cannot know from the game's own tables: English spell names and profession names for trainer
++ * rows a Korean client recorded (by spell id, through SpellName and SkillLineAbility), and each vendor item's real
++ * standing gate from ItemSparse.MinFactionID and MinReputation. Idempotent; run after every EG Link or game refresh.
++ */
++export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 'sla' | 'skillLines' | 'items'>): GameFixes {
++  const out: GameFixes = { trainerNames: 0, trainerSkills: 0, trainerKorean: 0, vendorGated: 0, vendorGateChanged: 0, vendorNoItem: 0 };
++  const lineBySpell = new Map<number, string>();
++  for (const s of game.sla.values()) { const n = game.skillLines.get(s.skillLine)?.name; if (n && !isHangul(n)) lineBySpell.set(s.spellId, n); }
++  tx(db, () => {
++    const setName = db.prepare('UPDATE trainer_spells SET name = ? WHERE npc_id = ? AND spell_id = ?');
++    const setSkill = db.prepare('UPDATE trainer_spells SET skill = ? WHERE npc_id = ? AND spell_id = ?');
++    for (const r of db.prepare('SELECT npc_id, spell_id, name, skill, npc_name FROM trainer_spells').all() as Array<{ npc_id: number; spell_id: number; name: string; skill: string | null; npc_name: string }>) {
++      if (isHangul(r.name)) { const en = game.spellNames.get(r.spell_id); if (en && !isHangul(en)) { setName.run(en, r.npc_id, r.spell_id); out.trainerNames++; r.name = en; } }
++      if (isHangul(r.skill)) { const en = KOREAN_PROFESSIONS[r.skill!] ?? lineBySpell.get(r.spell_id); if (en) { setSkill.run(en, r.npc_id, r.spell_id); out.trainerSkills++; r.skill = en; } }
++      if (isHangul(r.name) || isHangul(r.skill) || isHangul(r.npc_name)) out.trainerKorean++;
++    }
++    const setGate = db.prepare('UPDATE vendor_items SET standing_required = ? WHERE npc_id = ? AND item_id = ?');
++    for (const r of db.prepare('SELECT npc_id, item_id, standing_required, price_by_standing FROM vendor_items').all() as Array<{ npc_id: number; item_id: number; standing_required: string | null; price_by_standing: string | null }>) {
++      const gate = vendorGate(game.items.get(r.item_id));
++      if (gate == null) {
++        // Not in the game table: keep the recorded standing, the only evidence there is.
++        out.vendorNoItem++;
++        const rec = recordedStanding(r.price_by_standing);
++        if (rec != null && rec !== r.standing_required) setGate.run(rec, r.npc_id, r.item_id);
++        continue;
++      }
++      if (gate !== '4') out.vendorGated++;
++      if (gate !== r.standing_required) { setGate.run(gate, r.npc_id, r.item_id); out.vendorGateChanged++; }
++    }
++  });
++  return out;
++}
++
++function recordedStanding(json: string | null): string | null {
++  try { const ks = Object.keys(JSON.parse(json ?? '{}') as object).map(Number).filter(Number.isFinite); return ks.length ? String(Math.min(...ks)) : null; } catch { return null; }
++}
++
+ /** Download (cached by ETag) and merge every live build, then write vendors, loot and names into the database. */
+-export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}): Promise<{ vendors: number; loot: number; names: number; builds: number; questItems: number; trainerSpells: number }> {
++export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => void = () => {}, opts: { game?: GameData } = {}): Promise<{
++  vendors: number; loot: number; names: number; builds: number; questItems: number; trainerSpells: number;
++  /** distinct vendor NPCs per faction */
++  vendorFactions: Record<string, number>;
++  fixes: GameFixes | null;
++}> {
+   const dir = join(dataDir, 'datasets', 'eglink');
+   const { data: index } = await fetchCached<EgIndex>(`${EG_BASE}/index.json`, join(dir, 'index.json'));
+   const builds = Object.keys(index.products[EG_PRODUCT] ?? {}).sort(cmpBuild);
+@@ -306,6 +450,9 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
+   const vendors = mergeVendors(vendorBuilds);
+   const loot = mergeLoot(lootBuilds);
+   const trainers = mergeTrainers(trainerBuilds);
++  // Loot sources keep an English creature name when any build recorded one.
++  const english = npcNames([...vendorBuilds, ...trainerBuilds]);
++  for (const [id, ci] of creatureInfo) { const n = english.get(String(id)); if (n) ci.name = n; }
+   tx(db, () => {
+     db.exec('DELETE FROM trainer_spells');
+     const it = db.prepare(`INSERT OR REPLACE INTO trainer_spells (npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost)
+@@ -334,5 +481,13 @@ export async function syncEgLink(db: DB, dataDir: string, log: (m: string) => vo
+     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('eglink', ?, ?, ?, ?)`)
+       .run(builds[builds.length - 1]!, Date.now(), vendors.length + loot.length, EG_ATTRIBUTION);
+   });
+-  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size, trainerSpells: trainers.length };
++  // The game tables from the last refresh fill English names and the vendor standing gate. On a first install they are
++  // not cached yet; the recipes step right after applies the same fixes once it has downloaded them.
++  const game = opts.game ?? loadNewestCachedGameData(dataDir, { log });
++  let fixes: GameFixes | null = null;
++  if (game) fixes = applyGameToEgLink(db, game);
++  else log('eglink: no game tables cached yet, vendor gates and Korean trainer names wait for the recipes step');
++  const factions: Record<string, number> = {};
++  for (const v of new Map(vendors.map(v => [v.npcId, v.faction])).values()) factions[v] = (factions[v] ?? 0) + 1;
++  return { vendors: vendors.length, loot: loot.length, names: names.size, builds: builds.length, questItems: questItems.size, trainerSpells: trainers.length, vendorFactions: factions, fixes };
+ }
+diff --git a/src/datasets/gamedata.ts b/src/datasets/gamedata.ts
+index 79f5967..fb9879d 100644
+--- a/src/datasets/gamedata.ts
++++ b/src/datasets/gamedata.ts
+@@ -17,6 +17,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
+  *  - SpellCooldowns has RecoveryTime and CategoryRecoveryTime in ms. SpellCategories.Category groups spells
+  *    that share a cooldown (transmutes share category 310 "Transmute - Alchemy").
+  *  - ItemSparse.Bonding: 0 none, 1 pickup, 2 equip, 3 use, 4 quest.
++ *  - ItemSparse.RequiredSkill and RequiredSkillRank: the profession and rank an item needs. On a recipe item this is
++ *    the rank it teaches at (Pattern: Mooncloth 14526: skill 197 Tailoring, rank 230).
++ *  - ItemSparse.MinFactionID and MinReputation: the reputation an item needs to buy and use. MinReputation counts from
++ *    0 Hated, so 3 Neutral, 4 Friendly, 5 Honored, 6 Revered, 7 Exalted (one below EG Link's standing keys).
++ *  - ItemEffect TriggerType 6 is "learn": its SpellID is the craft spell the item teaches, joined to the item through
++ *    ItemXItemEffect (Pattern: Mooncloth 14526 -> spell 18560, the Mooncloth craft).
+  */
+ export const WAGO_TABLES = {
+   SkillLineAbility: ['ID', 'SkillLine', 'Spell', 'MinSkillLineRank', 'TrivialSkillLineRankLow', 'TrivialSkillLineRankHigh', 'TradeSkillCategoryID', 'AcquireMethod'],
+@@ -30,7 +36,7 @@ export const WAGO_TABLES = {
+   SpellCastTimes: ['ID', 'Base', 'Minimum'],
+   SpellCooldowns: ['SpellID', 'DifficultyID', 'RecoveryTime', 'CategoryRecoveryTime'],
+   SpellCategories: ['SpellID', 'DifficultyID', 'Category'],
+-  ItemSparse: ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID'],
++  ItemSparse: ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID', 'RequiredSkill', 'RequiredSkillRank', 'MinFactionID', 'MinReputation'],
+   Item: ['ID', 'ClassID', 'SubclassID'],
+   ItemEffect: ['ID', 'TriggerType', 'Charges', 'SpellID'],
+   ItemXItemEffect: ['ItemEffectID', 'ItemID'],
+@@ -84,7 +90,13 @@ export function parseTable(name: WagoTable, text: string): Table {
+ }
+ 
+ export interface SlaRow { id: number; skillLine: number; spellId: number; minRank: number; yellow: number; grey: number; categoryId: number; acquire: number }
+-export interface SparseItem { id: number; name: string; bonding: number; stackable: number; vendorStack: number; buyPrice: number; sellPrice: number; quality: number }
++export interface SparseItem {
++  id: number; name: string; bonding: number; stackable: number; vendorStack: number; buyPrice: number; sellPrice: number; quality: number;
++  /** profession skill line and rank the item needs; on a recipe item, the rank it teaches at */
++  requiredSkill: number; requiredSkillRank: number;
++  /** reputation needed to buy it: faction id (0 none) and MinReputation (3 Neutral, 4 Friendly, 5 Honored, 6 Revered, 7 Exalted) */
++  minFactionId: number; minReputation: number;
++}
+ export interface Create { itemId: number; base: number; variance: number }
+ export interface Cooldown { recoveryMs: number; categoryRecoveryMs: number; category: number | null }
+ export interface ItemUse { itemId: number; spellId: number; trigger: number; charges: number }
+@@ -107,6 +119,10 @@ export interface GameData {
+   items: Map<number, SparseItem>;
+   itemClass: Map<number, { classId: number; subclassId: number }>;
+   itemUses: ItemUse[];
++  /** craft spell -> the items that teach it (ItemEffect TriggerType 6), lowest item id first */
++  teachers: Map<number, number[]>;
++  /** set when the newest build could not be downloaded or failed its shape check, so an older cached build is in use */
++  stale?: { wanted: string; reason: string };
+ }
+ 
+ const num = (s: string | undefined) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
+@@ -178,8 +194,16 @@ export function buildGameData(build: string, t: Record<WagoTable, Table>): GameD
+       cooldowns.set(spell, { recoveryMs: rec, categoryRecoveryMs: crec, category: crec > 0 && cat > 0 ? cat : null });
+     } }
+   const items = new Map<number, SparseItem>();
+-  { const s = t.ItemSparse; const [iId, iN, iB, iS, iV, iBuy, iSell, iQ] = ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID'].map(c => s.col(c));
+-    for (const r of s.rows) items.set(num(r[iId!]), { id: num(r[iId!]), name: r[iN!] ?? '', bonding: num(r[iB!]), stackable: num(r[iS!]), vendorStack: num(r[iV!]), buyPrice: num(r[iBuy!]), sellPrice: num(r[iSell!]), quality: num(r[iQ!]) }); }
++  { const s = t.ItemSparse; const [iId, iN, iB, iS, iV, iBuy, iSell, iQ, iRs, iRr, iMf, iMr] = ['ID', 'Display_lang', 'Bonding', 'Stackable', 'VendorStackCount', 'BuyPrice', 'SellPrice', 'OverallQualityID',
++      'RequiredSkill', 'RequiredSkillRank', 'MinFactionID', 'MinReputation'].map(c => s.col(c));
++    for (const r of s.rows) items.set(num(r[iId!]), { id: num(r[iId!]), name: r[iN!] ?? '', bonding: num(r[iB!]), stackable: num(r[iS!]), vendorStack: num(r[iV!]), buyPrice: num(r[iBuy!]), sellPrice: num(r[iSell!]), quality: num(r[iQ!]),
++      requiredSkill: num(r[iRs!]), requiredSkillRank: num(r[iRr!]), minFactionId: num(r[iMf!]), minReputation: num(r[iMr!]) });
++    // Shape check on values, not only names (ledger rule 2): a skill rank above any profession cap, or a reputation
++    // outside Hated..Exalted, means the columns moved.
++    for (const it of items.values()) {
++      if (it.requiredSkillRank < 0 || it.requiredSkillRank > 1000) throw new Error(`wago ItemSparse ${it.id} RequiredSkillRank ${it.requiredSkillRank} is out of range, the table shape changed`);
++      if (it.minFactionId > 0 && (it.minReputation < 0 || it.minReputation > 7)) throw new Error(`wago ItemSparse ${it.id} MinReputation ${it.minReputation} is out of range, the table shape changed`);
++    } }
+   const itemClass = new Map<number, { classId: number; subclassId: number }>();
+   { const s = t.Item; const iId = s.col('ID'), iC = s.col('ClassID'), iS = s.col('SubclassID');
+     for (const r of s.rows) itemClass.set(num(r[iId]), { classId: num(r[iC]), subclassId: num(r[iS]) }); }
+@@ -192,7 +216,15 @@ export function buildGameData(build: string, t: Record<WagoTable, Table>): GameD
+       if (!ef || num(ef[iS]) <= 0) continue;
+       itemUses.push({ itemId: num(r[iI]), spellId: num(ef[iS]), trigger: num(ef[iT]), charges: num(ef[iC]) });
+     } }
+-  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses };
++  const teachers = new Map<number, number[]>();
++  for (const u of itemUses) {
++    if (u.trigger !== 6) continue;
++    const a = teachers.get(u.spellId) ?? [];
++    if (!a.includes(u.itemId)) a.push(u.itemId);
++    teachers.set(u.spellId, a);
++  }
++  for (const a of teachers.values()) a.sort((x, y) => x - y);
++  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses, teachers };
+ }
+ 
+ /** Read every table from one directory (a cached build, or a test fixture) and index it. */
+@@ -216,38 +248,71 @@ export async function latestWowfBuild(fetchFn: typeof fetch = fetch): Promise<st
+   return build;
+ }
+ 
++/** Cached builds with every table on disk, oldest first. */
++export function completeCachedBuilds(dataDir: string): string[] {
++  const root = join(dataDir, 'datasets', 'wago');
++  return existsSync(root) ? readdirSync(root).filter(d => TABLE_NAMES.every(n => existsSync(join(root, d, `${n}.csv`)))).sort(compareBuilds) : [];
++}
++
++/**
++ * The newest complete cached build that loads and passes its shape check, newest first, skipping `except`.
++ * Null when there is none. Never touches the network.
++ */
++export function loadNewestCachedGameData(dataDir: string, opts: { except?: string; log?: (m: string) => void } = {}): GameData | null {
++  const root = join(dataDir, 'datasets', 'wago');
++  for (const b of completeCachedBuilds(dataDir).reverse()) {
++    if (b === opts.except) continue;
++    try { return loadGameDataFromDir(join(root, b), b); } catch (e) { opts.log?.(`gamedata: cached build ${b} does not load (${(e as Error).message}), trying an older one`); }
++  }
++  return null;
++}
++
+ /**
+  * Make sure every table of the latest build is on disk, downloading what is missing, then load it.
+- * If wago.tools cannot be reached, the newest complete cached build is used and the caller is told.
++ * If wago.tools cannot be reached, or the new build's download or shape check fails, the newest complete cached
++ * build is used, a warning is logged and the result carries `stale`, so the daily refresh never throws every
++ * 30 minutes over one bad build. With no cached build to fall back on, it throws.
+  */
+ export async function fetchGameData(dataDir: string, opts: { fetchFn?: typeof fetch; log?: (m: string) => void } = {}): Promise<GameData> {
+   const fetchFn = opts.fetchFn ?? fetch;
+   const log = opts.log ?? (() => {});
+   const root = join(dataDir, 'datasets', 'wago');
++  const fallBack = (wanted: string, e: unknown): GameData => {
++    const reason = (e as Error).message;
++    const g = loadNewestCachedGameData(dataDir, { except: wanted, log });
++    if (!g) throw e;
++    log(`gamedata WARNING: build ${wanted} unusable (${reason}), using cached build ${g.build}, marked stale`);
++    g.stale = { wanted, reason };
++    return g;
++  };
+   let build: string;
+   try {
+     build = await latestWowfBuild(fetchFn);
+   } catch (e) {
+-    const cached = existsSync(root) ? readdirSync(root).filter(d => TABLE_NAMES.every(n => existsSync(join(root, d, `${n}.csv`)))).sort(compareBuilds) : [];
++    const cached = completeCachedBuilds(dataDir);
+     const last = cached[cached.length - 1];
+     if (!last) throw e;
+     log(`gamedata: wago builds unreachable (${(e as Error).message}), using cached build ${last}`);
+     build = last;
+   }
+   const dir = join(root, build);
+-  mkdirSync(dir, { recursive: true });
+-  for (const name of TABLE_NAMES) {
+-    const file = join(dir, `${name}.csv`);
+-    if (existsSync(file)) continue;
+-    const res = await fetchFn(`https://wago.tools/db2/${name}/csv?build=${build}`);
+-    if (!res.ok) throw new Error(`wago ${name} returned ${res.status}`);
+-    const text = await res.text();
+-    parseTable(name, text); // check the shape before it is cached
+-    writeFileSync(file + '.part', text);
+-    renameSync(file + '.part', file);
+-    log(`gamedata: ${name} ${build} downloaded, ${text.length} bytes`);
++  try {
++    mkdirSync(dir, { recursive: true });
++    for (const name of TABLE_NAMES) {
++      const file = join(dir, `${name}.csv`);
++      if (existsSync(file)) continue;
++      const res = await fetchFn(`https://wago.tools/db2/${name}/csv?build=${build}`);
++      if (!res.ok) throw new Error(`wago ${name} returned ${res.status}`);
++      const text = await res.text();
++      parseTable(name, text); // check the shape before it is cached
++      writeFileSync(file + '.part', text);
++      renameSync(file + '.part', file);
++      log(`gamedata: ${name} ${build} downloaded, ${text.length} bytes`);
++    }
++    return loadGameDataFromDir(dir, build);
++  } catch (e) {
++    return fallBack(build, e);
+   }
+-  return loadGameDataFromDir(dir, build);
+ }
+ 
+ function compareBuilds(a: string, b: string): number {
+diff --git a/src/datasets/recipes.ts b/src/datasets/recipes.ts
+index ae8cafc..173a13c 100644
+--- a/src/datasets/recipes.ts
++++ b/src/datasets/recipes.ts
+@@ -1,8 +1,9 @@
+ import type { BlizzardClient } from '../blizzard/client.ts';
+ import { ProfessionIndex, Profession, SkillTier, Recipe } from '../blizzard/contracts.ts';
+ import { type DB, tx } from '../store/db.ts';
+-import { pool, resolveItems, applyItemSparse, type ResolveResult } from '../catalog/items.ts';
+-import { fetchGameData, parseCsv, type GameData } from './gamedata.ts';
++import { pool, resolveItems, applyItemSparse, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
++import { fetchGameData, loadNewestCachedGameData, parseCsv, type GameData } from './gamedata.ts';
++import { applyGameToEgLink, type GameFixes } from './eglink.ts';
+ 
+ /**
+  * Recipes, built from two sources and checked against each other (docs/flip-plan.md section 4).
+@@ -45,15 +46,27 @@ export interface BuiltRecipe {
+   reagents: Array<{ itemId: number; quantity: number }>;
+   castMs: number | null; cooldownMs: number | null; cooldownCategory: number | null;
+   randomYield: boolean;
+-  learnSkill: number | null; learnFrom: 'trainer' | 'yellow' | null;
++  /** the skill rank it can be learned at, and where that rank came from (see learnFrom) */
++  learnSkill: number | null; learnSource: LearnSource | null;
++  /** the item that teaches it (ItemEffect TriggerType 6), and that item's RequiredSkillRank */
++  teachItemId: number | null; teachSkill: number | null;
+   yellow: number | null; green: number | null; grey: number | null; thresholdSource: string | null;
+   source: 'wago' | 'blizzard' | 'both'; disagreement: string | null;
+   live: boolean;
+ }
+ 
++/**
++ * Where a recipe is learned. trainer_alliance: an Alliance or neutral trainer (EG Link). item: a plans, pattern or
++ * recipe item. auto: SkillLineAbility AcquireMethod 1, learned on reaching the rank. trainer_horde_only: only Horde
++ * trainers were recorded teaching it. yellow: none of these, so the yellow threshold is the best guess.
++ */
++export type LearnSource = 'trainer_alliance' | 'trainer_horde_only' | 'item' | 'auto' | 'yellow';
++
+ export interface RecipeReport {
+   build: string;
+   recipes: number;
++  /** recipes by where they are learned; `teachItem` counts recipes with a teaching item whatever won */
++  learn: Record<LearnSource | 'none', number> & { teachItem: number };
+   byProfession: Record<string, { total: number; live: number }>;
+   source: { wago: number; blizzard: number; both: number };
+   dropped: { test: Array<{ id: number; name: string }>; seasonOfDiscovery: number };
+@@ -63,7 +76,53 @@ export interface RecipeReport {
+   randomYield: Array<{ id: number; name: string }>;
+   live: number; notLive: number;
+   /** conversions kept, left out because an item is not in Forever, because an item cannot be traded, or because the data does not prove the counts */
+-  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; unproven: Array<{ spellId: number; name: string; why: string }> };
++  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; boundByApiOnly: number; unproven: Array<{ spellId: number; name: string; why: string }> };
++}
++
++/** Blizzard binding words that mean an item can never reach the auction house. */
++const BOUND_WORDS = new Set(['ON_ACQUIRE', 'QUEST']);
++
++export interface RecipeBuildOpts {
++  /** craft spell -> lowest rank an Alliance or neutral trainer teaches it at (EG Link) */
++  trainerRanks: Map<number, number>;
++  /** craft spell -> lowest rank a Horde trainer teaches it at, used only when nothing Alliance can use teaches it */
++  hordeRanks?: Map<number, number>;
++  /** whether an item is in Forever (B27) */
++  exists: (itemId: number) => boolean;
++  /** the live API's binding for an item (ON_ACQUIRE, QUEST...), from the items table; a hotfix can bind what ItemSparse leaves unbound */
++  apiBinding?: (itemId: number) => string | null | undefined;
++}
++
++/**
++ * The item that teaches a craft spell: of the Forever items whose learn effect casts it, the one needing the lowest
++ * RequiredSkillRank, then the lowest id. Its rank is that RequiredSkillRank (0 means no rank needed, so 1).
++ */
++export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, exists: (itemId: number) => boolean): { itemId: number; skill: number } | null {
++  if (spellId == null) return null;
++  let best: { itemId: number; skill: number } | null = null;
++  for (const itemId of game.teachers.get(spellId) ?? []) {
++    const it = game.items.get(itemId);
++    if (!it || !exists(itemId)) continue;
++    const skill = Math.max(1, it.requiredSkillRank);
++    if (!best || skill < best.skill || (skill === best.skill && itemId < best.itemId)) best = { itemId, skill };
++  }
++  return best;
++}
++
++/**
++ * The rank a recipe is learned at, and from where. The lowest of: an Alliance or neutral trainer, the teaching item,
++ * and the automatic rank for AcquireMethod 1 (ties go to auto, then trainer, then item). Failing all three, a Horde
++ * only trainer's rank, flagged as such. Failing that, the yellow threshold, the last guess.
++ */
++export function learnFrom(c: { trainer?: number | null; horde?: number | null; teach?: number | null; auto?: number | null; yellow?: number | null }): { skill: number | null; source: LearnSource | null } {
++  const opts: Array<{ skill: number; source: LearnSource }> = [];
++  if (c.auto != null) opts.push({ skill: c.auto, source: 'auto' });
++  if (c.trainer != null) opts.push({ skill: c.trainer, source: 'trainer_alliance' });
++  if (c.teach != null) opts.push({ skill: c.teach, source: 'item' });
++  if (opts.length) return opts.reduce((a, b) => (b.skill < a.skill ? b : a));
++  if (c.horde != null) return { skill: c.horde, source: 'trainer_horde_only' };
++  if (c.yellow != null) return { skill: c.yellow, source: 'yellow' };
++  return { skill: null, source: null };
+ }
+ 
+ /** Rogue poisons are crafted from vendor and auction reagents and sell, though Blizzard's profession index omits them. */
+@@ -83,14 +142,16 @@ function sameReagents(a: Array<{ itemId: number; quantity: number }>, b: Array<{
+ 
+ /**
+  * Join the two sources into one recipe list. Pure: every input is passed in, so the tests run on real cut fixtures.
+- * `trainerRanks` maps a craft spell to the lowest skill rank any trainer teaches it at (EG Link trainers).
+- * `exists` says whether an item is in Forever (B27); a recipe is live only if its product and every reagent pass.
++ * `trainerRanks` maps a craft spell to the lowest skill rank an Alliance or neutral trainer teaches it at (EG Link
++ * trainers), `hordeRanks` the same for Horde trainers. `exists` says whether an item is in Forever (B27); a recipe is
++ * live only if its product and every reagent pass.
+  */
+ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id: number; name: string }>; recipes: BlizzardRecipe[] },
+-  opts: { trainerRanks: Map<number, number>; exists: (itemId: number) => boolean }): { recipes: BuiltRecipe[]; report: RecipeReport } {
++  opts: RecipeBuildOpts): { recipes: BuiltRecipe[]; report: RecipeReport } {
+   const report: RecipeReport = {
+-    build: game.build, recipes: 0, byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
+-    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, unproven: [] },
++    build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, none: 0, teachItem: 0 },
++    byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
++    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, boundByApiOnly: 0, unproven: [] },
+   };
+   const profLines = new Map<number, string>();
+   for (const p of blizzard.professions) profLines.set(p.id, p.name);
+@@ -153,14 +214,21 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
+     const cd = spell != null ? game.cooldowns.get(spell) : undefined;
+     const hasThresholds = !!s && (s.yellow > 0 || s.grey > 0);
+     const yellow = hasThresholds ? s!.yellow : null, grey = hasThresholds ? s!.grey : null;
+-    const trainer = spell != null ? opts.trainerRanks.get(spell) : undefined;
++    const teach = teachingItem(game, spell, opts.exists);
++    const learn = learnFrom({
++      trainer: spell != null ? opts.trainerRanks.get(spell) : null,
++      horde: spell != null ? opts.hordeRanks?.get(spell) : null,
++      teach: teach?.skill,
++      auto: s?.acquire === 1 ? Math.max(1, s.minRank) : null,
++      yellow,
++    });
+     const r: BuiltRecipe = {
+       id, name, professionId: b?.professionId ?? s?.skillLine ?? null, profession, category, kind: 'profession', spellId: spell,
+       craftedItemId, qtyMin, qtyMax, reagents,
+       castMs: spell != null ? game.castMs.get(spell) ?? null : null,
+       cooldownMs: cd ? Math.max(cd.recoveryMs, cd.categoryRecoveryMs) : null, cooldownCategory: cd?.category ?? null,
+       randomYield,
+-      learnSkill: trainer ?? yellow, learnFrom: trainer != null ? 'trainer' : yellow != null ? 'yellow' : null,
++      learnSkill: learn.skill, learnSource: learn.source, teachItemId: teach?.itemId ?? null, teachSkill: teach?.skill ?? null,
+       yellow, green: hasThresholds ? Math.round((s!.yellow + s!.grey) / 2) : null, grey,
+       thresholdSource: hasThresholds ? `wago wowf ${game.build}` : null,
+       source, disagreement: diffs.length ? diffs.join('; ') : null,
+@@ -168,9 +236,10 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
+     };
+     out.push(r);
+   }
+-  out.push(...buildConversions(game, opts.exists, report));
++  out.push(...buildConversions(game, opts.exists, report, opts.apiBinding));
+   for (const r of out) {
+     report.recipes++;
++    if (r.kind === 'profession') { report.learn[r.learnSource ?? 'none']++; if (r.teachItemId != null) report.learn.teachItem++; }
+     report.source[r.source]++;
+     const p = (report.byProfession[r.profession] ??= { total: 0, live: 0 });
+     p.total++;
+@@ -191,7 +260,7 @@ const NUMBER_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, thre
+  * names every count above 1, so inputs and outputs are proven from data, only when every item is in Forever, and
+  * only when the game table shows every item can be traded (quest spells like "fill the flask" are left out).
+  */
+-export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport): BuiltRecipe[] {
++export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, apiBinding?: RecipeBuildOpts['apiBinding']): BuiltRecipe[] {
+   const slaSpells = new Set([...game.sla.values()].map(s => s.spellId));
+   const bySpell = new Map<number, Array<{ itemId: number; inputs: Array<{ itemId: number; quantity: number }> }>>();
+   for (const u of game.itemUses) {
+@@ -228,9 +297,12 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
+     const live = exists(product) && inputs.every(i => exists(i.itemId));
+     if (!live) { if (report) report.conversions.notLive++; continue; }
+     // Quest items (fill a flask, sign a paper) pass every rule above but can never be bought or sold. Keep a conversion
+-    // only when the game table shows every item it touches can be traded: bonding none, on equip or on use.
+-    const bound = [product, ...inputs.map(i => i.itemId)].filter(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
+-    if (bound.length) { if (report) report.conversions.bound++; continue; }
++    // only when every item it touches can be traded: bound if EITHER the game table (bonding pickup or quest, or no row)
++    // OR the live API says pickup or quest, since a server hotfix can bind what ItemSparse leaves unbound (Rogue poisons).
++    const touched = [product, ...inputs.map(i => i.itemId)];
++    const sparseBound = touched.some(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
++    const apiBound = touched.some(i => BOUND_WORDS.has(apiBinding?.(i) ?? ''));
++    if (sparseBound || apiBound) { if (report) { report.conversions.bound++; if (!sparseBound) report.conversions.boundByApiOnly++; } continue; }
+     const cd = game.cooldowns.get(spellId);
+     const id = CONVERSION_ID_BASE + spellId;
+     out.push({
+@@ -238,7 +310,7 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
+       craftedItemId: product, qtyMin: outQty, qtyMax: outQty, reagents: inputs,
+       castMs: game.castMs.get(spellId) ?? null,
+       cooldownMs: cd ? Math.max(cd.recoveryMs, cd.categoryRecoveryMs) : null, cooldownCategory: cd?.category ?? null,
+-      randomYield: false, learnSkill: null, learnFrom: null, yellow: null, green: null, grey: null, thresholdSource: null,
++      randomYield: false, learnSkill: null, learnSource: null, teachItemId: null, teachSkill: null, yellow: null, green: null, grey: null, thresholdSource: null,
+       source: 'wago', disagreement: null, live: true,
+     });
+     report?.conversions.kept.push({ id, name });
+@@ -251,12 +323,13 @@ export function writeRecipes(db: DB, recipes: BuiltRecipe[], note: { version: st
+   tx(db, () => {
+     db.exec('DELETE FROM recipes; DELETE FROM recipe_reagents;');
+     const ir = db.prepare(`INSERT INTO recipes (id, name, profession_id, profession, category, crafted_item_id, qty_min, qty_max, learn_skill, yellow, green, grey,
+-        threshold_source, spell_id, cast_ms, cooldown_ms, cooldown_category, random_yield, live, kind, source, disagreement)
+-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
++        threshold_source, spell_id, cast_ms, cooldown_ms, cooldown_category, random_yield, live, kind, source, disagreement, teach_item_id, teach_skill, learn_source)
++      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+     const ig = db.prepare('INSERT INTO recipe_reagents (recipe_id, item_id, quantity) VALUES (?, ?, ?)');
+     for (const r of recipes) {
+       ir.run(r.id, r.name, r.professionId, r.profession, r.category, r.craftedItemId, r.qtyMin, r.qtyMax, r.learnSkill, r.yellow, r.green, r.grey,
+-        r.thresholdSource, r.spellId, r.castMs, r.cooldownMs, r.cooldownCategory, r.randomYield ? 1 : 0, r.live ? 1 : 0, r.kind, r.source, r.disagreement);
++        r.thresholdSource, r.spellId, r.castMs, r.cooldownMs, r.cooldownCategory, r.randomYield ? 1 : 0, r.live ? 1 : 0, r.kind, r.source, r.disagreement,
++        r.teachItemId, r.teachSkill, r.learnSource);
+       for (const g of r.reagents) ig.run(r.id, g.itemId, g.quantity);
+     }
+     db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('recipes', ?, ?, ?, ?)`).run(note.version, Date.now(), recipes.length, note.note);
+@@ -303,18 +376,49 @@ export function foreverItems(db: DB, game: Pick<GameData, 'items'>): (itemId: nu
+ export interface SyncRecipesResult {
+   recipes: number; withThresholds: number; unmatched: number;
+   report: RecipeReport; items: ResolveResult;
+-  sparse: { updated: number; compared: number; disagree: Array<{ id: number; blizzard: string | null; bonding: number }> };
++  sparse: SparseCheck;
+   blizzard: { refs: number; fetched: number; failed: number };
++  /** the game build used, and why it is an older cached one when it is */
++  build: string; stale: GameData['stale'] | null;
++  /** fixes applied to EG Link trainer and vendor rows from the game tables */
++  eglink: GameFixes;
+ }
+ 
+ /** One log line for the daily refresh. */
+ export function summarizeRecipes(r: SyncRecipesResult): string {
+   const p = r.report;
++  const l = p.learn;
+   return `${r.recipes} recipes (${p.source.both} both sources, ${p.source.wago} wago only, ${p.source.blizzard} blizzard only), ${p.live} live, `
+-    + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions, `
+-    + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; items ${r.items.bySource.forever} forever, `
+-    + `${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
+-    + `binding vs ItemSparse disagree on ${r.sparse.disagree.length} of ${r.sparse.compared}`;
++    + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions `
++    + `(${p.conversions.bound} left out as bound, ${p.conversions.boundByApiOnly} of them by the live API only), `
++    + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; learned from: ${l.trainer_alliance} Alliance trainer, `
++    + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.none} unknown; ${l.teachItem} have a teaching item; `
++    + `items ${r.items.bySource.forever} forever, ${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
++    + `binding vs ItemSparse disagree on ${r.sparse.disagree.length} of ${r.sparse.compared} before the price refresh`
++    + (r.stale ? `; STALE game data: build ${r.stale.wanted} failed (${r.stale.reason}), using ${r.build}` : '');
++}
++
++/** The last game data loaded, so the item check after the vendor price refresh needs no second load. */
++let lastGame: GameData | null = null;
++
++/**
++ * Cross check the item catalog against ItemSparse after the daily vendor price refresh, so the live API's binding and
++ * sell price are today's (a hotfix made 20 Rogue poisons bind on pickup with sell price 0 while ItemSparse still says
++ * unbound). Both disagreement counts go in the log line and the gamedata dataset note.
++ */
++export function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}): string {
++  const game = lastGame ?? loadNewestCachedGameData(dataDir, { log });
++  if (!game) throw new Error('no game tables cached yet, the recipes step fills them');
++  const c = applyItemSparse(db, game);
++  const sample = (a: Array<{ id: number }>) => a.slice(0, 8).map(x => x.id).join(', ');
++  const text = `binding disagrees with ItemSparse on ${c.disagree.length} of ${c.compared}${c.disagree.length ? ` (${sample(c.disagree)})` : ''}; `
++    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}`;
++  db.prepare(`UPDATE datasets SET note = ? WHERE name = 'gamedata'`).run(gamedataNote(game, text));
++  return text;
++}
++
++function gamedataNote(game: GameData, check: string): string {
++  return `${game.stale ? `STALE: build ${game.stale.wanted} failed (${game.stale.reason}), using cached ${game.build}; ` : ''}wago wowf tables; ${check}`;
+ }
+ 
+ /**
+@@ -324,24 +428,52 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
+ export async function syncRecipes(client: BlizzardClient, db: DB, dataDir: string, log: (m: string) => void = () => {},
+   opts: { game?: GameData; fetchFn?: typeof fetch } = {}): Promise<SyncRecipesResult> {
+   const game = opts.game ?? await fetchGameData(dataDir, { fetchFn: opts.fetchFn, log });
++  lastGame = game;
++  // English names, profession words and the vendor standing gate from the game tables (EG Link rows can be Korean).
++  const eglink = applyGameToEgLink(db, game);
+   const bz = await fetchBlizzardRecipes(client, log);
+   if (bz.failed > bz.refs * 0.05) throw new Error(`Blizzard recipe fetch failed for ${bz.failed} of ${bz.refs}, will retry`);
+-  const trainerRanks = new Map<number, number>();
+-  for (const r of db.prepare('SELECT spell_id, MIN(skill_rank) AS rank FROM trainer_spells WHERE skill_rank IS NOT NULL GROUP BY spell_id').all() as Array<{ spell_id: number; rank: number }>) trainerRanks.set(r.spell_id, r.rank);
++  const { trainerRanks, hordeRanks } = trainerRankMaps(db);
+   // First pass only to learn which items the recipes touch, so every one is in the catalog before the live filter.
+-  const draft = buildRecipes(game, bz, { trainerRanks, exists: () => true });
++  // Teaching items are resolved too, so the flip engine can name them and price them.
++  const draft = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: () => true });
+   const ids = new Set<number>();
+-  for (const r of draft.recipes) { if (r.craftedItemId) ids.add(r.craftedItemId); for (const g of r.reagents) ids.add(g.itemId); }
++  for (const r of draft.recipes) {
++    if (r.craftedItemId) ids.add(r.craftedItemId);
++    for (const g of r.reagents) ids.add(g.itemId);
++    if (r.teachItemId) ids.add(r.teachItemId);
++  }
+   const items = await resolveItems(client, db, [...ids], { maxAgeMs: Infinity, game });
+   log(`recipes: ${ids.size} recipe items, ${items.fetched} fetched (${items.bySource.forever} forever, ${items.bySource.classic1x} classic1x), ${items.bySource.wago} from the game table only, ${items.bySource.none} unknown, ${items.errors} errors, ${client.throttled} throttled so far`);
+   const sparse = applyItemSparse(db, game);
+-  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, exists: foreverItems(db, game) });
++  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), apiBinding: apiBindings(db) });
+   const withThresholds = recipes.filter(r => r.yellow != null).length;
+   writeRecipes(db, recipes, {
+     version: `wago ${game.build} + blizzard`,
+     note: `${report.source.both} both, ${report.source.wago} wago only, ${report.source.blizzard} blizzard only; ${report.live} live; ${report.disagreements.length} disagree; dropped ${report.dropped.test.length} test and ${report.dropped.seasonOfDiscovery} Season of Discovery; ${report.conversions.kept.length} conversions`,
+   });
+   db.prepare(`INSERT OR REPLACE INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', ?, ?, ?, ?)`)
+-    .run(game.build, Date.now(), game.items.size, `wago wowf tables; binding agrees with ItemSparse on ${sparse.compared - sparse.disagree.length} of ${sparse.compared}`);
+-  return { recipes: recipes.length, withThresholds, unmatched: bz.failed, report, items, sparse, blizzard: { refs: bz.refs, fetched: bz.recipes.length, failed: bz.failed } };
++    .run(game.build, Date.now(), game.items.size, gamedataNote(game, `binding agrees with ItemSparse on ${sparse.compared - sparse.disagree.length} of ${sparse.compared} before the price refresh`));
++  return { recipes: recipes.length, withThresholds, unmatched: bz.failed, report, items, sparse, blizzard: { refs: bz.refs, fetched: bz.recipes.length, failed: bz.failed },
++    build: game.build, stale: game.stale ?? null, eglink };
++}
++
++/**
++ * Lowest trainer rank per craft spell, split by who can use the trainer. Alliance and neutral trainers count for Chip.
++ * Horde trainers, and trainers only Horde players saw at Neutral (faction unconfirmed), count only as a last resort.
++ */
++export function trainerRankMaps(db: DB): { trainerRanks: Map<number, number>; hordeRanks: Map<number, number> } {
++  const trainerRanks = new Map<number, number>(), hordeRanks = new Map<number, number>();
++  for (const r of db.prepare(`SELECT spell_id, faction, MIN(skill_rank) AS rank FROM trainer_spells WHERE skill_rank IS NOT NULL GROUP BY spell_id, faction`).all() as Array<{ spell_id: number; faction: string; rank: number }>) {
++    const m = r.faction === 'alliance' || r.faction === 'neutral' ? trainerRanks : r.faction === 'horde' || r.faction === 'unconfirmed' ? hordeRanks : null;
++    if (m && (m.get(r.spell_id) ?? Infinity) > r.rank) m.set(r.spell_id, r.rank);
++  }
++  return { trainerRanks, hordeRanks };
++}
++
++/** The live API's binding per item, from the catalog. */
++export function apiBindings(db: DB): (itemId: number) => string | null {
++  const m = new Map<number, string>();
++  for (const r of db.prepare(`SELECT id, binding FROM items WHERE status = 200 AND binding IS NOT NULL`).all() as Array<{ id: number; binding: string }>) m.set(r.id, r.binding);
++  return id => m.get(id) ?? null;
+ }
+diff --git a/src/engine/main.ts b/src/engine/main.ts
+index e34e02e..6ea8ea1 100644
+--- a/src/engine/main.ts
++++ b/src/engine/main.ts
+@@ -3,7 +3,7 @@ import { openDb } from '../store/db.ts';
+ import { BlizzardClient, sleep } from '../blizzard/client.ts';
+ import { Engine } from './engine.ts';
+ import { syncEgLink } from '../datasets/eglink.ts';
+-import { syncRecipes, summarizeRecipes } from '../datasets/recipes.ts';
++import { syncRecipes, summarizeRecipes, checkItemsAfterRefresh } from '../datasets/recipes.ts';
+ import { dailyMaintenance } from './daily.ts';
+ import { startServer } from '../server/server.ts';
+ import { rebuildIfRulesChanged } from './rebuild.ts';
+@@ -43,6 +43,8 @@ async function main() {
+       await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names, ${r.questItems} quest items from ${r.builds} builds`; }),
+       await step('recipes', async () => summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))),
+       await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
++      // After the price refresh, so a server hotfix to binding or sell price shows against ItemSparse the same day.
++      await step('item check', async () => checkItemsAfterRefresh(db, cfg.dataDir, log)),
+       await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
+     ];
+     // Mark done only when every step worked, otherwise the next round retries the whole set.
+diff --git a/tests/fixtures/blizzard/item-6947-forever.json b/tests/fixtures/blizzard/item-6947-forever.json
+new file mode 100644
+index 0000000..b830ded
+--- /dev/null
++++ b/tests/fixtures/blizzard/item-6947-forever.json
+@@ -0,0 +1,117 @@
++{
++  "_links": {
++    "self": {
++      "href": "https://us.api.blizzard.com/data/wow/item/6947?namespace=static-1.60.1_70399-forever-us"
++    }
++  },
++  "id": 6947,
++  "name": "Instant Poison",
++  "quality": {
++    "type": "COMMON",
++    "name": "Common"
++  },
++  "level": 20,
++  "required_level": 20,
++  "media": {
++    "key": {
++      "href": "https://us.api.blizzard.com/data/wow/media/item/6947?namespace=static-1.60.1_70399-forever-us"
++    },
++    "id": 6947
++  },
++  "item_class": {
++    "key": {
++      "href": "https://us.api.blizzard.com/data/wow/item-class/0?namespace=static-1.60.1_70399-forever-us"
++    },
++    "name": "Consumable",
++    "id": 0
++  },
++  "item_subclass": {
++    "key": {
++      "href": "https://us.api.blizzard.com/data/wow/item-class/0/item-subclass/8?namespace=static-1.60.1_70399-forever-us"
++    },
++    "name": "Other",
++    "id": 8
++  },
++  "inventory_type": {
++    "type": "NON_EQUIP",
++    "name": "Non-equippable"
++  },
++  "purchase_price": 22,
++  "sell_price": 0,
++  "max_count": 0,
++  "is_equippable": false,
++  "is_stackable": true,
++  "preview_item": {
++    "item": {
++      "key": {
++        "href": "https://us.api.blizzard.com/data/wow/item/6947?namespace=static-1.60.1_70399-forever-us"
++      },
++      "id": 6947
++    },
++    "quality": {
++      "type": "COMMON",
++      "name": "Common"
++    },
++    "name": "Instant Poison",
++    "media": {
++      "key": {
++        "href": "https://us.api.blizzard.com/data/wow/media/item/6947?namespace=static-1.60.1_70399-forever-us"
++      },
++      "id": 6947
++    },
++    "item_class": {
++      "key": {
++        "href": "https://us.api.blizzard.com/data/wow/item-class/0?namespace=static-1.60.1_70399-forever-us"
++      },
++      "name": "Consumable",
++      "id": 0
++    },
++    "item_subclass": {
++      "key": {
++        "href": "https://us.api.blizzard.com/data/wow/item-class/0/item-subclass/8?namespace=static-1.60.1_70399-forever-us"
++      },
++      "name": "Other",
++      "id": 8
++    },
++    "inventory_type": {
++      "type": "NON_EQUIP",
++      "name": "Non-equippable"
++    },
++    "binding": {
++      "type": "ON_ACQUIRE",
++      "name": "Binds when picked up"
++    },
++    "spells": [
++      {
++        "spell": {
++          "key": {
++            "href": "https://us.api.blizzard.com/data/wow/spell/8679?namespace=static-1.60.1_70399-forever-us"
++          },
++          "name": "Instant Poison",
++          "id": 8679
++        },
++        "description": "Use: Coats a weapon with poison that lasts for 30 minutes.\r\nEach strike has a 20% chance of poisoning the enemy which instantly inflicts 13 to 17 Nature damage.  60 charges."
++      }
++    ],
++    "requirements": {
++      "level": {
++        "value": 20,
++        "display_string": "Requires Level 20"
++      },
++      "playable_classes": {
++        "links": [
++          {
++            "key": {
++              "href": "https://us.api.blizzard.com/data/wow/playable-class/4?namespace=static-1.60.1_70399-forever-us"
++            },
++            "name": "Rogue",
++            "id": 4
++          }
++        ],
++        "display_string": "Classes: Rogue"
++      }
++    },
++    "is_subclass_hidden": true
++  },
++  "purchase_quantity": 1
++}
+\ No newline at end of file
+diff --git a/tests/fixtures/eglink/npcs-cut.json b/tests/fixtures/eglink/npcs-cut.json
+new file mode 100644
+index 0000000..4d3dbc9
+--- /dev/null
++++ b/tests/fixtures/eglink/npcs-cut.json
+@@ -0,0 +1,809 @@
++{
++ "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210.",
++ "builds": [
++  {
++   "build": "1.60.1.70205",
++   "vendors": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-10-03",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7733,
++       "mapY": 0.3868,
++       "uiMap": 1458,
++       "worldX": 1630.3,
++       "worldY": 131.4
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "4": 2000
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70450",
++   "vendors": {},
++   "npcs": {},
++   "creatures": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       5
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70790",
++   "vendors": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "lastSeen": "2026-11-06",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.419,
++       "mapY": 0.6706,
++       "uiMap": 1429,
++       "worldX": -9491.8,
++       "worldY": 81.1
++      }
++     ],
++     "entries": {
++      "item:2324": {
++       "costs": {
++        "5": 25
++       },
++       "itemId": 2324,
++       "name": "Bleach",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4164": {
++     "name": "Cylania",
++     "lastSeen": "2026-11-05",
++     "positions": [
++      {
++       "instance": 1,
++       "mapX": 0.5908,
++       "mapY": 0.4593,
++       "uiMap": 1457,
++       "worldX": 9914.2,
++       "worldY": 2313.1
++      }
++     ],
++     "entries": {
++      "item:1839": {
++       "costs": {
++        "5": 184
++       },
++       "itemId": 1839,
++       "name": "Rough Leather Belt",
++       "sources": 1,
++       "stack": 1
++      },
++      "item:1840": {
++       "costs": {
++        "5": 185
++       },
++       "itemId": 1840,
++       "name": "Rough Leather Bracers",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-05",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7725,
++       "mapY": 0.3859,
++       "uiMap": 1458,
++       "worldX": 1630.9,
++       "worldY": 132.1
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "4": 2000
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "side": "Alliance"
++    },
++    "4164": {
++     "name": "Cylania",
++     "side": "Alliance"
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "reactions": {
++      "Alliance": [
++       5
++      ]
++     }
++    },
++    "4164": {
++     "name": "Cylania",
++     "reactions": {
++      "Alliance": [
++       5
++      ]
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       4,
++       5
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70840",
++   "vendors": {},
++   "npcs": {},
++   "creatures": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       6
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70862",
++   "vendors": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-08",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7738,
++       "mapY": 0.3856,
++       "uiMap": 1458,
++       "worldX": 1631.1,
++       "worldY": 130.9
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "6": 1800
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "8305": {
++     "name": "Kixxle",
++     "lastSeen": "2026-11-08",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.502,
++       "mapY": 0.3786,
++       "uiMap": 1437,
++       "worldX": -3191.6,
++       "worldY": -2465.4
++      }
++     ],
++     "entries": {
++      "item:18256": {
++       "costs": {
++        "4": 30000
++       },
++       "itemId": 18256,
++       "name": "Imbued Vial",
++       "sources": 2,
++       "stack": 5
++      },
++      "item:2449": {
++       "costs": {
++        "4": 80
++       },
++       "itemId": 2449,
++       "limited": true,
++       "name": "Earthroot",
++       "sources": 1,
++       "stack": 1,
++       "stockMax": 3
++      }
++     }
++    }
++   },
++   "npcs": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    },
++    "8305": {
++     "name": "Kixxle"
++    }
++   },
++   "creatures": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       6
++      ]
++     }
++    },
++    "8305": {
++     "name": "Kixxle",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70888",
++   "vendors": {
++    "3134": {
++     "name": "Kzixx",
++     "lastSeen": "2026-11-11",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.8173,
++       "mapY": 0.1988,
++       "uiMap": 1431,
++       "worldX": -10074.5,
++       "worldY": -1373.3
++      }
++     ],
++     "entries": {
++      "item:6053": {
++       "costs": {
++        "4": 800
++       },
++       "itemId": 6053,
++       "name": "Recipe: Holy Protection Potion",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-11",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.773,
++       "mapY": 0.3852,
++       "uiMap": 1458,
++       "worldX": 1631.4,
++       "worldY": 131.6
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "6": 1800
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "3134": {
++     "name": "Kzixx"
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "3134": {
++     "name": "Kzixx",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       6
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70938",
++   "vendors": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "lastSeen": "2026-11-17",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.4194,
++       "mapY": 0.6711,
++       "uiMap": 1429,
++       "worldX": -9492.8,
++       "worldY": 79.9
++      }
++     ],
++     "entries": {
++      "item:2324": {
++       "costs": {
++        "5": 25,
++        "6": 23
++       },
++       "itemId": 2324,
++       "name": "Bleach",
++       "sources": 3,
++       "stack": 1
++      }
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-16",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7714,
++       "mapY": 0.387,
++       "uiMap": 1458,
++       "worldX": 1630.2,
++       "worldY": 133.1
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "5": 2000,
++        "6": 1800
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 2,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "side": "Alliance"
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "66": {
++     "name": "Tharynn Bouden",
++     "reactions": {
++      "Alliance": [
++       5,
++       6
++      ]
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       5,
++       6
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.70959",
++   "vendors": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "lastSeen": "2026-11-18",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.264,
++       "mapY": 0.2584,
++       "uiMap": 1437,
++       "worldX": -2860.2,
++       "worldY": -1481.2
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "5": 2000
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-20",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7719,
++       "mapY": 0.3848,
++       "uiMap": 1458,
++       "worldX": 1631.7,
++       "worldY": 132.6
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "7": 1800
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "side": "Alliance"
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "reactions": {
++      "Alliance": [
++       5
++      ]
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       5,
++       7
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  },
++  {
++   "build": "1.60.1.71037",
++   "vendors": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "lastSeen": "2026-11-21",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.2639,
++       "mapY": 0.2581,
++       "uiMap": 1437,
++       "worldX": -2859.4,
++       "worldY": -1481.1
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "5": 2000
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4164": {
++     "name": "키라니아",
++     "lastSeen": "2026-11-24",
++     "positions": [
++      {
++       "instance": 1,
++       "mapX": 0.5898,
++       "mapY": 0.4604,
++       "uiMap": 1457,
++       "worldX": 9913.4,
++       "worldY": 2314.1
++      }
++     ],
++     "entries": {
++      "item:1839": {
++       "costs": {
++        "6": 166
++       },
++       "itemId": 1839,
++       "name": "조잡한 가죽 허리띠",
++       "sources": 1,
++       "stack": 1
++      },
++      "item:1840": {
++       "costs": {
++        "6": 167
++       },
++       "itemId": 1840,
++       "name": "조잡한 가죽 팔보호구",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "lastSeen": "2026-11-24",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.7761,
++       "mapY": 0.3858,
++       "uiMap": 1458,
++       "worldX": 1631,
++       "worldY": 128.6
++      }
++     ],
++     "entries": {
++      "item:10647": {
++       "costs": {
++        "7": 1800
++       },
++       "itemId": 10647,
++       "name": "Engineer's Ink",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    }
++   },
++   "npcs": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "side": "Alliance"
++    },
++    "3603": {
++     "name": "킨드라 카인드위스퍼",
++     "side": "Alliance"
++    },
++    "4164": {
++     "name": "키라니아",
++     "side": "Alliance"
++    },
++    "4210": {
++     "name": "알레고른",
++     "side": "Alliance"
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "side": "Horde"
++    }
++   },
++   "creatures": {
++    "2682": {
++     "name": "Fradd Swiftgear",
++     "reactions": {
++      "Alliance": [
++       5
++      ]
++     }
++    },
++    "3603": {
++     "name": "킨드라 카인드위스퍼",
++     "reactions": {
++      "Alliance": [
++       6
++      ]
++     }
++    },
++    "4164": {
++     "name": "키라니아",
++     "reactions": {
++      "Alliance": [
++       6
++      ]
++     }
++    },
++    "4210": {
++     "name": "알레고른",
++     "reactions": {
++      "Alliance": [
++       6
++      ]
++     }
++    },
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       7
++      ]
++     }
++    }
++   },
++   "trainers": {
++    "3603": {
++     "name": "킨드라 카인드위스퍼",
++     "tradeskill": true,
++     "trainerType": 2,
++     "positions": [
++      {
++       "instance": 1,
++       "mapX": 0.5763,
++       "mapY": 0.6066,
++       "uiMap": 1438,
++       "worldX": 9772.8,
++       "worldY": 880.1
++      }
++     ],
++     "services": {
++      "2329": {
++       "category": "비약",
++       "costs": {
++        "6": 45
++       },
++       "icon": 134836,
++       "level": 0,
++       "name": "최하급 힘의 비약",
++       "skill": "연금술",
++       "skillRank": 15,
++       "sources": 1,
++       "spellId": 2329
++      },
++      "1249630": {
++       "category": "재료",
++       "costs": {
++        "6": 135
++       },
++       "icon": 1021860,
++       "level": 0,
++       "name": "감청색 염료",
++       "skill": "연금술",
++       "skillRank": 40,
++       "sources": 1,
++       "spellId": 1249630
++      }
++     }
++    },
++    "4210": {
++     "name": "알레고른",
++     "tradeskill": true,
++     "trainerType": 2,
++     "positions": [
++      {
++       "instance": 1,
++       "mapX": 0.4937,
++       "mapY": 0.2107,
++       "uiMap": 1457,
++       "worldX": 10089.6,
++       "worldY": 2415.9
++      }
++     ],
++     "services": {
++      "2539": {
++       "category": "민첩성 음식",
++       "costs": {
++        "6": 45
++       },
++       "icon": 134021,
++       "level": 0,
++       "name": "늑대 양념 구이",
++       "skill": "요리",
++       "skillRank": 10,
++       "sources": 1,
++       "spellId": 2539
++      }
++     }
++    }
++   }
++  },
++  {
++   "build": "1.60.1.71091",
++   "vendors": {},
++   "npcs": {},
++   "creatures": {
++    "4581": {
++     "name": "Salazar Bloch",
++     "reactions": {
++      "Horde": [
++       7
++      ]
++     }
++    }
++   },
++   "trainers": {}
++  }
++ ]
++}
+\ No newline at end of file
+diff --git a/tests/fixtures/wago/ItemEffect.csv b/tests/fixtures/wago/ItemEffect.csv
+index 4a9b833..9b50a05 100644
+--- a/tests/fixtures/wago/ItemEffect.csv
++++ b/tests/fixtures/wago/ItemEffect.csv
+@@ -2,3 +2,16 @@ ID,LegacySlotIndex,TriggerType,Charges,CoolDownMSec,CategoryCoolDownMSec,SpellCa
+ 98809,0,0,-1,-1,500,1951,13361,0,0
+ 98810,0,0,-1,-1,500,1951,13362,0,0
+ 180774,0,0,-1,-1,-1,0,427020,0,0
++222170,1,6,0,-1,-1,0,2158,0,0
++222176,1,6,0,-1,-1,0,2335,0,0
++222674,1,6,0,-1,-1,0,11479,0,0
++222822,1,6,0,-1,-1,0,17187,0,0
++222871,1,6,0,-1,-1,0,18405,0,0
++222914,1,6,0,-1,-1,0,18560,0,0
++97338,0,0,-1,-1,-1,0,402265,0,0
++97728,0,0,-1,-1,-1,0,402265,0,0
++98561,0,0,-1,-1,-1,0,402265,0,0
++99978,0,0,-1,-1,-1,0,402265,0,0
++99991,0,0,-1,-1,-1,0,402265,0,0
++100873,0,0,-1,-1,-1,0,402265,0,0
++102274,0,0,0,180000,180000,1155,23991,0,0
+diff --git a/tests/fixtures/wago/ItemSparse.csv b/tests/fixtures/wago/ItemSparse.csv
+index bbbba68..78712c0 100644
+--- a/tests/fixtures/wago/ItemSparse.csv
++++ b/tests/fixtures/wago/ItemSparse.csv
+@@ -62,3 +62,16 @@ ID,Description_lang,Display3_lang,Display2_lang,Display1_lang,Display_lang,Expan
+ 249409,Crafted by alchemists.,,,,Cerulean Dye,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,20,0,0,0,-1,-1,75,300,1,1,1.01779997349,0,-2147459068,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,25,-1,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,2,0
+ 249430,Crafted by alchemists.,,,,Magenta Dye,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,20,0,0,0,-1,-1,250,1000,1,1,1.02139997482,0,-2147459068,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,45,-1,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,2,0
+ 274490,,,,,Centaur Hoofwarmers,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8400,3600,0,0,0,0,0,0,0,0,7,3,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,7110,35550,1,1,0.98449999094,0,8196,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,40,-1,0,0,0,0,0,0,0,7,0,2,0,0,0,0,35,8,2,0
++2307,,,,,Fine Leather Boots,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7500,5000,0,0,0,0,0,0,0,0,3,7,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,195,975,1,1,1,0,24580,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,18,-1,0,0,0,0,0,0,0,8,0,2,0,0,0,0,13,8,2,0
++2320,,,,,Coarse Thread,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,20,0,0,0,-1,-1,2,10,1,1,1,0,-2147459068,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,-1,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,1,0
++2406,Teaches you how to craft Fine Leather Boots.,,,,Pattern: Fine Leather Boots,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,25,100,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,65,165,15,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0
++2450,,,,,Briarthorn,0,0,0,0,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,20,0,0,0,-1,-1,25,100,1,1,1,0,-2147459068,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,-1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1,0
++2452,,,,,Swiftthistle,0,0,0,0,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,20,0,0,0,-1,-1,15,60,1,1,1,0,-2147459068,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,-1,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1,0
++2459,,,,,Swiftness Potion,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,5,0,0,0,-1,-1,25,100,1,1,1,0,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,15,-1,0,0,0,0,0,0,0,3,0,0,0,0,0,0,5,0,1,0
++2555,Teaches you how to make a Swiftness Potion.,,,,Recipe: Swiftness Potion,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,40,160,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,60,171,15,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0
++9304,Teaches you how to transmute Iron into Gold.,,,,Recipe: Transmute Iron to Gold,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,2000,8000,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,225,171,45,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0
++12958,Teaches you how to transmute Thorium and Arcane Crystals into Arcanite.,,,,Recipe: Transmute Arcanite,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,12500,50000,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,275,171,55,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0
++14468,Teaches you how to sew a Runecloth Bag.,,,,Pattern: Runecloth Bag,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,3000,12000,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,215,197,52,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0
++14526,Teaches you how to purify Felcloth and turn it into Mooncloth.,,,,Pattern: Mooncloth,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,0,0,-1,-1,5000,20000,1,1,1,64,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,230,197,55,-1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0
++20068,,,,,Deathguard's Cloak,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4074,1852,12593,0,0,0,0,0,0,0,7,3,38,-1,-1,-1,-1,-1,-1,-1,1,0,7,0,-1,-1,26353,131769,1,1,1,32768,24580,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,510,0,0,65,-1,0,0,0,0,0,0,0,7,0,1,0,0,0,0,60,16,4,0
++20072,,,,,Defiler's Talisman,0,0,716,0,0,1048576,0,0,0,0,0,0,0,0,0,0,0,0,0,4444,0,0,0,0,0,0,0,0,0,7,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,0,4,0,-1,-1,10307,41230,1,1,1,32768,24580,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,510,0,0,63,-1,0,0,0,0,0,0,0,4,0,1,0,0,0,0,58,12,3,0
+diff --git a/tests/fixtures/wago/ItemXItemEffect.csv b/tests/fixtures/wago/ItemXItemEffect.csv
+index 0354a56..5debeb6 100644
+--- a/tests/fixtures/wago/ItemXItemEffect.csv
++++ b/tests/fixtures/wago/ItemXItemEffect.csv
+@@ -2,3 +2,16 @@ ID,ItemEffectID,ItemID
+ 89801,98810,10939
+ 89806,98809,10938
+ 116478,180774,210771
++136526,97338,2406
++136860,97728,2555
++137562,98561,9304
++138479,99978,12958
++138485,99991,14468
++138857,100873,14526
++153134,222170,2406
++153140,222176,2555
++153638,222674,9304
++153786,222822,12958
++153835,222871,14468
++153878,222914,14526
++119574,102274,20072
+diff --git a/tests/fixtures/wago/SkillLineAbility.csv b/tests/fixtures/wago/SkillLineAbility.csv
+index 9958621..542a632 100644
+--- a/tests/fixtures/wago/SkillLineAbility.csv
++++ b/tests/fixtures/wago/SkillLineAbility.csv
+@@ -24,3 +24,5 @@ AbilityVerb_lang,AbilityAllVerb_lang,ID,SkillLine,Spell,MinSkillLineRank,ClassMa
+ ,,53851,2933,1240345,1,0,0,0,20,10,0,1,6,2400,2934,0,0,0,0
+ ,,54191,129,1244431,1,0,0,0,95,55,0,1,0,2531,2942,0,0,0,0
+ ,,54453,171,1249630,1,0,0,0,90,50,0,1,0,2448,2937,0,0,0,0
++,,1359,165,2158,1,0,0,0,125,95,0,1,0,2560,2945,0,0,0,0
++,,1383,171,2335,60,0,0,0,130,90,0,1,1051,2449,2937,0,0,0,0
+diff --git a/tests/fixtures/wago/SpellEffect.csv b/tests/fixtures/wago/SpellEffect.csv
+index 3a65419..f8e1c7f 100644
+--- a/tests/fixtures/wago/SpellEffect.csv
++++ b/tests/fixtures/wago/SpellEffect.csv
+@@ -31,3 +31,5 @@ ID,EffectAura,DifficultyID,EffectIndex,Effect,EffectAmplitude,EffectAttributes,E
+ 1253275,0,0,0,24,0,0,0,0,1,0,249409,0,0,0,0,0,0,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,0,1249630
+ 1340498,0,0,1,3,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,1,1800,0,0,0,0,0,0,0,0,0,0,1,0,8681
+ 1340499,0,0,2,3,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,1,60,0,0,0,0,0,0,0,0,0,0,1,0,8681
++680548,0,0,0,24,0,0,0,0,1,0,2459,0,0,0,0,0,0,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,0,2335
++680603,0,0,0,24,0,0,0,0,1,0,2307,0,0,0,0,0,0,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,0,2158
+diff --git a/tests/fixtures/wago/SpellMisc.csv b/tests/fixtures/wago/SpellMisc.csv
+index aabbf77..2faeb76 100644
+--- a/tests/fixtures/wago/SpellMisc.csv
++++ b/tests/fixtures/wago/SpellMisc.csv
+@@ -27,3 +27,5 @@ ID,Attributes_0,Attributes_1,Attributes_2,Attributes_3,Attributes_4,Attributes_5
+ 794913,65584,0,0,0,0,0,0,0,0,0,0,0,0,32,0,8192,0,0,14,0,0,1,1,0,0,0,136235,0,0,0,0,0,1240345
+ 798967,65568,0,0,0,0,0,0,0,0,0,0,0,0,32,0,8192,0,0,14,0,0,1,1,0,0,0,134829,0,0,0,0,0,1244431
+ 803862,65584,0,0,0,0,0,0,0,0,0,0,0,0,32,0,8192,0,0,6,0,0,1,1,0,0,0,136235,0,0,0,0,0,1249630
++315503,65584,0,0,0,0,0,0,0,0,0,0,0,0,32,0,8192,0,0,14,0,0,1,1,0,0,0,136235,0,0,0,0,0,2335
++315552,65568,0,0,0,0,0,0,0,0,0,0,0,0,32,0,8192,0,0,34,0,0,1,1,0,0,0,136235,0,0,0,0,0,2158
+diff --git a/tests/fixtures/wago/SpellName.csv b/tests/fixtures/wago/SpellName.csv
+index e93333e..481577c 100644
+--- a/tests/fixtures/wago/SpellName.csv
++++ b/tests/fixtures/wago/SpellName.csv
+@@ -27,3 +27,7 @@ ID,Name_lang
+ 7183,Elixir of Minor Defense
+ 2365,Draught of Tongues
+ 8681,Instant Poison
++2158,Fine Leather Boots
++2335,Swiftness Potion
++2329,"Elixir of Minor Strength"
++2539,"Spiced Wolf Meat"
+diff --git a/tests/fixtures/wago/SpellReagents.csv b/tests/fixtures/wago/SpellReagents.csv
+index b05619e..a9eb4a5 100644
+--- a/tests/fixtures/wago/SpellReagents.csv
++++ b/tests/fixtures/wago/SpellReagents.csv
+@@ -26,3 +26,5 @@ ID,SpellID,Reagent_0,Reagent_1,Reagent_2,Reagent_3,Reagent_4,Reagent_5,Reagent_6
+ 36109,1244431,3371,2678,2447,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+ 36371,1249630,249399,3371,0,0,0,0,0,0,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+ 38687,2365,2449,785,3371,0,0,0,0,0,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++19445,2335,2452,2450,3371,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++19454,2158,2318,2320,0,0,0,0,0,0,7,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+diff --git a/tests/unit/eglink.test.ts b/tests/unit/eglink.test.ts
+index c0489ba..3446e7a 100644
+--- a/tests/unit/eglink.test.ts
++++ b/tests/unit/eglink.test.ts
+@@ -1,12 +1,22 @@
+ import { describe, it, expect } from 'vitest';
+-import { vendorFaction, vendorUnitPrice, mergeVendors, mergeLoot, parseLootKey } from '../../src/datasets/eglink.ts';
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import { vendorFaction, vendorUnitPrice, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
++  type EgVendor, type EgNpc, type EgCreature, type EgTrainer } from '../../src/datasets/eglink.ts';
++import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
++import { openDb } from '../../src/store/db.ts';
++import { tempDir } from '../helpers.ts';
++
++const game = loadGameDataFromDir(fileURLToPath(new URL('../fixtures/wago', import.meta.url)), '1.60.1.71037');
+ 
+ const S = (o: Record<string, number[]>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, new Set(v)]));
+ 
+ describe('vendor faction (test T4)', () => {
+   it('Horde NPC seen Friendly by Horde is Horde (Nerrist)', () => expect(vendorFaction(S({ Horde: [5, 6] }), new Set(['Horde']))).toBe('horde'));
+   it('Alliance NPC is Alliance (Edna Mullby)', () => expect(vendorFaction(S({ Alliance: [5, 6] }), new Set(['Alliance']))).toBe('alliance'));
+-  it('goblin seen only at Neutral is neutral (Old Man Heming)', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('neutral'));
++  // Round 2 fix 7: seen only by Horde at Neutral proves nothing for Alliance, so it is unconfirmed and not usable.
++  it('seen only by Horde at Neutral is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
++  it('seen by Alliance at Neutral is neutral', () => expect(vendorFaction(S({ Alliance: [4] }), new Set())).toBe('neutral'));
+   it('seen usable by both is neutral', () => expect(vendorFaction(S({ Alliance: [4], Horde: [4] }), new Set())).toBe('neutral'));
+   it('no observations is unknown', () => expect(vendorFaction({}, new Set())).toBe('unknown'));
+ });
+@@ -17,6 +27,69 @@ describe('vendor price', () => {
+   it('divides by the purchase stack', () => expect(vendorUnitPrice({ '5': 250 }, 10)).toBe(25));
+ });
+ 
++/** Real EG Link records cut to a few NPCs (tests/fixtures/eglink/npcs-cut.json), every build they appear in. */
++type CutBuild = { build: string; vendors: Record<string, EgVendor>; npcs: Record<string, EgNpc>; creatures: Record<string, EgCreature>; trainers: Record<string, EgTrainer> };
++const cut = (JSON.parse(readFileSync(fileURLToPath(new URL('../fixtures/eglink/npcs-cut.json', import.meta.url)), 'utf8')) as { builds: CutBuild[] }).builds;
++const vendors = mergeVendors(cut);
++const V = (npc: number, item?: number) => vendors.filter(v => v.npcId === npc && (item == null || v.itemId === item));
++
++describe('round 2 fixes on real EG Link records', () => {
++  it('fix 5: Revered is 0.90 in Forever, so Salazar Bloch\'s Engineer\'s Ink {"7":1800} backs out to 2000, as Fradd Swiftgear sells it', () => {
++    expect(V(4581, 10647)[0]!.costs).toEqual({ '7': 1800 });
++    expect(vendorUnitPrice(V(4581, 10647)[0]!.costs, 1)).toBe(2000);
++    expect(vendorUnitPrice(V(2682, 10647)[0]!.costs, 1)).toBe(2000);
++    expect(STANDING_DISCOUNT['7']).toBe(0.9);
++  });
++  it('fix 5: a recorded Friendly price is used as is, never rounded up from Honored: Tharynn Bouden\'s Bleach {"5":25,"6":23} is 25, not 26', () => {
++    expect(V(66, 2324)[0]!.costs).toEqual({ '5': 25, '6': 23 });
++    expect(vendorBasePrice({ '5': 25, '6': 23 })).toBe(25);
++    expect(vendorUnitPrice({ '5': 25, '6': 23 }, 1)).toBe(25);
++    expect(vendorBasePrice({ '4': 2000 })).toBe(2000);
++  });
++  it('fix 3: Cylania (4164) keeps her English name though the newest build recorded her in Korean', () => {
++    expect(cut.find(b => b.build === '1.60.1.71037')!.vendors['4164']!.name).toBe('키라니아');
++    expect(new Set(V(4164).map(v => v.npcName))).toEqual(new Set(['Cylania']));
++    expect(npcNames(cut).get('4164')).toBe('Cylania');
++  });
++  it('fix 3: Korean trainer skills become English profession names; the spell name too once the game tables are applied', () => {
++    const t = mergeTrainers(cut);
++    const r = t.find(x => x.npcId === 3603 && x.spellId === 2329)!;
++    expect(r).toMatchObject({ skill: 'Alchemy', skillRank: 15 });
++    expect(t.find(x => x.npcId === 4210 && x.spellId === 2539)).toMatchObject({ skill: 'Cooking' });
++    // No build recorded these trainers in English, so their own names stay as recorded until one does.
++    expect(isHangul(r.npcName)).toBe(true);
++    const db = openDb(tempDir(), ':memory:');
++    const it = db.prepare(`INSERT INTO trainer_spells (npc_id, npc_name, faction, zone, x, y, map_id, spell_id, name, skill, skill_rank, cost) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, NULL)`);
++    for (const x of t) it.run(x.npcId, x.npcName, x.faction, x.spellId, x.name, x.skill, x.skillRank);
++    db.prepare(`UPDATE trainer_spells SET skill = '연금술' WHERE spell_id = 1249630`).run();
++    const fixes = applyGameToEgLink(db, game);
++    expect(fixes).toMatchObject({ trainerNames: 3, trainerSkills: 1 });
++    expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 3603 ORDER BY spell_id').all()).toEqual([
++      { name: 'Elixir of Minor Strength', skill: 'Alchemy' }, { name: 'Cerulean Dye', skill: 'Alchemy' }]);
++    expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 4210').get()).toEqual({ name: 'Spiced Wolf Meat', skill: 'Cooking' });
++  });
++  it('fix 7: Kixxle (8305), seen only by Horde at Neutral, is unconfirmed; Kzixx (3134) stays neutral as a known neutral', () => {
++    expect(V(8305).every(v => v.faction === 'unconfirmed')).toBe(true);
++    expect(V(3134).every(v => v.faction === 'neutral')).toBe(true);
++    expect(V(4164).every(v => v.faction === 'alliance')).toBe(true);
++  });
++  it('fix 4: the gate is the item\'s own reputation need, not the lowest standing someone recorded', () => {
++    expect(vendorGate(game.items.get(2324))).toBe('4');          // Bleach: no faction
++    expect(vendorGate(game.items.get(20072))).toBe('5');         // Defiler's Talisman: MinReputation 4, Friendly
++    expect(vendorGate(game.items.get(20068))).toBe('8');         // Deathguard's Cloak: MinReputation 7, Exalted
++    expect(vendorGate(undefined)).toBeNull();
++    const db = openDb(tempDir(), ':memory:');
++    const ins = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, item_id, price, price_by_standing, units_per_purchase, limited, standing_required) VALUES (?, 'x', 'alliance', ?, 1, ?, 1, 0, ?)`);
++    ins.run(66, 2324, '{"6":23}', '6');      // only an Honored player recorded it: the item needs nothing
++    ins.run(1, 20072, '{"4":100}', '4');     // recorded at Neutral, but the item needs Friendly
++    ins.run(2, 999999, '{"6":90}', '4');     // not in the game table: the recorded standing stays
++    const f = applyGameToEgLink(db, game);
++    expect(db.prepare('SELECT item_id, standing_required FROM vendor_items ORDER BY npc_id').all()).toEqual([
++      { item_id: 20072, standing_required: '5' }, { item_id: 999999, standing_required: '6' }, { item_id: 2324, standing_required: '4' }]);
++    expect(f).toMatchObject({ vendorGated: 1, vendorGateChanged: 2, vendorNoItem: 1 });
++  });
++});
++
+ describe('mergeVendors', () => {
+   it('newest build wins and skips entries without a plain gold price', () => {
+     const v = mergeVendors([
+diff --git a/tests/unit/gamedata.test.ts b/tests/unit/gamedata.test.ts
+index f520d4b..23de250 100644
+--- a/tests/unit/gamedata.test.ts
++++ b/tests/unit/gamedata.test.ts
+@@ -87,4 +87,50 @@ describe('fetchGameData', () => {
+     await expect(fetchGameData(dir, { fetchFn: bad })).rejects.toThrow(/SkillLineAbility has no Spell column/);
+     expect(existsSync(join(dir, 'datasets', 'wago', BUILD, 'SkillLineAbility.csv'))).toBe(false);
+   });
++
++  // Round 2 fix 6: a new build that fails must not make the daily refresh throw every 30 minutes.
++  const NEW = '1.60.1.99999';
++  const newBuild = (table: (name: string) => Response | null) => (async (input: string | URL) => {
++    const url = String(input);
++    if (url.endsWith('/api/builds')) return new Response(JSON.stringify({ wowf: [{ version: NEW }] }));
++    const name = url.match(/db2\/(\w+)\//)![1]!;
++    return table(name) ?? new Response(readFileSync(join(FIXTURES, `${name}.csv`), 'utf8'));
++  }) as typeof fetch;
++
++  it('a new build whose table fails its shape check falls back to the newest complete cached build, warns, and is marked stale', async () => {
++    const dir = tempDir();
++    await fetchGameData(dir, { fetchFn: serve([]) });
++    const logs: string[] = [];
++    const g = await fetchGameData(dir, { fetchFn: newBuild(n => (n === 'ItemSparse' ? new Response('ID,Display_lang,Bonding\n1,x,0') : null)), log: m => logs.push(m) });
++    expect(g.build).toBe(BUILD);
++    expect(g.stale).toMatchObject({ wanted: NEW });
++    expect(g.stale!.reason).toMatch(/ItemSparse has no Stackable column/);
++    expect(logs.some(l => /WARNING: build 1\.60\.1\.99999 unusable .* using cached build 1\.60\.1\.71037, marked stale/.test(l))).toBe(true);
++    expect(existsSync(join(dir, 'datasets', 'wago', NEW, 'ItemSparse.csv'))).toBe(false);
++  });
++
++  it('a new build whose download fails falls back the same way', async () => {
++    const dir = tempDir();
++    await fetchGameData(dir, { fetchFn: serve([]) });
++    const g = await fetchGameData(dir, { fetchFn: newBuild(n => (n === 'SpellEffect' ? new Response('busy', { status: 503 }) : null)) });
++    expect(g.build).toBe(BUILD);
++    expect(g.stale).toEqual({ wanted: NEW, reason: 'wago SpellEffect returned 503' });
++  });
++
++  it('with no cached build to fall back on, a failing new build still throws', async () => {
++    await expect(fetchGameData(tempDir(), { fetchFn: newBuild(n => (n === 'Spell' ? new Response('x', { status: 500 }) : null)) })).rejects.toThrow(/wago Spell returned 500/);
++  });
++});
++
++describe('ItemSparse skill and reputation columns (round 2 fixes 1 and 4)', () => {
++  const sparse = readFileSync(join(FIXTURES, 'ItemSparse.csv'), 'utf8');
++  it('a missing RequiredSkillRank or MinFactionID column throws naming it', () => {
++    expect(() => parseTable('ItemSparse', sparse.replace('RequiredSkillRank', 'ReqSkillRank'))).toThrow(/ItemSparse has no RequiredSkillRank column/);
++    expect(() => parseTable('ItemSparse', sparse.replace('MinFactionID', 'MinFaction'))).toThrow(/ItemSparse has no MinFactionID column/);
++  });
++  it('real rows: Recipe: Swiftness Potion needs Alchemy (171) 60; Empty Vial needs no reputation', () => {
++    const g = loadGameDataFromDir(FIXTURES, BUILD);
++    expect(g.items.get(2555)).toMatchObject({ requiredSkill: 171, requiredSkillRank: 60, minFactionId: 0, minReputation: 0 });
++    expect(g.items.get(3371)).toMatchObject({ requiredSkillRank: 0, minFactionId: 0 });
++  });
+ });
+diff --git a/tests/unit/items-binding.test.ts b/tests/unit/items-binding.test.ts
+index 333b0d8..491f08c 100644
+--- a/tests/unit/items-binding.test.ts
++++ b/tests/unit/items-binding.test.ts
+@@ -1,6 +1,8 @@
+ import { describe, it, expect } from 'vitest';
+-import { readFileSync } from 'node:fs';
++import { readFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs';
++import { join } from 'node:path';
+ import { fileURLToPath } from 'node:url';
++import { checkItemsAfterRefresh } from '../../src/datasets/recipes.ts';
+ import { BlizzardClient } from '../../src/blizzard/client.ts';
+ import { ItemResponse } from '../../src/blizzard/contracts.ts';
+ import { resolveItems, applyItemSparse, getItem } from '../../src/catalog/items.ts';
+@@ -10,7 +12,8 @@ import { tempDir } from '../helpers.ts';
+ 
+ /** Real item responses recorded November 24 from us.api.blizzard.com (tests/fixtures/blizzard). */
+ const fixture = (f: string) => readFileSync(fileURLToPath(new URL(`../fixtures/blizzard/${f}`, import.meta.url)), 'utf8');
+-const game = loadGameDataFromDir(fileURLToPath(new URL('../fixtures/wago', import.meta.url)), '1.60.1.71037');
++const FIXTURE_DIR = fileURLToPath(new URL('../fixtures/wago', import.meta.url));
++const game = loadGameDataFromDir(FIXTURE_DIR, '1.60.1.71037');
+ 
+ /** A fake Blizzard that answers by item id and namespace, and records what it was asked. */
+ function fake(routes: Record<string, { status: number; body: string; headers?: Record<string, string> } | Array<{ status: number; body: string; headers?: Record<string, string> }>>) {
+@@ -64,7 +67,7 @@ describe('the Classic item data fallback (B25)', () => {
+   it('known to neither Blizzard source: the game table row fills the name and binding, data_source wago', async () => {
+     const db = openDb(tempDir(), ':memory:');
+     const { client } = fake({});
+-    const items = new Map<number, SparseItem>([[999001, { id: 999001, name: 'Test Thing', bonding: 1, stackable: 1, vendorStack: 1, buyPrice: 40, sellPrice: 10, quality: 1 }]]);
++    const items = new Map<number, SparseItem>([[999001, { id: 999001, name: 'Test Thing', bonding: 1, stackable: 1, vendorStack: 1, buyPrice: 40, sellPrice: 10, quality: 1, requiredSkill: 0, requiredSkillRank: 0, minFactionId: 0, minReputation: 0 }]]);
+     await resolveItems(client, db, [999001, 999002], { game: { items } });
+     expect(getItem(db, 999001)).toMatchObject({ name: 'Test Thing', name_source: 'wago', data_source: 'wago', status: 404, binding: 'ON_ACQUIRE', bonding: 1, quality: 'COMMON' });
+     expect(getItem(db, 999002)).toMatchObject({ name: null, status: 404, data_source: 'none' });
+@@ -105,4 +108,31 @@ describe('binding against ItemSparse.Bonding (B23)', () => {
+     expect(r.disagree).toEqual([{ id: 3371, blizzard: 'ON_ACQUIRE', bonding: 0 }]);
+     expect(getItem(db, 3371)).toMatchObject({ bonding: 0, stack_size: 20, vendor_stack: 5 });
+   });
++
++  // Round 2 fix 2. The live Forever API (recorded November 25) binds Instant Poison on pickup with sell price 0,
++  // while ItemSparse of build 1.60.1.71037 still says Bonding 0 and SellPrice 5: a server hotfix.
++  it('a hotfixed poison shows as both a binding and a sell price disagreement once the API side is refreshed', async () => {
++    const db = openDb(tempDir(), ':memory:');
++    const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json'), '2589:static-forever-us': ok('item-2589-forever.json') });
++    await resolveItems(client, db, [6947, 2589], { game });
++    expect(getItem(db, 6947)).toMatchObject({ name: 'Instant Poison', binding: 'ON_ACQUIRE', sell_price: 0, bonding: 0 });
++    expect(game.items.get(6947)).toMatchObject({ bonding: 0, sellPrice: 5 });
++    const r = applyItemSparse(db, game);
++    expect(r.disagree).toEqual([{ id: 6947, blizzard: 'ON_ACQUIRE', bonding: 0 }]);
++    expect(r).toMatchObject({ sellCompared: 2, sellDisagree: [{ id: 6947, blizzard: 0, sparse: 5 }] });
++  });
++
++  it('the daily item check runs on cached game tables, logs both counts and writes them into the gamedata note', async () => {
++    const dir = tempDir();
++    const wago = join(dir, 'datasets', 'wago', '1.60.1.71037');
++    mkdirSync(wago, { recursive: true });
++    for (const f of readdirSync(FIXTURE_DIR)) copyFileSync(join(FIXTURE_DIR, f), join(wago, f));
++    const db = openDb(dir, ':memory:');
++    db.exec(`INSERT INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', '1.60.1.71037', 0, 0, 'old')`);
++    const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
++    await resolveItems(client, db, [6947], { game });
++    const line = checkItemsAfterRefresh(db, dir);
++    expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947)');
++    expect((db.prepare(`SELECT note FROM datasets WHERE name = 'gamedata'`).get() as { note: string }).note).toBe(`wago wowf tables; ${line}`);
++  });
+ });
+diff --git a/tests/unit/recipe-build.test.ts b/tests/unit/recipe-build.test.ts
+index a5eb47d..6179660 100644
+--- a/tests/unit/recipe-build.test.ts
++++ b/tests/unit/recipe-build.test.ts
+@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
+ import { readFileSync } from 'node:fs';
+ import { fileURLToPath } from 'node:url';
+ import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
+-import { buildRecipes, writeRecipes, foreverItems, CONVERSION_ID_BASE, type BlizzardRecipe, type BuiltRecipe } from '../../src/datasets/recipes.ts';
++import { buildRecipes, writeRecipes, foreverItems, learnFrom, CONVERSION_ID_BASE, type BlizzardRecipe, type BuiltRecipe } from '../../src/datasets/recipes.ts';
+ import { openDb } from '../../src/store/db.ts';
+ import { tempDir } from '../helpers.ts';
+ 
+@@ -20,20 +20,20 @@ const { recipes, report } = buildRecipes(game, blizzard, { trainerRanks, exists
+ const R = (id: number): BuiltRecipe => { const r = recipes.find(x => x.id === id); if (!r) throw new Error(`recipe ${id} missing`); return r; };
+ 
+ describe('recipes from the game tables, checked by hand against the real rows', () => {
+-  it('Smelt Copper (3324): 1 Copper Ore makes 1 Copper Bar, 3 s, both sources agree, learned at yellow 25 (no trainer row)', () => {
++  it('Smelt Copper (3324): 1 Copper Ore makes 1 Copper Bar, 3 s, both sources agree, learned automatically at 1 (AcquireMethod 1), not at yellow 25', () => {
+     expect(R(3324)).toMatchObject({ spellId: 2657, craftedItemId: 2840, qtyMin: 1, qtyMax: 1, reagents: [{ itemId: 2770, quantity: 1 }], castMs: 3000,
+-      source: 'both', disagreement: null, yellow: 25, green: 48, grey: 70, learnSkill: 25, learnFrom: 'yellow', cooldownMs: null, randomYield: false, live: true });
++      source: 'both', disagreement: null, yellow: 25, green: 48, grey: 70, learnSkill: 1, learnSource: 'auto', cooldownMs: null, randomYield: false, live: true });
+   });
+   it('Minor Healing Potion (54191) is First Aid in Forever and needs an Empty Vial; trainer teaches it at 1', () => {
+     expect(R(54191)).toMatchObject({ profession: 'First Aid', craftedItemId: 118,
+-      reagents: [{ itemId: 3371, quantity: 1 }, { itemId: 2678, quantity: 1 }, { itemId: 2447, quantity: 1 }], learnSkill: 1, learnFrom: 'trainer' });
++      reagents: [{ itemId: 3371, quantity: 1 }, { itemId: 2678, quantity: 1 }, { itemId: 2447, quantity: 1 }], learnSkill: 1, learnSource: 'trainer_alliance' });
+   });
+   it('Linen Bandage (1838): 1 Linen Cloth makes 1 Linen Bandage', () => {
+     expect(R(1838)).toMatchObject({ craftedItemId: 1251, reagents: [{ itemId: 2589, quantity: 1 }], yellow: 30, grey: 60, source: 'both', disagreement: null });
+   });
+   it('Cerulean Dye (54453): 2 Frilled Lichen and 1 Empty Vial make 1, 5 s cast, trainer at Alchemy 40', () => {
+     expect(R(54453)).toMatchObject({ spellId: 1249630, profession: 'Alchemy', craftedItemId: 249409, qtyMin: 1, qtyMax: 1,
+-      reagents: [{ itemId: 249399, quantity: 2 }, { itemId: 3371, quantity: 1 }], castMs: 5000, learnSkill: 40, learnFrom: 'trainer', yellow: 50, disagreement: null });
++      reagents: [{ itemId: 249399, quantity: 2 }, { itemId: 3371, quantity: 1 }], castMs: 5000, learnSkill: 40, learnSource: 'trainer_alliance', yellow: 50, disagreement: null });
+   });
+   it('White Wedding Dress (6622) keeps Bleach, and the Blizzard disagreement is recorded', () => {
+     const r = R(6622);
+@@ -67,10 +67,10 @@ describe('recipes from the game tables, checked by hand against the real rows',
+     expect(R(2418)).toMatchObject({ craftedItemId: 4360, qtyMin: 2, qtyMax: 2, randomYield: false });
+   });
+   it('learn skill: Copper Chain Belt (1632) from its trainer at 30, not its yellow 70', () => {
+-    expect(R(1632)).toMatchObject({ learnSkill: 30, learnFrom: 'trainer', yellow: 70, grey: 110 });
++    expect(R(1632)).toMatchObject({ learnSkill: 30, learnSource: 'trainer_alliance', yellow: 70, grey: 110, teachItemId: null });
+   });
+-  it('learn skill falls back to yellow when no trainer teaches it: Bolt of Linen Cloth (2359) 25', () => {
+-    expect(R(2359)).toMatchObject({ craftedItemId: 2996, reagents: [{ itemId: 2589, quantity: 2 }], learnSkill: 25, learnFrom: 'yellow' });
++  it('Bolt of Linen Cloth (2359) is learned automatically at 1 (AcquireMethod 1), not at its yellow 25', () => {
++    expect(R(2359)).toMatchObject({ craftedItemId: 2996, reagents: [{ itemId: 2589, quantity: 2 }], learnSkill: 1, learnSource: 'auto', yellow: 25 });
+   });
+   it('Instant Poison (4807) comes from wago only, under Poisons', () => {
+     expect(R(4807)).toMatchObject({ source: 'wago', profession: 'Poisons', craftedItemId: 6947, reagents: [{ itemId: 2928, quantity: 1 }, { itemId: 3371, quantity: 1 }] });
+@@ -108,6 +108,64 @@ describe('recipes from the game tables, checked by hand against the real rows',
+   });
+ });
+ 
++/**
++ * Teaching items, read by hand from the real rows of build 1.60.1.71037: ItemEffect TriggerType 6 casts the craft
++ * spell, ItemXItemEffect links it to the item, ItemSparse.RequiredSkillRank is the rank it teaches at.
++ * Pattern: Fine Leather Boots 2406 -> spell 2158 at 65 (yellow 95). Recipe: Swiftness Potion 2555 -> spell 2335 at 60
++ * (yellow 90). Pattern: Mooncloth 14526 -> 18560 at 230 (yellow 270). Pattern: Runecloth Bag 14468 -> 18405 at 215.
++ */
++describe('where a recipe is learned (round 2 fix 1)', () => {
++  it('the game tables link a teaching item to its craft spell by id: Pattern: Mooncloth 14526 teaches 18560', () => {
++    expect(game.teachers.get(18560)).toEqual([14526]);
++    expect(game.items.get(14526)).toMatchObject({ name: 'Pattern: Mooncloth', requiredSkill: 197, requiredSkillRank: 230 });
++  });
++  it('Fine Leather Boots (1359) is learned from Pattern: Fine Leather Boots at 65, not at its yellow 95', () => {
++    expect(R(1359)).toMatchObject({ spellId: 2158, learnSkill: 65, learnSource: 'item', teachItemId: 2406, teachSkill: 65, yellow: 95 });
++  });
++  it('Swiftness Potion (1383) is learned from Recipe: Swiftness Potion at 60, not at its yellow 90', () => {
++    expect(R(1383)).toMatchObject({ spellId: 2335, learnSkill: 60, learnSource: 'item', teachItemId: 2555, teachSkill: 60, yellow: 90 });
++  });
++  it('Mooncloth (10487) at 230 and Runecloth Bag (10401) at 215 from their patterns', () => {
++    expect(R(10487)).toMatchObject({ learnSkill: 230, learnSource: 'item', teachItemId: 14526, yellow: 270 });
++    expect(R(10401)).toMatchObject({ learnSkill: 215, learnSource: 'item', teachItemId: 14468, yellow: 230 });
++  });
++  it('an Alliance trainer below the item wins; the item is still recorded', () => {
++    const r = buildRecipes(game, blizzard, { trainerRanks: new Map([[2158, 50]]), exists });
++    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSkill: 50, learnSource: 'trainer_alliance', teachItemId: 2406, teachSkill: 65 });
++  });
++  it('a teaching item not in Forever is not used', () => {
++    const r = buildRecipes(game, blizzard, { trainerRanks, exists: id => id !== 2406 && game.items.has(id) });
++    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSource: 'yellow', learnSkill: 95, teachItemId: null });
++  });
++  it('only Horde trainers teach it: their rank, flagged trainer_horde_only; with none at all, yellow is the last guess', () => {
++    // Coarse Dynamite (2427, spell 3931) has no teaching item and AcquireMethod 0 in the real rows; the Horde rank is made up.
++    const h = buildRecipes(game, blizzard, { trainerRanks, hordeRanks: new Map([[3931, 75]]), exists });
++    expect(h.recipes.find(x => x.id === 2427)).toMatchObject({ learnSkill: 75, learnSource: 'trainer_horde_only' });
++    expect(R(2427)).toMatchObject({ learnSkill: 90, learnSource: 'yellow', yellow: 90 });
++  });
++  it('the lowest of auto, Alliance trainer and item wins, ties go to auto then trainer; Horde and yellow only as fallbacks', () => {
++    expect(learnFrom({ trainer: 30, teach: 30, auto: 30, yellow: 70 })).toEqual({ skill: 30, source: 'auto' });
++    expect(learnFrom({ trainer: 30, teach: 30, yellow: 70 })).toEqual({ skill: 30, source: 'trainer_alliance' });
++    expect(learnFrom({ trainer: 40, teach: 30, horde: 1 })).toEqual({ skill: 30, source: 'item' });
++    expect(learnFrom({ horde: 1, yellow: 70 })).toEqual({ skill: 1, source: 'trainer_horde_only' });
++    expect(learnFrom({ yellow: 70 })).toEqual({ skill: 70, source: 'yellow' });
++    expect(learnFrom({})).toEqual({ skill: null, source: null });
++  });
++  it('every profession recipe with thresholds has a learn source; the report counts them', () => {
++    const prof = recipes.filter(r => r.kind === 'profession');
++    expect(prof.filter(r => r.yellow != null && r.learnSource == null)).toEqual([]);
++    const l = report.learn;
++    expect(l.trainer_alliance + l.trainer_horde_only + l.item + l.auto + l.yellow + l.none).toBe(prof.length);
++    expect(l.teachItem).toBe(prof.filter(r => r.teachItemId != null).length);
++  });
++  it('writes teach_item_id, teach_skill and learn_source', () => {
++    const db = openDb(tempDir(), ':memory:');
++    writeRecipes(db, recipes, { version: 'test', note: 'test' });
++    expect(db.prepare('SELECT learn_skill, learn_source, teach_item_id, teach_skill FROM recipes WHERE id = 1383').get()).toEqual({ learn_skill: 60, learn_source: 'item', teach_item_id: 2555, teach_skill: 60 });
++    expect(db.prepare('SELECT learn_source FROM recipes WHERE id = 3324').get()).toEqual({ learn_source: 'auto' });
++  });
++});
++
+ describe('conversions from item use spells', () => {
+   it('Lesser Magic Essence: 3 in (2 reagents plus the item used up), 1 Greater out, as the spell text says', () => {
+     expect(R(CONVERSION_ID_BASE + 13361)).toMatchObject({ kind: 'conversion', profession: 'Conversion', spellId: 13361, craftedItemId: 10939, qtyMin: 1, qtyMax: 1, reagents: [{ itemId: 10938, quantity: 3 }], live: true });
+@@ -130,6 +188,16 @@ describe('conversions from item use spells', () => {
+     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
+     expect(r.report.conversions.bound).toBe(2);
+   });
++  it('bound if EITHER source says so: the live API binds Lesser Magic Essence on pickup while ItemSparse says unbound (a server hotfix)', () => {
++    expect(game.items.get(10938)?.bonding).toBe(0);
++    const r = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10938 ? 'ON_ACQUIRE' : null) });
++    expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
++    expect(r.report.conversions).toMatchObject({ bound: 2, boundByApiOnly: 2 });
++    const q = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10939 ? 'QUEST' : 'ON_USE') });
++    expect(q.report.conversions.bound).toBe(2);
++    const free = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: () => 'ON_EQUIP' });
++    expect(free.report.conversions.kept.length).toBe(2);
++  });
+ });
+ 
+ describe('writing recipes and the Forever item rule', () => {

@@ -1,0 +1,401 @@
+diff --git a/src/analysis/history.ts b/src/analysis/history.ts
+index 8b6b573..580474c 100644
+--- a/src/analysis/history.ts
++++ b/src/analysis/history.ts
+@@ -74,14 +74,15 @@ function normalQuantile(p: number): number {
+ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; now?: number } = {}): Map<number, Demand> {
+   const now = opts.now ?? Date.now();
+   const hours = opts.hours ?? 72;
++  // Every query is bounded to rows at or before `now`, so a run for a past hour never sees later sales.
+   const since = now - hours * 3600_000;
+   // Hours actually covered by differencing, per kind: the sum of the gaps between consecutive publishes
+   // that were differenced. Gaps over 1.6 hours are never differenced, so outages cannot inflate demand.
+   // Only rows counted with a sold price (they carry sold_value). Rows from before it counted expiries and
+   // relists as sales, so they are left out rather than mixed in.
+-  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND diff_hours IS NOT NULL
+-     AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND sold_value IS NOT NULL) GROUP BY kind`)
+-    .all(houseId, since, houseId, since) as Array<{ kind: string; h: number }>;
++  const snaps = db.prepare(`SELECT kind, SUM(diff_hours) h FROM snapshots WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND diff_hours IS NOT NULL
++     AND id IN (SELECT DISTINCT snapshot_id FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND sold_value IS NOT NULL) GROUP BY kind`)
++    .all(houseId, since, now, houseId, since, now) as Array<{ kind: string; h: number }>;
+   const covered = Math.max(0, ...snaps.map(s => s.h ?? 0));
+   const out = new Map<number, Demand>();
+   if (covered <= 0) return out;
+@@ -91,21 +92,21 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
+   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
+      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
+      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
+-     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
+-    .all(houseId, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
++     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
++    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null }>;
+   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
+-     FROM item_stats WHERE house_id = ? AND published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000) as Array<{ item_id: number; sold: number; value: number }>)
++     FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
+     .map(r => [r.item_id, r]));
+   // Steadiness: how far the hourly floor wanders over the window (standard deviation over mean).
+-  const steady = new Map((db.prepare(`SELECT item_id, AVG(floor) m, AVG(floor * floor) m2, COUNT(*) n FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
+-    .all(houseId, since) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
++  const steady = new Map((db.prepare(`SELECT item_id, AVG(floor) m, AVG(floor * floor) m2, COUNT(*) n FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id`)
++    .all(houseId, since, now) as Array<{ item_id: number; m: number; m2: number; n: number }>).map(r => [r.item_id, r.n >= 6 && r.m > 0 ? Math.sqrt(Math.max(0, r.m2 - r.m * r.m)) / r.m : null]));
+   // The bad case price: the lowest hourly floor in the last 3 days, whatever the demand window.
+-  const low3d = new Map((db.prepare(`SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND floor IS NOT NULL GROUP BY item_id`)
+-    .all(houseId, now - 72 * 3600_000) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f]));
++  const low3d = new Map((db.prepare(`SELECT item_id, MIN(floor) f FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL GROUP BY item_id`)
++    .all(houseId, now - 72 * 3600_000, now) as Array<{ item_id: number; f: number }>).map(r => [r.item_id, r.f]));
+   // The last hour's sweep: the latest differenced publish of each kind, if it is under 2 hours old.
+   const sweep = new Map((db.prepare(`SELECT item_id, sweep_high FROM item_stats WHERE sweep_high IS NOT NULL AND snapshot_id IN
+-     (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? GROUP BY kind)`)
+-    .all(houseId, now - 2 * 3600_000) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
++     (SELECT MAX(id) FROM snapshots WHERE house_id = ? AND diff_hours IS NOT NULL AND published_at >= ? AND published_at <= ? GROUP BY kind)`)
++    .all(houseId, now - 2 * 3600_000, now) as Array<{ item_id: number; sweep_high: number }>).map(r => [r.item_id, r.sweep_high]));
+   const hoursWatched = Math.round(covered * 10) / 10;
+   for (const r of rows) {
+     const rc = recent.get(r.item_id);
+diff --git a/src/flips/evaluate.ts b/src/flips/evaluate.ts
+index 1c26168..c9516d4 100644
+--- a/src/flips/evaluate.ts
++++ b/src/flips/evaluate.ts
+@@ -1,5 +1,5 @@
+ import { deposit, netPerUnit } from '../rules/fees.ts';
+-import { CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
++import { CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
+ import { AUCTION_HOUSES } from '../datasets/places.ts';
+ import type { Market, TraceEntry } from './market.ts';
+ import { overnightQueue, type Queue } from './sellBook.ts';
+@@ -10,9 +10,11 @@ import type { Family, FlipLeg, HouseRef, QuantityOption, Risk, SellQuote } from
+  * Expected profit if Chip acts now, at every quantity, from one walk of the cost book.
+  *
+  * For N units over the overnight horizon with no relisting:
+- *   expected(N) = sum over k <= N of [P_k x net each + (1 - P_k) x (salvage - deposit lost)] - cost(N) - minutes(N) x time rate
+- * where salvage is what a vendor pays for an unsold unit (0 when none does; never the reagents' value). The bad case
+- * in the risk line uses the same salvage rule.
++ *   expected(N) = sold(N) x net each + worth of the N - sold(N) unsold units - (N - sold(N)) x deposit lost - cost(N) - minutes(N) x time rate
++ * where an unsold unit is worth its carryover when the product has proven demand (relisted next day: the net at the
++ * case's price less one more deposit, never under the vendor price), for as many units as one more day of the low
++ * estimate can take, and what a vendor pays for the rest (0 when none does; never the reagents' value). The bad case
++ * uses the same rule at the bad case price (unsoldWorth, CARRYOVER).
+  * P_k is the chance unit k sells overnight: sale events are Poisson and unit k sells when enough of them arrive to
+  * clear everything ahead of it and reach it (sellBook.overnightQueue, round 1 finding H4). P_k falls smoothly with k,
+  * so big deposits pull the best amount below the queue's capacity. sold(N) = sum of P_k.
+@@ -152,10 +154,12 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
+   const sellItem = inputs.items.get(c.itemId);
+   const depositEach = toVendor ? 0 : deposit(c.sellHouse!.faction, sellItem?.sellPrice, 1, LISTING_HOURS);
+   const net = q.netEach;
+-  // Auction sales: units whose chance of selling is negligible only lose, so walk to the larger of the small quantity
+-  // and the last position with a real chance. Vendor sales: walk while units still cost under what the vendor pays.
++  // Auction sales: walk to the larger of the small quantity and the last position with a real chance tonight, plus
++  // what one more day can take when unsold units carry over (CARRYOVER); past that a unit is worth only the vendor
++  // price and loses its deposit. Vendor sales: walk while units still cost under what the vendor pays.
+   const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
+-  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful));
++  const carryUnits = !toVendor && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay ? Math.ceil((q.salesPerDayLow ?? 0) * CARRYOVER.days) : 0;
++  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + carryUnits));
+   const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && unit >= net);
+   // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
+   const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
+@@ -170,9 +174,10 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
+   const nonStack = !isStackable(sellItem);
+   const minutesAt = (n: number, s: Step) => s.buyMinutes + (toVendor ? EFFORT.vendorSellMin : EFFORT.postMin + (nonStack ? (n - 1) * EFFORT.postUnitMin : 0));
+   const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
++  const worth = (unsoldUnits: number) => unsoldWorth(q, q.netEach, salvage, depositEach, unsoldUnits);
+   const expectedAt = (n: number, cost: number, s: Step) => {
+     const k = sold.soldAt(n);
+-    return k * net - cost + (n - k) * (salvage - depositEach) - (minutesAt(n, s) / 60) * o.timeRate;
++    return k * net - cost + worth(n - k) - (n - k) * depositEach - (minutesAt(n, s) / 60) * o.timeRate;
+   };
+   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
+   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
+@@ -207,7 +212,8 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
+ /**
+  * Risk at one quantity (round 1 finding H3). Bad case: the price falls to its 3 day low (a 25 percent drop until 72
+  * hours of floors are watched; a lower low seen is used) AND only half of the units expected to sell actually sell.
+- * Unsold units are salvaged at the vendor price and lose their deposit. Gold at stake counts every deposit.
++ * Unsold units are worth their carryover at the bad case price (proven demand) or the vendor price, and lose their
++ * deposit. Gold at stake counts every deposit.
+  * High when the bad case loses more than the flip is expected to make, medium when it loses more than half of it.
+  */
+ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk, salvage: number): Risk {
+@@ -243,12 +249,29 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
+   }
+   // A vendor buys every unit at a fixed price: no shortfall and no price drop.
+   const soldBad = q.houseId == null ? n : sold * SALES_SHORTFALL;
+-  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + (n - soldBad) * (salvage - depositEach))));
+-  const halfSalesProfit = Math.round(soldBad * q.netEach + (n - soldBad) * (salvage - depositEach) - cost);
++  const left = n - soldBad;
++  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + unsoldWorth(q, netBad, salvage, depositEach, left) - left * depositEach)));
++  const halfSalesProfit = Math.round(soldBad * q.netEach + unsoldWorth(q, q.netEach, salvage, depositEach, left) - left * depositEach - cost);
+   const level: Risk['level'] = badCaseLoss > expected ? 'high' : badCaseLoss > expected / 2 ? 'medium' : 'low';
+   return { atStake: Math.round(cost + n * depositEach), badCaseLoss, halfSalesProfit, deposits: Math.round(n * depositEach), daysToSell, level, drivers };
+ }
+ 
++/**
++ * What the units left unsold at the end of the night are worth (CARRYOVER), before tonight's lost deposits, which the
++ * caller charges on top. With proven demand (the low estimate sells at least 1 a day) Chip relists them: each is worth
++ * the net at `netAtPrice` (the case's price after the cut) less the deposits to post it again, never under the vendor
++ * price, for as many units as one more day of the low estimate can take. The rest, and every unsold unit without
++ * proven demand, are worth the vendor price (0 when no vendor buys it). A vendor sale never has unsold units.
++ */
++export function unsoldWorth(q: SellQuote, netAtPrice: number, salvage: number, depositEach: number, unsold: number): number {
++  if (q.houseId == null || unsold <= 0) return 0;
++  const low = q.salesPerDayLow ?? 0;
++  if (low < CARRYOVER.minLowPerDay) return unsold * salvage;
++  const carried = Math.min(unsold, low * CARRYOVER.days);
++  const each = Math.max(salvage, netAtPrice - CARRYOVER.relistDeposits * depositEach);
++  return carried * each + (unsold - carried) * salvage;
++}
++
+ /**
+  * A price war, named as a risk, never read as demand: the floor fell more than 10 percent since the last publish, or
+  * more new units are posted an hour than sell an hour (middle estimate).
+diff --git a/src/flips/inputs.ts b/src/flips/inputs.ts
+index d08fe4a..14da0ab 100644
+--- a/src/flips/inputs.ts
++++ b/src/flips/inputs.ts
+@@ -243,21 +243,23 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
+ }
+ 
+ /**
+- * Fill in what sale counting does not give yet, from the stored hourly counts (never guessed): sale events and units
+- * per event (vanished listings), new units posted near the floor (new_near_floor, else every new unit), and what
+- * happened in the last hour (floor change, new and sold units) for the price war check. Fields already present are kept.
++ * Fill in what sale counting does not give, from the stored hourly counts (never guessed): sale events and units per
++ * event (vanished listings), new units posted near the floor (new_near_floor, else every new unit), units pulled near
++ * the floor, and what happened in the last hour (floor change, new and sold units) for the price war check.
++ * Sale counting's own fields (src/analysis/history.ts demandByItem) are authoritative: a field already present is
++ * never overwritten; the derivation here is only the fallback for a Demand that lacks it.
+  */
+ export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<number, FlipDemand>): Map<number, FlipDemand> {
+   const since = now - 72 * 3600_000;
+   // Per publish: units judged sold (the same rule as demandByItem), and the sale events behind them, which are the
+   // vanished listings scaled by the share of vanished units judged sold (gone listings minus the expiring and far from
+   // the floor share). New units near the floor where measured, else every new unit (older rows).
+-  const SOLD = 'MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0))';
++  const SOLD = 'COALESCE(sold_units, MAX(0, COALESCE(gone_units_near_floor, 0) - COALESCE(gone_units_expiring_near_floor, 0)))';
+   const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold,
+       SUM(CASE WHEN COALESCE(gone_units, 0) > 0 THEN COALESCE(gone_listings, 0) * 1.0 * ${SOLD} / gone_units ELSE 0 END) events,
+-      SUM(COALESCE(new_near_floor, new_units, 0)) fresh
++      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled
+     FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
+-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; events: number; fresh: number }>;
++    .all(houseId, since, now) as Array<{ item_id: number; sold: number; events: number; fresh: number; pulled: number }>;
+   for (const r of rows) {
+     const d = demand.get(r.item_id);
+     if (!d) continue;
+@@ -266,6 +268,7 @@ export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<n
+     if (d.unitsPerEvent == null) d.unitsPerEvent = r.events > 0 ? Math.max(1, r.sold / r.events) : null;
+     if (d.hoursWatched == null) d.hoursWatched = hours;
+     if (d.newPerDay == null && hours > 0) d.newPerDay = (r.fresh / hours) * 24;
++    if (d.pulledPerDay == null && hours > 0) d.pulledPerDay = (r.pulled / hours) * 24;
+   }
+   // The last hour: the newest differenced publish of each kind, against the one before it.
+   const last = db.prepare(`SELECT s.id, s.kind, s.published_at t FROM snapshots s WHERE s.house_id = ? AND s.published_at <= ? AND s.diff_hours IS NOT NULL
+diff --git a/src/flips/sellBook.ts b/src/flips/sellBook.ts
+index 4fbce73..15677f3 100644
+--- a/src/flips/sellBook.ts
++++ b/src/flips/sellBook.ts
+@@ -33,11 +33,16 @@ export function lowPerDay(d: FlipDemand | undefined): { value: number | null; de
+ export const hoursWatched = (d: FlipDemand | undefined): number => d?.hoursWatched ?? d?.hours ?? 0;
+ 
+ /**
+- * New units other sellers post near or under the floor a day, as measured (sale counting's newPerDay, else the stored
+- * hourly counts, src/flips/inputs.ts enrichDemand). Never guessed: unmeasured reads 0 and the card says so.
++ * New units other sellers post near or under the floor a day that really compete with Chip, as measured (sale
++ * counting's newPerDay, else the stored hourly counts, src/flips/inputs.ts enrichDemand). A seller who pulls a stack
++ * and posts it again is not new competition, so units pulled near the floor (pulledPerDay) come off when known:
++ * competing new = max(0, newPerDay - pulledPerDay). Never guessed: unmeasured reads 0 and the card says so.
+  */
+ export function newPerDay(d: FlipDemand | undefined): { value: number; measured: boolean } {
+-  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) return { value: Math.max(0, d.newPerDay), measured: true };
++  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) {
++    const pulled = d.pulledPerDay != null && Number.isFinite(d.pulledPerDay) ? d.pulledPerDay : 0;
++    return { value: Math.max(0, d.newPerDay - pulled), measured: true };
++  }
+   return { value: 0, measured: false };
+ }
+ 
+diff --git a/src/rules/flips.ts b/src/rules/flips.ts
+index a82f891..ff8fdc0 100644
+--- a/src/rules/flips.ts
++++ b/src/rules/flips.ts
+@@ -97,6 +97,18 @@ export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fe
+ /** Bad case: only this share of the units expected to sell actually sell (coordinator decision, round 1 H3). */
+ export const SALES_SHORTFALL = 0.5;
+ 
++/**
++ * What an unsold unit is worth the next morning (coordinator decision, round 2). A product with proven demand (the low
++ * estimate sells at least 1 a day) is not lost when it does not sell overnight: Chip relists it. Its carryover value is
++ * the net at the price of the case being priced (the expected post price for expected profit, the bad case price for
++ * the bad case) minus `relistDeposits` more deposits for posting it again, never below what a vendor pays. Without
++ * proven demand an unsold unit is worth only the vendor price (0 when no vendor buys it). In both cases the deposit
++ * paid tonight is lost on top. Carryover covers at most `days` days of the low estimate (units past what one more day
++ * can sell are worth the vendor price), so a thin market never turns every unsold unit into a near sale and the best
++ * amount stays tied to demand. A first rule, unverified until the backtest follows unsold units into the next day.
++ */
++export const CARRYOVER = { minLowPerDay: 1, relistDeposits: 1, days: 1 };
++
+ /**
+  * Fresh data: a run whose newest snapshot of one of Chip's houses is older than 2 hours is incomplete, never a
+  * list built from stale prices (round 1 finding M1). Blizzard publishes about hourly.
+diff --git a/tests/unit/flips-properties.test.ts b/tests/unit/flips-properties.test.ts
+index 2fecb01..bd18456 100644
+--- a/tests/unit/flips-properties.test.ts
++++ b/tests/unit/flips-properties.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, it, expect } from 'vitest';
+-import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
++import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, refWorth, LICHEN, VIAL, DYE, DYE_RECIPE } from './flips.fixture.ts';
+ import { Market } from '../../src/flips/market.ts';
+ import { SellBook } from '../../src/flips/sellBook.ts';
+ import type { Listing } from '../../src/analysis/aggregate.ts';
+@@ -103,20 +103,26 @@ describe('properties', () => {
+       last = loss;
+     }
+     // Bad case (round 1 H3): the 3 day low of 50s nets floor(5000 x 0.95) = 4750, and only half of the S(n) units expected
+-    //   to sell do; the rest are salvaged at 75c and lose the 360c deposit. S(n) sums P(X >= k), X ~ Poisson(20).
++    //   to sell do. The dye sells 60 a day at the low estimate (proven demand), so up to 60 unsold units carry over
++    //   (round 3): relisted at 4750 less one more 360c deposit, 4390, and each loses tonight's 360c deposit too.
++    //   S(n) sums P(X >= k), X ~ Poisson(20).
+     const S = (n: number, mu = 20) => { let s = 0; for (let k = 1; k <= n; k++) s += refTail(mu, k); return s; };
+-    const bad = (n: number, cost: number, mu = 20) => Math.max(0, Math.round(cost - (S(n, mu) / 2 * 4750 + (n - S(n, mu) / 2) * (75 - 360))));
+-    // 20 crafts cost 113,880; S(20) = 18.22, so 9.11 sell at 4750 and 10.89 are salvaged: a 73,703 loss
+-    expect(e.at(20).risk.badCaseLoss).toBe(bad(20, 113880));
+-    expect(e.at(20).risk.badCaseLoss).toBe(73703);
+-    expect(e.at(20).risk.level).toBe('high');
+-    // one craft: 5020 spent, half of the 1.0 expected sold at 4750, half salvaged at 75 - 360: 5020 - 2375 + 142.5 = 2788
+-    expect(e.at(1).risk.badCaseLoss).toBe(bad(1, 5020));
+-    expect(e.at(1).risk.badCaseLoss).toBe(2788);
+-    // the same with half the expected sold at the claimed price, the "at half sales" number on the card
+-    expect(e.at(1).risk.halfSalesProfit).toBe(Math.round(0.5 * 7077 + 0.5 * (75 - 360) - 5020));
+-    // Thin sales (12 a day middle, none new: 5 sale events overnight): each unit past the queue adds its cost and lost deposit.
+-    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 12, newPerDay: 0 } })), DYE_KEY).e;
++    const bad = (n: number, cost: number, mu = 20, carry?: { each: number; cap: number }) => {
++      const sold = S(n, mu) / 2, left = n - sold;
++      return Math.max(0, Math.round(cost - (sold * 4750 + refWorth(left, 75, carry) - left * 360)));
++    };
++    const carry = { each: 4750 - 360, cap: 60 };
++    // 20 crafts cost 113,880; S(20) = 18.22, so 9.11 sell at 4750 and 10.89 carry over at 4390: a 26,720 loss
++    expect(e.at(20).risk.badCaseLoss).toBe(bad(20, 113880, 20, carry));
++    expect(e.at(20).risk.badCaseLoss).toBe(26720);
++    // one craft: 5020 spent, half of the 1.0 expected sold at 4750, half carried at 4390 - 360: 5020 - 2375 - 2015 = 630
++    expect(e.at(1).risk.badCaseLoss).toBe(bad(1, 5020, 20, carry));
++    expect(e.at(1).risk.badCaseLoss).toBe(630);
++    // the same with half the expected sold at the claimed price, the rest carried at 7077 - 360: the "at half sales" number
++    expect(e.at(1).risk.halfSalesProfit).toBe(Math.round(0.5 * 7077 + 0.5 * (7077 - 360 - 360) - 5020));
++    // No proven demand (low estimate 0.8 a day, 12 a day middle, none new: 5 sale events overnight): unsold units are worth
++    //   only their 75c vendor price, so each unit past the queue adds its cost and lost deposit, and the risk is high.
++    const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 0.8, newPerDay: 0 } })), DYE_KEY).e;
+     let prev = -1;
+     for (let n = 1; n <= 10; n++) { const loss = thin.at(n).risk.badCaseLoss; expect(loss).toBeGreaterThanOrEqual(prev); prev = loss; }
+     expect(thin.at(10).risk.level).toBe('high');
+@@ -124,6 +130,10 @@ describe('properties', () => {
+     expect(thin.at(10).expectedProfit).toBe(Math.round(refExpected({ mu: 5, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 55440, n: 10 })));
+     expect(thin.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5));
+     expect(thin.at(10).risk.drivers).toContain('more units than sell overnight');
++    // The same thin market with proven demand (1.2 a day low): 1.2 units carry over, so the loss is smaller
++    const proven = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 1.2, newPerDay: 0 } })), DYE_KEY).e;
++    expect(proven.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5, { each: 4390, cap: 1.2 }));
++    expect(proven.at(10).risk.badCaseLoss).toBeLessThan(thin.at(10).risk.badCaseLoss);
+   });
+   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {
+     const r = run(ceruleanAtBens({ extra: { settings: { goldOnHand: 50000 } } }));
+diff --git a/tests/unit/flips.fixture.ts b/tests/unit/flips.fixture.ts
+index 1bc627c..2ffeffe 100644
+--- a/tests/unit/flips.fixture.ts
++++ b/tests/unit/flips.fixture.ts
+@@ -119,8 +119,16 @@ export function refTail(mu: number, j: number): number {
+ }
+ 
+ /** Expected profit of n units at queue positions ahead + 1 .. ahead + n, `upe` units per sale event (plan section 6). */
+-export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number }): number {
++export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number;
++  /** carryover: up to `cap` unsold units are worth `each` (relisted next day), the rest the salvage price */
++  carry?: { each: number; cap: number } }): number {
+   let sold = 0;
+   for (let k = 1; k <= o.n; k++) sold += refTail(o.mu, Math.ceil((o.ahead + k) / (o.upe ?? 1)));
+-  return sold * o.net + (o.n - sold) * (o.salvage - o.deposit) - o.cost;
++  return sold * o.net + refWorth(o.n - sold, o.salvage, o.carry) - (o.n - sold) * o.deposit - o.cost;
++}
++
++/** What `unsold` units are worth the next morning: `carry.cap` of them at `carry.each`, the rest at the salvage price. */
++export function refWorth(unsold: number, salvage: number, carry?: { each: number; cap: number }): number {
++  const carried = carry ? Math.min(unsold, carry.cap) : 0;
++  return carried * (carry?.each ?? 0) + (unsold - carried) * salvage;
+ }
+diff --git a/tests/unit/flips.test.ts b/tests/unit/flips.test.ts
+index 655c515..ca95df3 100644
+--- a/tests/unit/flips.test.ts
++++ b/tests/unit/flips.test.ts
+@@ -34,30 +34,34 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
+     expect(top.sellQuote.netEach).toBe(7077);
+     // Queue (round 1 finding H4): 60 a day middle, 12 a day new posts under him, 0 ahead, one unit per sale event.
+     //   Sale events overnight are Poisson with mean (60 - 12) x 10/24 = 20; unit k sells when at least k events come.
+-    //   Each unit adds P_k x 7077 + (1 - P_k) x (75 salvage - 360 deposit) against its own cost; the 17th adds
+-    //   0.779 x 7077 - 0.221 x 285 - 5800 < 0, so the best is 16 crafts (an independent recompute agrees, below).
+-    expect(top.best.units).toBe(16);
+-    expect(top.best.expectedSold).toBe(15.6);
+-    // Cost of 16 crafts walking the lichen ladder (2 @25s, 4 @27s, 10 @28s, 20 @29s), 1 vial each at 4c in bundles of 5:
+-    //   5004 + 2 x 5404 + 5 x 5604 + 8 x 5804 = 90,200, plus 4 bundles of vials (20 vials, 4 spare) = 80: 90,280
+-    expect(top.best.cost).toBe(90280);
+-    // Per item: 7077 - 90280 / 16 = 1434.5, rounded 1435, about 14s 35c.
+-    expect(top.perItem).toBe(1435);
+-    // Expected profit: 15.593 x 7077 + 0.407 x (75 - 360) - 90,280 = 19,956 (1g 99s 56c).
+-    expect(top.best.expectedProfit).toBe(19956);
+-    expect(top.best.expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16 })));
+-    // Bad case (round 1 finding H3): the dye at its 3 day low of 70s (72 hours watched) nets 6650, and only half of the
+-    //   15.593 expected sell: 7.797 x 6650 + 8.203 x (75 - 360) = 49,509 back on 90,280 spent, a 40,771 loss.
+-    //   That is more than the 19,956 it is expected to make: high risk. Gold at stake counts 16 deposits of 360c.
+-    expect(top.best.risk.badCaseLoss).toBe(40771);
+-    expect(top.best.risk.level).toBe('high');
+-    expect(top.best.risk.atStake).toBe(90280 + 16 * 360);
++    // Carryover (round 3): the dye sells 60 a day at the low estimate, so a unit unsold tonight is relisted tomorrow and
++    //   is worth its net 7077 less one more 360c deposit, 6717, for up to 60 units; tonight's 360c deposit is lost on top.
++    //   Every craft up to the last lichen listed (the 38th, about 60s in) costs less than 6717 - 360 = 6357, so the best
++    //   is 38 crafts, all 76 lichen; 20.0 are expected to sell tonight and 18.0 carry over.
++    expect(top.best.units).toBe(38);
++    expect(top.best.expectedSold).toBe(20);
++    // Cost: all lichen 2 x 2500 + 4 x 2700 + 10 x 2800 + 20 x 2900 + 40 x 3000 = 221,800, plus 8 bundles of vials 160
++    expect(top.best.cost).toBe(221960);
++    // Per item: 7077 - 221960 / 38 = 1235.9, about 12s 36c.
++    expect(top.perItem).toBe(1236);
++    // Expected profit: 19.998 x 7077 + 18.002 x (6717 - 360) - 221,960 = 34,005 (3g 40s 5c).
++    const carry = { each: 7077 - 360, cap: 60 };
++    expect(top.best.expectedProfit).toBe(34005);
++    // (the engine drops chances under 0.1%, positions 36 to 38 tonight, so the two agree within a copper)
++    expect(Math.abs(top.best.expectedProfit - refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 221960, n: 38, carry }))).toBeLessThanOrEqual(1);
++    // Bad case (round 1 H3 with round 3 carryover): the dye at its 3 day low of 70s nets 6650 and only half of the 20.0
++    //   expected sell; the other 28 are relisted at 6650 - 360 = 6290 and lose tonight's 360: 10.0 x 6650 + 28.0 x 5930
++    //   = 232,489 back on 221,960 spent, no loss. Low risk. Gold at stake counts 38 deposits of 360c.
++    expect(top.best.risk.badCaseLoss).toBe(0);
++    expect(top.best.risk.level).toBe('low');
++    expect(top.best.risk.atStake).toBe(221960 + 38 * 360);
+     // New listings under him overnight: 12 a day x 10/24 = 5, stated on the card.
+     expect(top.sellQuote.newOvernight).toBeCloseTo(5, 6);
+     expect(top.notes).toContain('about 5 new listings usually appear under you overnight');
+-    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 32 });
+-    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 20, unitPrice: 4 });
+-    // 32 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
++    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 76 });
++    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 40, unitPrice: 4 });
++    expect(top.best.risk.drivers).toContain('thin supply of Frilled Lichen');
++    // all 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
+     expect(top.repeatable).toBe(false);
+     // The weaker flips are on the same list, below it.
+     const spices = r.flips.find(f => f.family === 'vendor_auction' && f.itemId === SPICES)!;
+@@ -67,11 +71,12 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
+     expect(spices.rank).toBeGreaterThan(1);
+     expect(bandage.rank).toBeGreaterThan(1);
+     // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Events overnight: (20 - 4) x 10/24 = 6.67.
+-    //   The 6th unit sells with chance P(X >= 6) = 0.652: 0.652 x 280 + 0.348 x (40 - 192) - 160 = -30, so the best is 5:
+-    //   4.644 expected sold, 4.644 x 280 + 0.356 x (40 - 192) - 800 = 446.
++    //   An unsold one carries over at 280 - 192 = 88 (more than its 40c vendor price) and loses tonight's 192.
++    //   The 6th unit sells with chance P(X >= 6) = 0.652: 0.652 x 280 + 0.348 x (88 - 192) - 160 = -13.6, so the best
++    //   is 5: 4.644 expected sold, 4.644 x 280 + 0.356 x (88 - 192) - 800 = 463.
+     expect(spices.best.units).toBe(5);
+-    expect(spices.best.expectedProfit).toBe(446);
+-    expect(spices.best.expectedProfit).toBe(Math.round(refExpected({ mu: (20 - 4) * 10 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, cost: 800, n: 5 })));
++    expect(spices.best.expectedProfit).toBe(463);
++    expect(spices.best.expectedProfit).toBe(Math.round(refExpected({ mu: (20 - 4) * 10 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, cost: 800, n: 5, carry: { each: 88, cap: 20 } })));
+   });
+ 
+   it('the first craft carries the whole 20c bundle of vials: 5000 + 20 = 5020', () => {
