@@ -117,6 +117,33 @@ describe('rebuilding history from raw snapshots', () => {
     expect(sweep.lowPerDay).toBe(0);
   });
 
+  it('equipment pulls in SQL match rowPulls, hours watched are per kind, and the low estimate waits for 6 publishes', () => {
+    const dir = tempDir();
+    const db = openDb(dir, ':memory:');
+    const t0 = Date.parse('2026-11-19T08:25:00Z');
+    // Equipment: copies at 1000, 1100, 1200 (in band) and 2000 (out); one copy at 1000 sells each hour. Publishes
+    // 59.9 minutes apart, so 6 differenced publishes sum to 5.99 hours.
+    const gap = 3_594_000;
+    const stock = (h: number) => [...Array.from({ length: 8 - h }, (_, i) => L(100 + h + i, 7001, 1, 1000)), L(1, 7001, 1, 1100), L(2, 7001, 1, 1200), L(3, 7001, 1, 2000)];
+    for (let h = 0; h <= 6; h++) {
+      const at = t0 + h * gap;
+      const path = rawPath(dir, 111, 'auctions', at);
+      writeRaw(path, stock(h));
+      db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path) VALUES (111, 'auctions', ?, ?, ?, 1, 1, 1, ?)`)
+        .run(new Date(at).toUTCString(), at, at, path);
+    }
+    rebuildHistory(db);
+    const d = demandByItem(db, 111, { now: t0 + 6 * gap + 1 })!.get(7001)!;
+    expect(d.saleEvents).toBe(6);
+    expect(d.hoursWatched).toBe(6); // 5.99 rounded
+    expect(d.lowPerDay).not.toBeNull(); // 6 publishes, though under 6 hours
+    // In band after each hour: the 1000s left plus 1100 and 1200 (1200 <= 1.25 * 1000): (7 + 6 + 5 + 4 + 3 + 2) + 12 copies.
+    expect(d.pullEvents).toBeCloseTo(PULL_RATE.equipment * (27 + 12), 6);
+    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6); // equipment: the middle is left as it is
+    // 5 publishes: no low estimate yet.
+    expect(demandByItem(db, 111, { now: t0 + 5 * gap + 1 }).get(7001)!.lowPerDay).toBeNull();
+  });
+
   it('runs once per version of the sale rules', () => {
     const db = openDb(tempDir(), ':memory:');
     let runs = 0;

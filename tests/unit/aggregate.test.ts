@@ -236,3 +236,31 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(nextSeen(null, [L(3, 7, 1, 1, 'LONG')], t0, prev, false).get(3)!.postedAfter).toBeNull();
   });
 });
+
+describe('speed on a huge market', () => {
+  it('a 200,000 listing snapshot of two equipment items with heavy churn counts in seconds (the plain scan took minutes)', () => {
+    const prev: Listing[] = [], cur: Listing[] = [];
+    let id = 1;
+    for (const item of [1, 2]) for (let i = 0; i < 100_000; i++) {
+      const l = { id: id++, itemId: item, quantity: 1, unitPrice: 1000 + (i % 500), timeLeft: 'LONG' as const };
+      prev.push(l);
+      if (i % 3) cur.push(l); // a third vanish
+    }
+    for (const item of [1, 2]) for (let i = 0; i < 30_000; i++) cur.push({ id: id++, itemId: item, quantity: 1, unitPrice: 900 + (i % 600), timeLeft: 'LONG' });
+    const t = Date.now();
+    const out = aggregate(cur, prev);
+    expect(Date.now() - t).toBeLessThan(5000);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.goneListings).toBe(33_334);
+  });
+
+  it('deep equipment undercut: the closest repost at or under the price is taken, each repost once, ties by newest', () => {
+    const others = [10, 11, 12, 13, 14].map(id => L(id, 4251, 1, 800, 'LONG'));
+    const prev = [L(1, 4251, 1, 1000, 'LONG'), L(2, 4251, 1, 1000, 'LONG'), ...others];
+    // One repost at 990 for two vanished copies at 1000: one is an undercut, the other a sale (newest id matched first).
+    const verdicts = new Map<number, string>();
+    aggregate([L(20, 4251, 1, 990, 'LONG'), ...others], prev, { diag: { ageConflicts: 0, breaches: [], verdicts } });
+    expect(verdicts.get(2)).toBe('undercut');
+    expect(verdicts.get(1)).toBe('sold');
+  });
+});
