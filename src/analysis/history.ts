@@ -21,6 +21,15 @@ export const MIN_HOURS_LOW = 6;
 export const MIN_PUBLISHES_LOW = 6;
 
 /**
+ * An item whose whole front at the floor was replaced in at least this share of the window's publishes is flagged
+ * (frontReplacedHourly). Not every one: a reposter who skips one hour in 24, or one hour a buyer moves the floor,
+ * cleared the flag and the low then read 7 times the truth (round 3 test, D2).
+ */
+export const FRONT_REPLACED_SHARE = 0.8;
+/** Rows this far before the window still feed LAG, so the window's first row has the publish before it (D1). */
+const LOOKBACK_MS = 3 * 3600_000;
+
+/**
  * Share of listings sellers pull each hour where no buyer can reach, from the real snapshots (B38). A pull of the
  * stack at the front of a commodity market reads as a sale, and nothing in a snapshot tells it apart (P15).
  * Thin commodity markets are 5 listings or fewer. Equipment needs no allowance: there the counter also misses buys
@@ -154,7 +163,7 @@ function normalQuantile(p: number): number {
  * Two estimates. `unitsPerDay` is the middle one: units sold over hours watched, never projected from under
  * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses
  * (lowEstimate): the larger of a t bound on hourly net units and a Poisson bound on sale events. Under 6 differenced
- * publishes it is null, never projected, and it is null when the whole front was replaced every hour.
+ * publishes it is null, never projected, and it is null when the whole front was replaced in 80 percent of hours or more.
  * `netPerDay` is the middle less the share expected to be pulls (commodities). `hourlyMean` and `hourlySd` describe
  * hourly sold units over every watched publish, zero hours included, for the flip engine's overnight queue.
  */
@@ -188,14 +197,14 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
      WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ?
      WINDOW w AS (PARTITION BY item_stats.item_id ORDER BY item_stats.published_at)),
      r AS (SELECT a.*, ${SOLD} x, ${rate('COALESCE(prev_listings, listings)')} rate, ${events.replace(/s\.kind/g, 'kind')} ev FROM a
-       WHERE gone_units IS NOT NULL AND sold_value IS NOT NULL),
+       WHERE published_at >= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL),
      q AS (SELECT r.*, x - (CASE WHEN rate = 0 THEN 0 WHEN COALESCE(prev_listings, listings) <= 5 THEN rate * COALESCE(prev_front, units_at_floor) ELSE rate * x / (1 - rate) END) net1 FROM r)
      SELECT item_id, SUM(x) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(ev) events,
      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(kind) kind,
      SUM(rate) rate_sum, SUM(x * x) sold_sq, SUM(net1) net, SUM(net1 * net1) net_sq,
      SUM(CASE WHEN prev_floor = floor AND x > 0 AND units_at_floor > 0 AND COALESCE(new_near_floor, 0) >= units_at_floor THEN 1 ELSE 0 END) replaced
      FROM q GROUP BY item_id`)
-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string;
+    .all(houseId, since - LOOKBACK_MS, now, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string;
       rate_sum: number; sold_sq: number; net: number; net_sq: number; replaced: number }>;
   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
      FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
@@ -225,13 +234,13 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
     // One seller pulling the whole front and posting it again every hour reads as the front selling every hour
     // (tests/sim/reposter.test.ts): middle 11 to 14 times the truth. No snapshot field tells it apart, so the
     // cautious estimate is withheld for such an item.
-    const frontReplacedHourly = n >= MIN_PUBLISHES_LOW && r.replaced >= n;
+    const frontReplacedHourly = n >= MIN_PUBLISHES_LOW && r.replaced >= FRONT_REPLACED_SHARE * n;
     const unitsPerDay = (r.sold / Math.max(h, 6)) * 24;
     // Never above the middle (which is never projected from under 6 hours).
     let lowPerDay: number | null = kc.n < MIN_PUBLISHES_LOW ? null
       : Math.min(unitsPerDay, lowEstimate({ events: ev, units: r.sold, pullEvents, hours: h, publishes: n, sumNet: r.net ?? 0, sumNetSq: r.net_sq ?? 0 }));
     let lowNote: string | undefined;
-    if (frontReplacedHourly) { lowPerDay = null; lowNote = 'the whole front at the floor was replaced every hour: a seller pulling and posting again reads as sales, so no cautious figure'; }
+    if (frontReplacedHourly) { lowPerDay = null; lowNote = 'the whole front at the floor was replaced in 80 percent of hours or more: a seller pulling and posting again reads as sales, so no cautious figure'; }
     // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
     out.set(r.item_id, { unitsPerDay, hours: Math.round(h * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,

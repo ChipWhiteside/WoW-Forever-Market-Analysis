@@ -31,7 +31,7 @@ function load(snaps: Array<{ at: number; listings: Listing[] }>, kind: 'commodit
 }
 
 /** The reposter market, minute by minute for `hours`, snapshot each hour. Returns snapshots and true units bought. */
-function reposter(hours: number) {
+function reposter(hours: number, skip: number[] = []) {
   const r = rng(7);
   type L = { id: number; qty: number; price: number; posted: number; ends: number };
   const ls: L[] = [];
@@ -47,7 +47,7 @@ function reposter(hours: number) {
       last = m;
     }
     if (r() < 1 / 10) post(20, 100 + Math.floor(r() * 60), m, 100_000);
-    if (m % 60 === 30) { for (let i = ls.length - 1; i >= 0; i--) if (ls[i]!.price === 95) ls.splice(i, 1); for (let i = 0; i < 5; i++) post(20, 95, m, 480); }
+    if (m % 60 === 30 && !skip.includes(Math.floor(m / 60))) { for (let i = ls.length - 1; i >= 0; i--) if (ls[i]!.price === 95) ls.splice(i, 1); for (let i = 0; i < 5; i++) post(20, 95, m, 480); }
     if (r() < 3 / 60) {
       let q = 1 + Math.floor(-Math.log(1 - r()) * 5);
       ls.sort((a, b) => a.price - b.price || b.id - a.id);
@@ -65,7 +65,30 @@ describe('a dominant seller who pulls and posts the front again every hour', () 
     expect(d.soldUnits! / truth).toBeGreaterThan(5); // the leak this guards against
     expect(d.frontReplacedHourly).toBe(true);
     expect(d.lowPerDay).toBeNull();
-    expect(d.lowNote).toMatch(/replaced every hour/);
+    expect(d.lowNote).toMatch(/replaced in 80 percent of hours/);
+  });
+
+  it('stays flagged with more history than the window: 96 hours, read at 72, 73 and 96 hours (round 3, D1)', () => {
+    const { snaps } = reposter(96);
+    const db = load(snaps);
+    for (const h of [72, 73, 96]) {
+      const d = demandByItem(db, 111, { now: snaps[h]!.at + 1 }).get(1)!;
+      expect(d.frontReplacedHourly).toBe(true);
+      expect(d.lowPerDay).toBeNull();
+    }
+    // a 24 hour window over 48 hours of history too
+    const d = demandByItem(db, 111, { now: snaps[48]!.at + 1, hours: 24 }).get(1)!;
+    expect(d.frontReplacedHourly).toBe(true);
+  });
+
+  it('stays flagged when the reposter skips an hour now and then (round 3, D2)', () => {
+    const { snaps } = reposter(24, [10]);
+    const d = demandByItem(load(snaps), 111, { now: snaps[24]!.at + 1 }).get(1)!;
+    expect(d.frontReplacedHourly).toBe(true);
+    expect(d.lowPerDay).toBeNull();
+    const four = reposter(96, [5, 20, 40, 60, 61, 80]);
+    const d4 = demandByItem(load(four.snaps), 111, { now: four.snaps[96]!.at + 1 }).get(1)!;
+    expect(d4.frontReplacedHourly).toBe(true);
   });
 
   it('a normal simulated deep market and equipment market are never flagged', () => {
