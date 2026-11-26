@@ -135,7 +135,7 @@ export interface AggregateOpts {
   /** first sight of the previous snapshot's listings. Missing entries are listings of unknown age. */
   seen?: Map<number, Seen>;
   own?: OwnTrades;
-  /** filled in when given: bucket readings that disagree with a listing's age, and sanity bound breaches */
+  /** filled in when given: bucket readings that disagree with a listing's age, and stack growth check failures */
   diag?: Diagnostics;
 }
 

@@ -109,7 +109,7 @@ export function itemStatValues(snapshotId: number, houseId: number, publishedAt:
 /** One suspect line per publish for sale bound breaches and age readings that contradict the bucket mapping. */
 export function diagSuspects(houseId: number, kind: string, d: Diagnostics): string[] {
   const out: string[] = [];
-  if (d.breaches.length) out.push(`house ${houseId} ${kind}: units judged sold exceeded what left the house on ${d.breaches.length} item${d.breaches.length === 1 ? '' : 's'} (${d.breaches.slice(0, 3).join('; ')})`);
+  if (d.breaches.length) out.push(`house ${houseId} ${kind}: a stack grew (units judged sold exceeded what left the house) on ${d.breaches.length} item${d.breaches.length === 1 ? '' : 's'} (${d.breaches.slice(0, 3).join('; ')})`);
   if (d.ageConflicts) out.push(`house ${houseId} ${kind}: ${d.ageConflicts} vanished listings had a time left that contradicts their age (check the time left mapping)`);
   return out;
 }

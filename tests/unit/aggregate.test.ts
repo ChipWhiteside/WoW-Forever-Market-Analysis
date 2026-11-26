@@ -220,7 +220,7 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(r.newNearFloor).toBe(50);
   });
 
-  it('sanity bound: units judged sold never exceed previous plus new minus current units; a breach is logged and capped', () => {
+  it('stack growth check: units judged sold beyond previous plus new minus current units (only when a stack grows) are logged and capped', () => {
     // A stack that grew (impossible in game) makes the totals disagree with the per listing count.
     const diag = { ageConflicts: 0, breaches: [] as string[] };
     const a = aggregate([L(2, 7, 15, 100)], [L(1, 7, 10, 90), L(2, 7, 5, 100)], { commodity: true, diag })[0]!;

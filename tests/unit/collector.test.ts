@@ -149,7 +149,7 @@ describe('listing ages in the collector', () => {
     expect(diagSuspects(111, 'commodities', { ageConflicts: 0, breaches: [] })).toEqual([]);
     const s = diagSuspects(111, 'commodities', { ageConflicts: 3, breaches: ['item 7: 10 judged sold, only 0 left the house'] });
     expect(s).toHaveLength(2);
-    expect(s[0]).toMatch(/exceeded what left the house on 1 item \(item 7/);
+    expect(s[0]).toMatch(/exceeded what left the house\) on 1 item \(item 7/);
   });
 });
 
