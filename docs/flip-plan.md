@@ -14,6 +14,13 @@ Version 2, November 24, 2026 (version 1 November 23, revised after Chip's answer
 9. **Approved to build, November 24.** Blackwater house id comes later; the build runs on 111 until then.
 10. **Local for now.** This build runs on Chip's PC, started with one command. Hosting on chipwhiteside.com is a later phase; section 12 records the recommended route for then.
 
+### Decisions from Chip, November 26 (refresh and alerts)
+11. **Hourly job.** It collects each publish and counts sales, as before, and runs the flip analysis quietly, for alerts and trends. The page still shows the newest run.
+12. **Refresh button on the Flips page.** It pulls the newest publish for Chip's houses now (a 304 when nothing is new), counts sales, runs the full flip analysis and shows the result. While it works it says "Checking Blizzard..." with a spinner, then the data time and when the next publish is due.
+13. **Discord alerts only for the best.** Good at 10g or more expected overnight, Amazing at 20g, both in Settings. A flip alerts only at low or medium risk, strength 75 or more, 6 hours of watched sales when it sells on a house, a known learn source, nothing holding it back, from a complete and fresh run. No cap per hour: every qualifying flip in a run goes out, one post per run, Amazing first, split at Discord's 2,000 characters. The same flip is not sent again within 24 hours unless its expected profit grew by a quarter. Quiet hours hold alerts and send them when quiet ends, if still live. Code: `src/flips/alerts.ts`, gates in `src/rules/flips.ts` FLIP_ALERTS.
+14. **Old play alerts are off by default.** The Settings checkbox "Also send the old play alerts" (`play_alerts`) turns them back on.
+15. **Every alert is logged** in `flip_alerts` (migration 14); `npx tsx scripts/alert-review.ts` says whether each was still live at the next publishes and whether the product sold near the claim.
+
 ## 1. The goal, in one paragraph
 
 Every hour, at about 25 past, Blizzard publishes every listing on Chip's houses. Within minutes the engine reads all of it, joins it to a complete, verified database of recipes, vendors and items, and tests every way to turn copper into more copper: buy and resell, buy and craft, vendor to auction, auction to vendor, one house to the other. It throws out anything that is fake, too thin, or not worth his time, and shows one ranked list. The best flip is on top. He can scroll as far as he likes. Each one says what to buy, where, how many, what to do with it, where to sell it, for how much, and why the tool believes it.
