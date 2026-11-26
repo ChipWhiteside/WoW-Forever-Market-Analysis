@@ -70,9 +70,10 @@ export function typicalUndercut(ladder: Array<Pick<Listing, 'unitPrice'>>, claim
 }
 
 /**
- * The overnight queue (round 1 finding H4). Sale events over the night are Poisson, with a mean from the middle sales
- * estimate less the new units others post ahead of Chip overnight (never under 0), and each event takes the mean units
- * per event. Whoever is listed at or under Chip's price is served first, so the unit at queue position p (counting
+ * The overnight queue (round 1 finding H4). Sale events over the night are Poisson, with a mean from the LOW sales
+ * estimate (plan section 6: the inputs are cautious; round 6 finding 1, the middle let two repricing events read as a
+ * 505g flip) less the new units others post ahead of Chip overnight (never under 0), and each event takes the mean
+ * units per event. The middle estimate is only the card's "about N a day". Whoever is listed at or under Chip's price is served first, so the unit at queue position p (counting
  * every unit ahead of it) sells when the night brings at least ceil(p / units per event) events.
  * A vendor buys everything: every position sells.
  */
@@ -91,9 +92,12 @@ export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
   // Hourly spread measured (sale counting's hourlyMean and hourlySd over at least 6 hours): units sold over the night
   // are normal with mean H x hourly mean and sd sqrt(H) x hourly sd, less the competing new posts, never under 0.
   // One hour's run of sales is not one event, so a deep steady market is not read as a coin toss (independent sale
-  // counting test, finding 2). The Poisson event model is used otherwise.
+  // counting test, finding 2). The Poisson event model is used otherwise. Either way the mean is the low estimate's
+  // rate (never above the hourly mean), not the middle (round 6 finding 1).
+  const lowPerHour = Math.max(0, q.salesPerDayLow ?? 0) / 24;
   if (q.hourlyMean != null && q.hourlySd != null && (q.hourlyHours ?? 0) >= SELL_CHANCE.normalMinHours) {
-    const mean = Math.max(0, horizonHours * q.hourlyMean - q.newPerHour * horizonHours);
+    const perHour = q.salesPerDayLow != null ? Math.min(q.hourlyMean, lowPerHour) : q.hourlyMean;
+    const mean = Math.max(0, horizonHours * perHour - q.newPerHour * horizonHours);
     const sd = Math.sqrt(horizonHours) * Math.max(0, q.hourlySd);
     const at = (pos: number) => {
       if (pos <= 0) return 1;
@@ -105,8 +109,8 @@ export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
     return { at, lastPos, meanEvents: mean, unitsPerEvent: 1 };
   }
   const upe = q.unitsPerEvent != null && q.unitsPerEvent > 0 ? q.unitsPerEvent : 1;
-  const midUnits = ((q.salesPerDayMid ?? 0) * horizonHours) / 24;
-  const mu = Math.max(0, midUnits - q.newPerHour * horizonHours) / upe;
+  const lowUnits = lowPerHour * horizonHours;
+  const mu = Math.max(0, lowUnits - q.newPerHour * horizonHours) / upe;
   const maxJ = poissonUpper(mu, SELL_CHANCE.negligible);
   const tail = poissonTail(mu, maxJ);
   const lastPos = maxJ > 1 ? Math.floor(upe * (maxJ - 1) + 1e-9) : 0;

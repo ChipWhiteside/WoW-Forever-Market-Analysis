@@ -192,6 +192,12 @@ export const TRANSMUTE_FALLBACK = { pattern: /^Transmute:/i, cooldownMs: 24 * 36
  */
 export const KNOWN_TOOLS: Record<string, string> = { 'Refined Deeprock Salt': 'Salt Shaker' };
 
+/**
+ * A cooldown recipe's vendor path waits while its auction path is still learning, when the product's cheapest listing
+ * is over this many times the vendor price (round 6 finding 3). The cooldown is spent either way. First guess.
+ */
+export const COOLDOWN_AUCTION = { floorMultiple: 2 };
+
 /** A limited stock vendor is assumed to hold one bundle until stock sizes are recorded (EG Link has no counts). */
 export const VENDOR_LIMITED_BUNDLES = 1;
 

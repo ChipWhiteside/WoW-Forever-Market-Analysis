@@ -1,4 +1,4 @@
-import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
+import { COOLDOWN_AUCTION, CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
 import type { TraceEntry } from './market.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES, type Place } from '../datasets/places.ts';
@@ -122,6 +122,23 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
         reason: `its cooldown is worth more on the auction house: about ${money(better.best.expectedProfit)} there`, code: 'auction pays more' });
       evals.delete(f.key);
       flips.splice(i, 1);
+      continue;
+    }
+    // While the auction path is still learning, a cooldown is not spent at a vendor whose price is under half of the
+    // cheapest listing (round 6 finding 3: Refined Deeprock Salt at 10s while 170 listings sat at 38g).
+    if (f.recipeId != null && recipes.get(f.recipeId)?.cooldownMs && !better) {
+      const learning = inputs.houses.find(h => {
+        const floor = inputs.listings.get(h.id)?.get(f.itemId)?.[0]?.unitPrice;
+        if (floor == null || !(floor > f.sellQuote.netEach * COOLDOWN_AUCTION.floorMultiple)) return false;
+        const q = book.quote(h, f.itemId);
+        return !q || q.hoursWatched < LEARNING_HOURS || q.lowPending;
+      });
+      if (learning) {
+        heldBack.push({ key: f.key, family: f.family, itemId: f.itemId, name: f.name, perItem: f.perItem, sellHouseId: null, recipeId: f.recipeId,
+          reason: COOLDOWN_LEARNING, code: 'auction likely pays more' });
+        evals.delete(f.key);
+        flips.splice(i, 1);
+      }
     }
   }
 
@@ -169,7 +186,7 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     setup = { ...setupFor(c.recipe, inputs)!, ...professionsNeeded(c.recipe, e.walk.trace, step.traceEnd, recipes), ...toolsFor(c.recipe) };
     if (setup.needs && setup.needs.length > 1) notes.push(`${setup.needsText}: ${setup.needs.length} professions (an alt may cover one)`);
     if (setup.unknown) {
-      notes.push(UNKNOWN_LEARN);
+      notes.push(setup.where ?? UNKNOWN_LEARN);
       for (const o of e.options) if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
     }
     if (setup.toolsNote) notes.push(setup.toolsNote);
@@ -207,6 +224,8 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
  *   2. The item that teaches it: recipes.teach_item_id (linked by id through the game's ItemEffect table), else a
  *      name match with any prefix (Recipe:, Pattern:, Plans:, Formula:, Schematic:, Blueprint:, Manual:, Design:).
  *      Its cheapest price on Chip's houses when listed, else its vendor offer; both are named when both exist.
+ *      A teaching item with no vendor, no listing and no loot record has no known source: the learn source is unknown
+ *      and a risk (round 6 finding 2, Felblood Soul Bag's bind on pickup pattern).
  *   3. Only Horde trainers teach it (learn_source trainer_horde_only): said so plainly.
  */
 export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
@@ -232,6 +251,9 @@ export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
     const extra = { teachItem: { id: itemId, name }, auctionPrice: floor, auctionHouseId: houseId };
     const prices = [onAuction, fromVendor].filter(Boolean).join(', or ');
     const cost = Math.min(floor ?? Infinity, vendor?.unitPrice ?? Infinity);
+    if (!prices && !inputs.lootItems?.has(itemId)) {
+      return { skill: r.profession, rank: r.learnSkill, cost: null, where: `${UNKNOWN_LEARN} (${UNKNOWN_TEACH_SOURCE})`, places: [], ...extra, unknown: true };
+    }
     return { skill: r.profession, rank: r.learnSkill, cost: Number.isFinite(cost) ? cost : null, where: prices ? `${name}: ${prices}` : `${name} (no seller seen)`,
       places: vendor && (floor == null || vendor.unitPrice <= floor) ? vendor.places : [], ...extra };
   }
@@ -282,6 +304,10 @@ export function toolsFor(r: FlipRecipe): { tools?: string[]; toolsNote?: string 
 
 /** The card line and risk driver for a recipe nobody knows how to learn yet (round 2 finding H4). */
 export const UNKNOWN_LEARN = 'how to learn it is not known yet';
+/** A cooldown vendor path held back while the auction path learns (round 6 finding 3). */
+export const COOLDOWN_LEARNING = 'the auction house likely pays more; waiting for sales data';
+/** Why, when the only lead is a teaching item nothing sells or drops (round 6 finding 2). */
+export const UNKNOWN_TEACH_SOURCE = 'the recipe item has no known source';
 
 /**
  * The shared pass. Walk the ranked list top down; each flip takes the reagent listings, vendor stock, cooldowns, sale

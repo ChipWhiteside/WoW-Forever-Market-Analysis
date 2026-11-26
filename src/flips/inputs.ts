@@ -98,6 +98,8 @@ export interface FlipInputs {
   /** teaching items ("Recipe: Cerulean Dye", "Blueprint: Tanning Rack") by the normalized name they teach (recipeKey);
    * only a fallback for recipes whose teach_item_id is not filled */
   recipeItems: Map<string, number>;
+  /** teaching items with a loot record (a creature or object drops them); absent in fixtures means none */
+  lootItems?: Set<number>;
   /** recent: keys seen within the last publish gap; openHours: distinct earlier hours open in the last 72, this hour not counted */
   history: { recent: Set<string>; openHours: Map<string, number> };
   settings: FlipSettings;
@@ -241,6 +243,9 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     const m = TEACH_PREFIX.exec(it.name);
     if (m && !recipeItems.has(recipeKey(m[2]!))) recipeItems.set(recipeKey(m[2]!), it.id);
   }
+  // Teaching items something drops (round 6 finding 2): a recipe item with no vendor, no listing and no drop has no known source.
+  const teach = new Set<number>([...recipeItems.values(), ...recipes.map(r => r.teachItemId).filter((x): x is number => x != null)]);
+  const lootItems = new Set((db.prepare('SELECT DISTINCT item_id FROM loot').all() as Array<{ item_id: number }>).map(r => r.item_id).filter(id => teach.has(id)));
 
   const recent = new Set((db.prepare('SELECT DISTINCT key FROM flip_history WHERE at >= ? AND at < ?').all(now - OPENING.newWindowHours * 3600_000, now) as Array<{ key: string }>).map(r => r.key));
   // Distinct earlier clock hours only, the 71 before this one: two runs in one hour count once, and this hour is added
@@ -254,7 +259,7 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const gold = num(setting(GOLD_SETTING));
   const session = num(setting(CRAFT_SESSION_SETTING));
   return {
-    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, newPosts, drivers: demandDrivers(db), trainers, recipeItems,
+    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, newPosts, drivers: demandDrivers(db), trainers, recipeItems, lootItems,
     history: { recent, openHours },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
       craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT, myProfessions: parseProfessions(setting(MY_PROFESSIONS_SETTING), notes) },
