@@ -77,7 +77,13 @@ export function SettingsPage() {
             ))}
           </div>
         </div>
-        <button onClick={() => { const { min_profit_each_s, profit_bar_s, ...rest } = form; save.mutate({ ...rest, ...(min_profit_each_s ? { min_profit_each: String(Math.round(Number(min_profit_each_s) * 100)) } : {}), ...(profit_bar_s ? { profit_bar: String(Math.round(Number(profit_bar_s) * 100)) } : {}) }); }} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
+        {/* Flips settings (November 26), added below everything already agreed. */}
+        {field('craft_session_minutes', 'Crafting session, in minutes', 'the best amount on a craft stays inside one session. Default 30')}
+        <label className="block text-sm"><span className="font-semibold">Time rate, silver per hour</span><span className="ml-2 text-xs text-muted">charged against each flip's minutes. Default 0: you list and sleep</span>
+          <input value={form.time_rate_s ?? (form.time_rate ? String(Number(form.time_rate) / 100) : '')} onChange={e => setForm({ ...form, time_rate_s: e.target.value, time_rate: e.target.value ? String(Math.round(Number(e.target.value) * 100)) : '' })} className="mt-1 w-32 rounded-lg border border-line bg-page px-3 py-2" /></label>
+        <label className="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" checked={!!form.my_professions} onChange={e => setForm({ ...form, my_professions: e.target.checked ? (form.professions || '{}') : '' })} />
+          <span><span className="font-semibold">Only craft sub steps in my professions</span><span className="ml-2 text-xs text-muted">when on, a step in a profession you lack is bought instead. Leave off if alts cover other professions</span></span></label>
+        <button onClick={() => { const { min_profit_each_s, profit_bar_s, time_rate_s: _t, ...rest } = form; save.mutate({ ...rest, ...(min_profit_each_s ? { min_profit_each: String(Math.round(Number(min_profit_each_s) * 100)) } : {}), ...(profit_bar_s ? { profit_bar: String(Math.round(Number(profit_bar_s) * 100)) } : {}) }); }} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
       </Card>
       <p className="mt-8 text-xs text-muted">Vendor, loot and item name data from <a className="underline" href="https://efficient.games">Efficient Games</a>, licensed under CC BY 4.0, merged across builds. Recipe skill thresholds from the game's SkillLineAbility table via wago.tools. Auction and item data from the Blizzard API.</p>
     </>
