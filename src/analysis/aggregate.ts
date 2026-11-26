@@ -401,15 +401,15 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
     let goneListings = 0, goneUnits = 0, expiring = 0, nearFloor = 0, notSoldNear = 0, soldUnits = 0, soldValue = 0, soldEvents = 0;
     let sweepHigh: number | null = null;
     if (commodity) {
-      // One event per unbroken run of bought stacks in buy order: a stack still up whole, or one that left unbought,
-      // ends a run.
+      // One event per unbroken run of bought stacks in buy order. Only a stack still up whole ends a run: a stack that
+      // left unbought (ran out, pulled) was simply gone when the buyer came, so one buyer can have taken both sides.
       const verdict = new Map(lostList.map(e => [e.l.id, e.verdict]));
       const order = prevL.filter(l => l.unitPrice != null).sort((a, b) => buysFirst(a, b) ? -1 : buysFirst(b, a) ? 1 : 0);
       let inRun = false;
       for (const l of order) {
-        const sold = verdict.get(l.id) === 'sold';
-        if (sold && !inRun) soldEvents++;
-        inRun = sold;
+        const v = verdict.get(l.id);
+        if (v === 'sold') { if (!inRun) soldEvents++; inRun = true; }
+        else if (v == null) inRun = false;
       }
     }
     for (const e of lostList) {
