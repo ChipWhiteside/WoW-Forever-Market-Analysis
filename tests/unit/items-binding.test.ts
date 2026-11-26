@@ -131,9 +131,27 @@ describe('binding against ItemSparse.Bonding (B23)', () => {
     db.exec(`INSERT INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', '1.60.1.71037', 0, 0, 'old')`);
     const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
     await resolveItems(client, db, [6947], { game });
-    const line = checkItemsAfterRefresh(db, dir);
+    const line = await checkItemsAfterRefresh(db, dir);
     expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947)');
     expect((db.prepare(`SELECT note FROM datasets WHERE name = 'gamedata'`).get() as { note: string }).note).toBe(`wago wowf tables; ${line}`);
+  });
+});
+
+describe('the item check refetches recipe products and disagreeing items (round 3 D5)', () => {
+  it('a hotfix on a recipe product fetched an hour ago is seen the same day', async () => {
+    const dir = tempDir();
+    const wago = join(dir, 'datasets', 'wago', '1.60.1.71037');
+    mkdirSync(wago, { recursive: true });
+    for (const f of readdirSync(FIXTURE_DIR)) copyFileSync(join(FIXTURE_DIR, f), join(wago, f));
+    const db = openDb(dir, ':memory:');
+    // Before the hotfix: unbound, sells for 5, as ItemSparse says; fetched an hour ago, so the 20 hour refresh skips it.
+    db.exec(`INSERT INTO items (id, name, binding, sell_price, status, fetched_at, data_source) VALUES (6947, 'Instant Poison', NULL, 5, 200, ${Date.now() - 3600_000}, 'forever');
+      INSERT INTO recipes (id, name, profession, crafted_item_id, qty_min, qty_max, live, kind, source) VALUES (4807, 'Instant Poison', 'Poisons', 6947, 1, 1, 1, 'profession', 'wago');`);
+    expect(await checkItemsAfterRefresh(db, dir)).toBe('binding disagrees with ItemSparse on 0 of 1; sell price disagrees on 0 of 1');
+    const { client, calls } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
+    const line = await checkItemsAfterRefresh(db, dir, () => {}, client);
+    expect(calls).toEqual(['6947:static-forever-us']);
+    expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947); refetched 1 of 1 (disagreeing items and recipe products), 1 sell price changes, 0 errors');
   });
 });
 

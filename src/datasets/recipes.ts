@@ -415,17 +415,26 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
 let lastGame: GameData | null = null;
 
 /**
- * Cross check the item catalog against ItemSparse after the daily vendor price refresh, so the live API's binding and
- * sell price are today's (a hotfix made 20 Rogue poisons bind on pickup with sell price 0 while ItemSparse still says
- * unbound). Both disagreement counts go in the log line and the gamedata dataset note.
+ * Cross check the item catalog against ItemSparse after the daily vendor price refresh. The refresh skips rows
+ * fetched in the last 20 hours, so first refetch from Blizzard every item that disagrees and every recipe product,
+ * then compare again: a server hotfix (20 Rogue poisons bound on pickup with sell price 0 on November 25) is seen the
+ * same day. Both disagreement counts go in the log line and the gamedata dataset note.
  */
-export function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}): string {
+export async function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}, client?: BlizzardClient): Promise<string> {
   const game = lastGame ?? loadNewestCachedGameData(dataDir, { log });
   if (!game) throw new Error('no game tables cached yet, the recipes step fills them');
-  const c = applyItemSparse(db, game);
+  let c = applyItemSparse(db, game);
+  let refetched = '';
+  if (client) {
+    const ids = new Set<number>([...c.disagree.map(d => d.id), ...c.sellDisagree.map(d => d.id)]);
+    for (const r of db.prepare('SELECT DISTINCT crafted_item_id AS id FROM recipes WHERE crafted_item_id IS NOT NULL').all() as Array<{ id: number }>) ids.add(r.id);
+    const res = await resolveItems(client, db, [...ids], { maxAgeMs: 0, game });
+    refetched = `; refetched ${res.fetched} of ${ids.size} (disagreeing items and recipe products), ${res.priceChanges.length} sell price changes, ${res.errors} errors`;
+    c = applyItemSparse(db, game);
+  }
   const sample = (a: Array<{ id: number }>) => a.slice(0, 8).map(x => x.id).join(', ');
   const text = `binding disagrees with ItemSparse on ${c.disagree.length} of ${c.compared}${c.disagree.length ? ` (${sample(c.disagree)})` : ''}; `
-    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}`;
+    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}${refetched}`;
   db.prepare(`UPDATE datasets SET note = ? WHERE name = 'gamedata'`).run(gamedataNote(game, text));
   return text;
 }

@@ -128,8 +128,9 @@ export interface SparseCheck {
 /**
  * Copy bonding, stack size and vendor bundle size from the game's item table onto every catalog row it knows,
  * and cross check Blizzard's binding (B23) and sell price against ItemSparse where both exist. The binding column
- * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. Run it after the
- * vendor price refresh, so the live API side is today's: a server hotfix shows up as a disagreement here.
+ * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. The vendor price
+ * refresh only refetches rows older than 20 hours, so on its own this can compare against a day old API answer;
+ * the daily item check (checkItemsAfterRefresh) refetches the disagreeing items and every recipe product first.
  */
 export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCheck {
   sparseCache = game.items;
