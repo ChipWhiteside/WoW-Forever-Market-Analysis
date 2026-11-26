@@ -204,19 +204,37 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   };
   const at = (n: number) => option('best', Math.max(1, Math.min(n, Math.max(1, available))));
   if (maxN <= 0) return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0] ? w.steps[0].cost / w.steps[0].units : null, sessionCapped: false, options: [], best: null, bestStep: -1, at };
-  // Best: the quantity with the most expected profit (ties go to fewer units), inside one crafting session for a
-  // craft (at least one craft). Unbounded: the same without the session, for the "most" row of a vendor sale.
-  let bestN = 1, bestE = -Infinity, freeN = 1, freeE = -Infinity;
+  // Best (coordinator decision after round 4): the quantity with the most expected profit among those whose risk is
+  // not high, inside one crafting session for a craft (at least one craft); ties go to fewer units. When no quantity
+  // qualifies, the smallest with a positive expected profit, and the flip stays high risk. The quantity with the most
+  // expected profit regardless of risk (inside the session) becomes the "most" row when larger: "most profit, higher
+  // risk". Unbounded by the session: freeN, for the session note and a vendor sale's "most" row.
+  const badNet = badCaseNet(c, q);
+  const isHigh = (n: number, cost: number, e: number) => {
+    if (toVendor) return false;
+    const loss = Math.max(0, cost - revenue(n, badNet, SALES_SHORTFALL, CARRYOVER.badShare).value);
+    return Math.round(loss) > Math.round(e) || tonight(n) < n * RISK.tonightHigh;
+  };
+  let bestN = 0, bestE = -Infinity, topN = 1, topE = -Infinity, freeN = 1, freeE = -Infinity, firstPositive = 0;
   for (let n = 1; n <= maxN; n++) {
     const { cost, s } = costAt(n);
     const e = expectedAt(n, cost, s);
     if (e > freeE + 1e-9) { freeE = e; freeN = n; }
-    if ((n === 1 || s.castMinutes <= session + 1e-9) && e > bestE + 1e-9) { bestE = e; bestN = n; }
+    const inSession = n === 1 || s.castMinutes <= session + 1e-9;
+    if (!inSession) continue;
+    if (e > topE + 1e-9) { topE = e; topN = n; }
+    if (!firstPositive && Math.round(e) > 0) firstPositive = n;
+    if (e > bestE + 1e-9 && !isHigh(n, cost, e)) { bestE = e; bestN = n; }
   }
-  const sessionCapped = freeN > bestN;
-  // The most: every unit with a real chance of selling (an auction), or all that still pays (a vendor), never past MAX_UNITS.
-  const mostN = Math.min(MAX_UNITS, toVendor ? Math.max(bestN, freeN) : Math.max(bestN, Math.min(maxN, Math.ceil(cap))));
-  const options = [option('small', Math.min(SMALL_QUANTITY, maxN)), option('best', bestN), option('most', mostN)];
+  const riskCapped = bestN === 0 || bestN < topN;
+  if (bestN === 0) bestN = firstPositive || topN;
+  const sessionCapped = freeN > topN;
+  // The most: the most expected profit regardless of risk when larger than the best (an auction), or all that still
+  // pays (a vendor), never past MAX_UNITS.
+  const mostN = Math.min(MAX_UNITS, toVendor ? Math.max(bestN, freeN) : Math.max(bestN, topN));
+  const most = option('most', mostN);
+  if (!toVendor && mostN > bestN && riskCapped) most.note = most.note ? `most profit, higher risk; ${most.note}` : 'most profit, higher risk';
+  const options = [option('small', Math.min(SMALL_QUANTITY, maxN)), option('best', bestN), most];
   return { walk: w, cap, depositEach, maxN, goldCapped, sessionCapped, firstUnitCost: w.steps[0]!.cost / w.steps[0]!.units, options, best: options[1]!, bestStep: stepFor(w, bestN), at };
 }
 
@@ -233,10 +251,8 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
   const drivers: string[] = [];
   let netBad = q.netEach, daysToSell: number | null = 0;
   if (q.houseId != null) {
-    const drop = Math.round(q.claimPrice * (1 - RISK.unknownLowDrop));
     const covered = (q.lowCoverHours ?? q.hoursWatched) >= RISK.lowCoverHours;
-    const low = covered && q.low3d != null ? q.low3d : Math.min(q.low3d ?? Infinity, drop);
-    netBad = netPerUnit(c.sellHouse!.faction, Math.min(low, q.undercutPrice));
+    netBad = badCaseNet(c, q);
     daysToSell = q.salesPerDayLow ? Math.round(((q.ahead + n) / q.salesPerDayLow) * 10) / 10 : null;
     if ((q.cv ?? 0) > RISK.jumpyCv) drivers.push('the price jumps around');
     if ((q.provenSales ?? 0) < RISK.fewSales) drivers.push('few sales seen');
@@ -270,6 +286,18 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
   else if (auction && sold < n * RISK.tonightMedium && level === 'low') level = 'medium';
   if (auction && sold < n * RISK.tonightMedium) drivers.push(`only ${Math.round(sold * 10) / 10} of ${n} expected to sell tonight`);
   return { atStake: Math.round(cost + n * depositEach), badCaseLoss, halfSalesProfit, deposits: Math.round(n * depositEach), daysToSell, level, drivers };
+}
+
+/**
+ * The net per unit in the bad case: the price at its 3 day low, or a 25 percent drop until 72 hours of floors are
+ * watched (a lower low seen is used), never above Chip's post price. A vendor's price is fixed.
+ */
+export function badCaseNet(c: Candidate, q: SellQuote): number {
+  if (q.houseId == null) return q.netEach;
+  const drop = Math.round(q.claimPrice * (1 - RISK.unknownLowDrop));
+  const covered = (q.lowCoverHours ?? q.hoursWatched) >= RISK.lowCoverHours;
+  const low = covered && q.low3d != null ? q.low3d : Math.min(q.low3d ?? Infinity, drop);
+  return netPerUnit(c.sellHouse!.faction, Math.min(low, q.undercutPrice));
 }
 
 /** Whether unsold units carry over to tomorrow: an auction sale of a product with proven demand (CARRYOVER). */
