@@ -182,7 +182,9 @@ export class SellBook {
     const atPostOnly = np ? newPerDayAt(np, itemId, postBefore) : null;
     // While the floor falls, every post under the floor of its hour ends up under Chip: the larger count is used.
     const atPost = atPostOnly != null && driftDrop > 0 ? Math.max(atPostOnly, undercutPerDay(np, itemId) ?? 0) : atPostOnly;
-    const low = lowPerDay(d), fresh = np ? { value: atPost ?? 0, measured: atPost != null } : newPerDay(d);
+    // Raw publishes under 6 hours (a pair whose raw file is gone): sale counting's near the floor count over its own
+    // 6 hours or more is still a measurement; only when neither is there is competition unmeasured (and held back).
+    const low = lowPerDay(d), fresh = atPost != null ? { value: atPost, measured: true } : newPerDay(d);
     const horizon = this.inputs.settings.horizonHours;
     const gates: string[] = [];
     // The same "sold near" rule judgeSell uses: at least one sale seen and a price it happened at.

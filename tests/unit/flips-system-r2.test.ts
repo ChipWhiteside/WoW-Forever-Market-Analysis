@@ -74,8 +74,11 @@ describe('A: floor drift', () => {
 });
 
 describe('B: competition not measured is learning, never zero', () => {
-  it('raw publishes under 6 hours hold the auction flip back', () => {
-    const inputs = inputsOf(ceruleanAtBens());
+  it('raw publishes under 6 hours fall back to sale counting\'s count; with neither the auction flip is held back', () => {
+    const fallback = inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 24 } }));
+    fallback.newPosts = new Map([[111, { hours: 4, byItem: new Map() }]]);
+    expect(new SellBook(fallback).quote(A, DYE)!).toMatchObject({ newPerHour: 1, newDerived: false });
+    const inputs = inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: undefined } }));
     inputs.newPosts = new Map([[111, { hours: 4, byItem: new Map() }]]);
     const r = run(inputs);
     expect(r.flips.find(f => f.key === DYE_KEY)).toBeUndefined();
