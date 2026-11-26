@@ -179,7 +179,10 @@ export class SellBook {
     // Measured at the post price before any drift: lowering the price for a falling floor must not hide the very
     // undercutters that make it fall (they keep posting under whatever the floor is).
     const postBefore = driftDrop > 0 ? Math.max(post, judged.price - typicalUndercut(ls, judged.price)) : post;
-    const atPostOnly = np ? newPerDayAt(np, itemId, postBefore) : null;
+    // A listing above Chip's price sits behind him in the queue; the 5% margin only counts while the floor falls,
+    // when those sellers will undercut again overnight (November 26 decision: 1.05 everywhere cut the list from 279 to 85,
+    // dropping steady markets such as Mooncloth).
+    const atPostOnly = np ? newPerDayAt(np, itemId, postBefore, driftDrop > 0 ? NEW_POSTS.competeShare : 1) : null;
     // While the floor falls, every post under the floor of its hour ends up under Chip: the larger count is used.
     const atPost = atPostOnly != null && driftDrop > 0 ? Math.max(atPostOnly, undercutPerDay(np, itemId) ?? 0) : atPostOnly;
     // Raw publishes under 6 hours (a pair whose raw file is gone): sale counting's near the floor count over its own

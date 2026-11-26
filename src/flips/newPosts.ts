@@ -34,9 +34,9 @@ export function undercutPerDay(np: NewPosts | undefined, itemId: number): number
  * watched (not measured yet). A seller who undercuts the floor of his own hour posts just above a price that has since
  * fallen; counting only posts at or under today's price read such a war as 0 (whole system review round 2, defect A).
  */
-export function newPerDayAt(np: NewPosts | undefined, itemId: number, post: number): number | null {
+export function newPerDayAt(np: NewPosts | undefined, itemId: number, post: number, share = NEW_POSTS.competeShare): number | null {
   if (!np || np.hours < NEW_POSTS.minHours) return null;
-  const top = post * NEW_POSTS.competeShare;
+  const top = post * share;
   let units = 0;
   for (const [p, u] of np.byItem.get(itemId) ?? []) { if (p > top) break; units += u; }
   return (units / np.hours) * 24;
