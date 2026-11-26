@@ -117,6 +117,7 @@ describe('H4: a recipe nobody knows how to learn yet', () => {
     expect(f.setup).toMatchObject({ where: UNKNOWN_LEARN, unknown: true });
     expect(f.notes).toContain(UNKNOWN_LEARN);
     expect(f.best.risk.drivers).toContain(UNKNOWN_LEARN);
+    expect(f.options.every(o => o.risk.level !== 'low')).toBe(true); // an unknown learn source is never low risk
     // a known source is not flagged
     const g = ceruleanAtBens();
     g.recipes = g.recipes!.map(r => ({ ...r, learnSource: 'auto' }));

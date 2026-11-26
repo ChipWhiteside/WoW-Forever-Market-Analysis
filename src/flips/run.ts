@@ -187,7 +187,11 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     if (setup.needs && setup.needs.length > 1) notes.push(`${setup.needsText}: ${setup.needs.length} professions (an alt may cover one)`);
     if (setup.unknown) {
       notes.push(setup.where ?? UNKNOWN_LEARN);
-      for (const o of e.options) if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
+      // Not knowing how to learn the recipe makes the whole flip a gamble on the setup, so it is never low risk.
+      for (const o of e.options) {
+        if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
+        if (o.risk.level === 'low') o.risk.level = 'medium';
+      }
     }
     if (setup.toolsNote) notes.push(setup.toolsNote);
   }
