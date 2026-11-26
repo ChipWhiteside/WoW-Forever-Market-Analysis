@@ -57,7 +57,7 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   frontReplacedHourly?: boolean;
   lowNote?: string;
   /** deep commodity hours whose units judged sold may be a same hour repost (repricedRow): the floor fell and about as
-   * many units came back near it. lowPerDay counts them as 0 sold; unitsPerDay keeps them (B46). */
+   * many units came back near it. lowPerDay counts them as 0 sold; unitsPerDay keeps them (B50). */
   repricedHours?: number;
   /** unitsPerDay less the units those expected pulls add: the middle estimate with the known leak taken out */
   netPerDay?: number;

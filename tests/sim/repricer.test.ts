@@ -4,7 +4,7 @@
  * Ten other sellers sit above him; real buyers take a few units an hour from the front. Every few hours he pulls
  * what is left of his stack and posts about as many units 8 to 15 percent cheaper. The pulled stack vanishes with a
  * whole stack behind it, so the counter reads it as bought. No snapshot signal tells this from buys followed by a
- * cheaper restock (B46), so the middle keeps it and the cautious estimate leaves such hours out (repricedRow).
+ * cheaper restock (B50), so the middle keeps it and the cautious estimate leaves such hours out (repricedRow).
  */
 import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';

@@ -63,7 +63,7 @@ export function rowNet(kind: 'commodities' | 'auctions', prevListings: number, p
  * A deep commodity row (over 5 listings) whose units judged sold may be a seller pulling his stacks and posting them
  * again cheaper in the same hour (round 2 system review, Clam Linguine: 80 units "sold" at 23s while 86 came back at
  * 18s). The floor fell, and the new units near the floor hold the units judged sold to within 25 percent.
- * No snapshot signal tells such a repost from buys followed by a cheaper restock (B46): on the real snapshots of
+ * No snapshot signal tells such a repost from buys followed by a cheaper restock (B50): on the real snapshots of
  * 8 houses the same shape shows on 2.7 percent of item hours whose front was certainly bought (a partly bought stack
  * behind it) and 3.2 percent of undecided ones. So it never erases a sale from the middle; the cautious estimate
  * counts the hour as 0 sold instead (repricedHours), which costs about 3.6 percent of real deep commodity units.
