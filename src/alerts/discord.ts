@@ -1,6 +1,7 @@
 import { money } from '../format/money.ts';
 import type { DB } from '../store/db.ts';
 import { ALERTS } from '../rules/thresholds.ts';
+import { PLAY_ALERTS_SETTING } from '../rules/flips.ts';
 import type { Play } from '../detectors/types.ts';
 
 const ALERTING = new Set(['vendor_dump', 'vendor_supply', 'underpriced', 'cross_house', 'sell_now']);
@@ -9,7 +10,7 @@ export const LABEL: Record<string, string> = {
   craft: 'Craft', sell_now: 'Sell what you hold', world_drop: 'World drop',
 };
 
-export interface AlertSettings { profitBar: number; quietStart: number; quietEnd: number; timeZone: string; enabled: Set<string> }
+export interface AlertSettings { profitBar: number; quietStart: number; quietEnd: number; timeZone: string; enabled: Set<string>; playAlerts: boolean }
 
 export function alertSettings(db: DB): AlertSettings {
   const get = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value;
@@ -19,6 +20,8 @@ export function alertSettings(db: DB): AlertSettings {
     quietEnd: Number(get('quiet_end') ?? ALERTS.quietEndHour),
     timeZone: get('time_zone') ?? 'America/Denver',
     enabled: new Set(JSON.parse(get('alert_detectors') ?? JSON.stringify([...ALERTING])) as string[]),
+    // Off by default since November 26: Discord carries only the best flips (src/flips/alerts.ts) unless Chip turns these on.
+    playAlerts: get(PLAY_ALERTS_SETTING) === '1',
   };
 }
 
@@ -69,6 +72,7 @@ export async function sendDiscord(webhookUrl: string, content: string, fetchFn: 
 export async function alertCycle(db: DB, webhookUrl: string | null, candidates: Play[], pinned: Set<number>, opts: { now?: number; fetchFn?: typeof fetch; appUrl?: string | null } = {}): Promise<{ sent: number; skipped: string | null }> {
   const now = opts.now ?? Date.now();
   const s = alertSettings(db);
+  if (!s.playAlerts) return { sent: 0, skipped: 'play alerts off' };
   const chosen = selectForAlert(db, candidates, pinned, s, now);
   if (chosen.length === 0) return { sent: 0, skipped: 'nothing new' };
   if (isQuiet(now, s)) return { sent: 0, skipped: 'quiet hours' };

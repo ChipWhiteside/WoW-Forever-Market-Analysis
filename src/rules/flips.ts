@@ -225,3 +225,19 @@ export const VENDOR_MAX_STANDING = 5;
 
 /** Cheap listing: the existing O3 rule, a listing at least 30 percent under the typical floor (src/rules/thresholds.ts). */
 export { UNDERPRICED as CHEAP_LISTING } from './thresholds.ts';
+
+/**
+ * Discord alerts for the best flips only (Chip, November 26). Good at 10g expected overnight, Amazing at 20g, both
+ * editable in Settings in gold. A flip alerts only at low or medium risk, strength 75 or more, 6 hours of watched sales
+ * when it sells on a house, a known learn source, nothing holding it back, from a complete run on data under 90 minutes
+ * old. The same key is not sent again within 24 hours unless its expected profit grew by 25 percent. A Discord post holds
+ * at most 2,000 characters, so a long run splits into several posts.
+ */
+export const FLIP_ALERTS = {
+  goodGold: 10, amazingGold: 20, goodSetting: 'alert_good_gold', amazingSetting: 'alert_amazing_gold',
+  minStrength: 75, minHoursWatched: LEARNING_HOURS, freshMinutes: 90,
+  repeatHours: 24, regrowth: 0.25, maxChars: 2000,
+} as const;
+
+/** The old play alerts (src/alerts/discord.ts) stay off unless this setting is '1' (Chip, November 26). */
+export const PLAY_ALERTS_SETTING = 'play_alerts';

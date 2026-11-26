@@ -233,6 +233,23 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE item_stats ADD COLUMN sold_events INTEGER;
   `,
+  // 14. Every flip alert sent to Discord, so the Good and Amazing bars can be tuned (Chip, November 26)
+  `
+  CREATE TABLE flip_alerts (
+    key TEXT NOT NULL,                -- the flip key, as in flips
+    at INTEGER NOT NULL,              -- when the alert was sent
+    tier TEXT NOT NULL,               -- good | amazing
+    expected_profit INTEGER NOT NULL, -- copper, expected overnight at the best amount
+    per_item INTEGER NOT NULL,        -- copper profit per item
+    units INTEGER NOT NULL,           -- the best amount
+    data_at INTEGER NOT NULL,         -- the publish time the flip was computed from
+    item_id INTEGER,                  -- the product, for the review of whether it sold near the claim
+    house_id INTEGER,                 -- the house it sells on, null when it sells to a vendor
+    claim_price INTEGER,              -- copper per item the flip claimed it sells at, before the cut
+    PRIMARY KEY (key, at)
+  );
+  CREATE INDEX flip_alerts_at ON flip_alerts (at);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

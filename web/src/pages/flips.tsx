@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { ago } from '../lib/format';
 import { mapHref, type Place } from '../lib/zones';
@@ -55,6 +55,8 @@ export function FlipsPage() {
           <span className="text-muted">{run.report.items.toLocaleString()} items, {run.report.recipesTried.toLocaleString()} recipes checked in {(run.ms / 1000).toFixed(1)}s</span>
           {run.complete ? <Chip tone="good">complete</Chip> : <Chip tone="bad">incomplete: {run.report.incompleteReason ?? 'see Health'}</Chip>}
         </> : <span className="text-muted">No flip run yet. The first one happens at the next publish, about 25 past the hour.</span>}
+        {/* Refresh (Chip, November 26), added beside the run status; nothing above is moved. */}
+        <RefreshButton />
       </Card>
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
@@ -95,6 +97,42 @@ export function FlipsPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+/** "Data from 12 min ago; Blizzard publishes about 25 past each hour, next one about 13:25". */
+export function dataTimeLine(dataAt: number, now = Date.now()): string {
+  const minute = new Date(dataAt).getMinutes();
+  let next = dataAt + 3600_000;
+  while (next <= now) next += 3600_000;
+  const hhmm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  return `Data from ${ago(dataAt)}; Blizzard publishes about ${minute} past each hour, next one about ${hhmm}`;
+}
+
+/** Pull the newest publish for Chip's houses now, count sales, rerun the flips (POST /api/flips/refresh). */
+function RefreshButton() {
+  const qc = useQueryClient();
+  const [state, setState] = useState<{ busy: boolean; text: string | null; bad: boolean }>({ busy: false, text: null, bad: false });
+  const go = async () => {
+    setState({ busy: true, text: null, bad: false });
+    try {
+      const res = await fetch('/api/flips/refresh', { method: 'POST' });
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; run?: { data_at: number } | null };
+      if (!res.ok) { setState({ busy: false, text: body.error ?? `Refresh failed (${res.status}).`, bad: true }); return; }
+      await qc.invalidateQueries({ queryKey: ['flips'] });
+      setState({ busy: false, text: `${body.message ?? ''}${body.run ? ` ${dataTimeLine(body.run.data_at)}.` : ''}`.trim(), bad: false });
+    } catch (e) {
+      setState({ busy: false, text: `Refresh failed: ${(e as Error).message}`, bad: true });
+    }
+  };
+  return (
+    <span className="flex basis-full flex-wrap items-center gap-2 sm:ml-auto sm:basis-auto">
+      <button onClick={go} disabled={state.busy} className="inline-flex items-center gap-2 rounded-md bg-ink px-3 py-1 text-xs font-semibold text-page disabled:opacity-70">
+        {state.busy && <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-page border-t-transparent" aria-hidden />}
+        {state.busy ? 'Checking Blizzard...' : 'Refresh'}
+      </button>
+      {state.text && <span className={`text-xs ${state.bad ? 'text-bad' : 'text-muted'}`}>{state.text}</span>}
+    </span>
   );
 }
 

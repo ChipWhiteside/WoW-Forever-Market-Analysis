@@ -41,6 +41,19 @@ describe('page contracts', () => {
   it('flips page keeps run status, filters, the list and held back', () => {
     inOrder(src('pages/flips.tsx'), ['Data from', '>Crafting (', '>Flipping (', 'Lowest risk', '<FlipCard', 'Held back this hour']);
   });
+  it('flips page has the Refresh button beside the run status, before the filters (Chip, November 26)', () => {
+    const page = section(src('pages/flips.tsx'), 'export function FlipsPage', '\nfunction ');
+    inOrder(page, ['Data from', 'complete</Chip>', '<RefreshButton />', '>Crafting (']);
+    const btn = section(src('pages/flips.tsx'), 'function RefreshButton', '\nfunction ');
+    expect(btn).toContain("'/api/flips/refresh'");
+    expect(btn).toContain("'Checking Blizzard...'");
+    expect(btn).toContain('animate-spin');
+    expect(src('pages/flips.tsx')).toContain('Blizzard publishes about ${minute} past each hour, next one about ${hhmm}');
+  });
+  it('settings keep every field, with the flip alert bars and the play alerts checkbox below (Chip, November 26)', () => {
+    inOrder(section(src('pages/misc.tsx'), 'export function SettingsPage', '\nexport function '), ["'Gold on hand'", "'Alert bar, in silver'", "'Quiet from (hour)'", 'Your professions',
+      "'Crafting session, in minutes'", 'Only craft sub steps in my professions', "'Good flip alert, in gold'", "'Amazing flip alert, in gold'", 'Also send the old play alerts', "'Saved' : 'Save'"]);
+  });
   it('flip card keeps its lines in order, crafting green and flipping blue', () => {
     const card = section(src('pages/flips.tsx'), 'export function FlipCard', '\nfunction ');
     expect(card).toContain("craft ? 'bg-craft' : 'bg-flip'");

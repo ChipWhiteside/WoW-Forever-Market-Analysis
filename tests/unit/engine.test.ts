@@ -28,7 +28,7 @@ describe('engine end to end', () => {
     const engine = new Engine(client, db, { dataDir: dir, webhookUrl: 'https://discord.example/hook', log: () => {}, fetchFn });
     await engine.init();
     db.prepare(`UPDATE houses SET pinned = 1 WHERE id IN (110, 116)`).run();
-    db.prepare(`INSERT INTO settings (key, value) VALUES ('profit_bar', '100'), ('quiet_start', '0'), ('quiet_end', '0'), ('min_profit_each', '0')`).run();
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('profit_bar', '100'), ('quiet_start', '0'), ('quiet_end', '0'), ('min_profit_each', '0'), ('play_alerts', '1')`).run();
 
     const r = await engine.round();
     expect(r.events.length).toBe(4); // 116 auctions is empty, still a publish, and flagged as a suspected bug

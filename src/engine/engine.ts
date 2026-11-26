@@ -18,6 +18,21 @@ import { computeHealth, writeRunReport } from '../health/report.ts';
 import { pool } from '../catalog/items.ts';
 import type { DetectorId, Play } from '../detectors/types.ts';
 import { hourlyFlips } from '../flips/hourly.ts';
+import { chipHouses } from '../flips/houses.ts';
+import type { FlipRunResult } from '../flips/run.ts';
+import { flipAlertCycle, flushHeldFlipAlerts, type FlipAlertResult } from '../flips/alerts.ts';
+
+/** The engine was busy with a poll round for longer than the caller would wait (the refresh route answers 409). */
+export class EngineBusyError extends Error {}
+
+export interface RefreshResult {
+  /** 'new': at least one of Chip's houses had a new publish, ingested and counted; 'unchanged': every poll was a 304 */
+  status: 'new' | 'unchanged';
+  publishes: Array<{ house: number; kind: string; rows: number; at: number }>;
+  errors: string[];
+  flips: FlipRunResult | null;
+  alerts: FlipAlertResult | null;
+}
 
 export interface EngineOptions {
   dataDir: string;
@@ -33,6 +48,10 @@ export class Engine {
   readonly collector: Collector;
   private log: (m: string) => void;
   private running = false;
+  /** True while a poll round or a refresh holds the engine. */
+  get busy(): boolean { return this.running; }
+  lastFlips: FlipRunResult | null = null;
+  lastFlipAlerts: FlipAlertResult | null = null;
   lastHealth: ReturnType<typeof computeHealth> | null = null;
 
   constructor(private client: BlizzardClient, private db: DB, private opts: EngineOptions) {
@@ -72,6 +91,11 @@ export class Engine {
         if (r.fetched || r.notFound) this.log(`catalog: ${r.fetched} items fetched, ${r.notFound} unknown to Blizzard, ${r.errors} errors`);
         await resolveIcons(this.client, this.db, 500);
         ({ plays, alerted } = await this.detect());
+      }
+      // Flip alerts held in quiet hours go out once the quiet period ends, if their flips are still live.
+      if (!events.length) {
+        try { const f = await flushHeldFlipAlerts(this.db, this.opts.webhookUrl, { fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null }); if (f) this.log(`flip alerts after quiet hours: ${f.sent ? `sent ${f.sent}` : f.skipped}`); }
+        catch (e) { this.log(`flip alert flush failed: ${(e as Error).message}`); }
       }
       const health = computeHealth(this.db, Date.now(), suspects);
       await this.reportHealthChange(health);
@@ -146,11 +170,74 @@ export class Engine {
     const fresh = [...life.created, ...life.updated];
     const a = await alertCycle(this.db, this.opts.webhookUrl, fresh, pinned, { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null });
     this.log(`detect: ${plays.length} plays (${life.created.length} new, ${life.gone.length} gone), alert ${a.sent ? `sent ${a.sent}` : a.skipped}`);
-    // The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together.
+    await this.flipsAndAlerts(now);
+    return { plays, alerted: a.sent };
+  }
+
+  /**
+   * The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together,
+   * stored for the page and trends, then the best of the best sent to Discord (src/flips/alerts.ts).
+   */
+  async flipsAndAlerts(now = Date.now()): Promise<{ flips: FlipRunResult | null; alerts: FlipAlertResult | null }> {
     // Who can trade what, from this hour's listings first, so the flip gate and the page agree.
     try { itemTradeable(this.db, now); } catch (e) { this.log(`tradeable check failed: ${(e as Error).message}`); }
-    hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
-    return { plays, alerted: a.sent };
+    const flips = hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
+    this.lastFlips = flips; this.lastFlipAlerts = null;
+    if (!flips) return { flips, alerts: null };
+    try {
+      const alerts = await flipAlertCycle(this.db, this.opts.webhookUrl, flips.flips, flips.report,
+        { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null, held: new Set(flips.heldBack.map(h => h.key)) });
+      this.lastFlipAlerts = alerts;
+      this.log(`flip alerts: ${alerts.sent ? `sent ${alerts.sent} in ${alerts.posts} post${alerts.posts === 1 ? '' : 's'}` : alerts.skipped}`);
+      return { flips, alerts };
+    } catch (e) {
+      this.log(`flip alerts failed: ${(e as Error).message}`);
+      return { flips, alerts: null };
+    }
+  }
+
+  /**
+   * The Refresh button: poll Chip's two houses now (a 304 when nothing is new), count sales, run the full flip
+   * analysis and return it. A new publish runs the whole detect step, exactly as a round would, so the next round's
+   * 304 never skips the old detectors. Waits up to waitMs for a running round, then throws EngineBusyError.
+   */
+  async refresh(opts: { waitMs?: number } = {}): Promise<RefreshResult> {
+    const until = Date.now() + (opts.waitMs ?? 30_000);
+    while (this.running) {
+      if (Date.now() >= until) throw new EngineBusyError('the engine is in the middle of a poll round; try again in a minute');
+      await new Promise(r => setTimeout(r, 200));
+    }
+    this.running = true;
+    try {
+      const events: SnapshotEvent[] = [];
+      const errors: string[] = [];
+      const jobs = chipHouses(this.db).flatMap(h => KINDS.map(k => ({ h, k })));
+      const rows = new Map(trackedHouses(this.db).map(h => [h.id, h]));
+      await pool(jobs, 4, async ({ h, k }) => {
+        const row = rows.get(h.id);
+        if (!row) { errors.push(`${h.id} ${k}: not a tracked house`); return; }
+        try {
+          const ev = await this.collector.poll(row, k);
+          if (ev) { events.push(ev); this.log(`refresh: publish ${h.id} ${k}: ${ev.rows} rows, data from ${new Date(ev.publishedAt).toISOString()}`); }
+        } catch (e) { errors.push(`${h.id} ${k}: ${(e as Error).message}`); }
+      });
+      if (errors.length) this.log(`refresh poll errors: ${errors.join(' | ')}`);
+      const now = Date.now();
+      let out: { flips: FlipRunResult | null; alerts: FlipAlertResult | null };
+      if (events.length) {
+        const newIds = new Set(events.flatMap(e => e.stats.filter(s => s.listings > 0).map(s => s.itemId)));
+        try { await resolveItems(this.client, this.db, [...newIds], { maxAgeMs: Infinity }); await resolveIcons(this.client, this.db, 500); }
+        catch (e) { this.log(`refresh catalog failed: ${(e as Error).message}`); }
+        // detect() runs the flips; read back what it stored.
+        await this.detect();
+        out = { flips: this.lastFlips, alerts: this.lastFlipAlerts };
+      } else {
+        out = await this.flipsAndAlerts(now);
+      }
+      return { status: events.length ? 'new' : 'unchanged', publishes: events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt })), errors, ...out };
+    } finally {
+      this.running = false;
+    }
   }
 
   /** Once a day: refresh vendor sell prices, which hotfixes change (spec 17.3). Returns the changes as news. */
