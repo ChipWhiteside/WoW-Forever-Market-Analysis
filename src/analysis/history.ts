@@ -59,6 +59,22 @@ export function rowNet(kind: 'commodities' | 'auctions', prevListings: number, p
   return sold - (prevListings <= 5 ? r * prevUnitsAtFloor : r * sold / (1 - r));
 }
 
+/**
+ * A deep commodity row (over 5 listings) whose units judged sold may be a seller pulling his stacks and posting them
+ * again cheaper in the same hour (round 2 system review, Clam Linguine: 80 units "sold" at 23s while 86 came back at
+ * 18s). The floor fell, and the new units near the floor hold the units judged sold to within 25 percent.
+ * No snapshot signal tells such a repost from buys followed by a cheaper restock (B46): on the real snapshots of
+ * 8 houses the same shape shows on 2.7 percent of item hours whose front was certainly bought (a partly bought stack
+ * behind it) and 3.2 percent of undecided ones. So it never erases a sale from the middle; the cautious estimate
+ * counts the hour as 0 sold instead (repricedHours), which costs about 3.6 percent of real deep commodity units.
+ * Mirrors the SQL in demandByItem.
+ */
+export function repricedRow(kind: 'commodities' | 'auctions', prevListings: number, prevFloor: number | null, floor: number | null,
+  sold: number, newNearFloor: number | null): boolean {
+  if (kind !== 'commodities' || prevListings <= THIN_LISTINGS || sold <= 0 || prevFloor == null || floor == null || newNearFloor == null) return false;
+  return floor < prevFloor && Math.abs(newNearFloor - sold) <= sold * REPOST_UNITS;
+}
+
 /** Longest gap between two publishes across which a pull and a post again are matched. */
 const ACROSS_GAP_MS = 1.6 * 3600_000;
 
@@ -224,14 +240,19 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
        AND ABS(COALESCE(next_new, 0) - x0) <= x0 * ${REPOST_UNITS}) across FROM r0),
      r AS (SELECT r1.*, CASE WHEN across THEN 0 ELSE x0 END x, CASE WHEN across THEN 0 ELSE ev0 END ev, CASE WHEN across THEN 0 ELSE sold_value END sv,
        ${rate('COALESCE(prev_listings, listings)')} rate FROM r1),
-     q AS (SELECT r.*, x - (CASE WHEN rate = 0 THEN 0 WHEN COALESCE(prev_listings, listings) <= 5 THEN rate * COALESCE(prev_front, units_at_floor) ELSE rate * x / (1 - rate) END) net1 FROM r)
+     q0 AS (SELECT r.*, x - (CASE WHEN rate = 0 THEN 0 WHEN COALESCE(prev_listings, listings) <= 5 THEN rate * COALESCE(prev_front, units_at_floor) ELSE rate * x / (1 - rate) END) net1,
+       (kind = 'commodities' AND COALESCE(prev_listings, listings) > ${THIN_LISTINGS} AND x > 0 AND prev_floor IS NOT NULL AND floor IS NOT NULL
+        AND new_near_floor IS NOT NULL AND floor < prev_floor AND ABS(new_near_floor - x) <= x * ${REPOST_UNITS}) repriced FROM r),
+     q AS (SELECT q0.*, CASE WHEN repriced THEN 0 ELSE net1 END net_low, CASE WHEN repriced THEN 0 ELSE x END x_low, CASE WHEN repriced THEN 0 ELSE ev END ev_low FROM q0)
      SELECT item_id, SUM(x) sold, SUM(COALESCE(sv, 0)) value, COUNT(*) n, SUM(ev) events, SUM(across) across,
+     SUM(repriced) repriced, SUM(x_low) sold_low, SUM(ev_low) events_low, SUM(net_low) net_low, SUM(net_low * net_low) net_low_sq,
      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(kind) kind,
      SUM(rate) rate_sum, SUM(x * x) sold_sq, SUM(net1) net, SUM(net1 * net1) net_sq,
      SUM(CASE WHEN prev_floor = floor AND x > 0 AND units_at_floor > 0 AND COALESCE(new_near_floor, 0) >= units_at_floor THEN 1 ELSE 0 END) replaced
      FROM q GROUP BY item_id`)
     .all(houseId, since - LOOKBACK_MS, now, since) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string;
-      rate_sum: number; sold_sq: number; net: number; net_sq: number; replaced: number; across: number }>;
+      rate_sum: number; sold_sq: number; net: number; net_sq: number; replaced: number; across: number;
+      repriced: number; sold_low: number; events_low: number | null; net_low: number; net_low_sq: number }>;
   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
      FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
     .map(r => [r.item_id, r]));
@@ -263,14 +284,22 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
     const frontReplacedHourly = n >= MIN_PUBLISHES_LOW && r.replaced >= FRONT_REPLACED_SHARE * n;
     const unitsPerDay = (r.sold / Math.max(h, 6)) * 24;
     // Never above the middle (which is never projected from under 6 hours).
+    // Hours that may be a same hour repost on a deep commodity market (repricedRow) count as 0 sold in the cautious
+    // estimate only; the middle keeps them.
+    const repricedHours = r.repriced ?? 0;
+    const evLow = repricedHours > 0 ? (r.events_low ?? 0) : ev;
+    const lowPulls = repricedHours > 0 ? expectedPullEvents(r.rate_sum ?? 0, evLow, n) : pullEvents;
     let lowPerDay: number | null = kc.n < MIN_PUBLISHES_LOW ? null
-      : Math.min(unitsPerDay, lowEstimate({ events: ev, units: r.sold, pullEvents, hours: h, publishes: n, sumNet: r.net ?? 0, sumNetSq: r.net_sq ?? 0 }));
+      : Math.min(unitsPerDay, repricedHours > 0
+        ? lowEstimate({ events: evLow, units: r.sold_low ?? 0, pullEvents: lowPulls, hours: h, publishes: n, sumNet: r.net_low ?? 0, sumNetSq: r.net_low_sq ?? 0 })
+        : lowEstimate({ events: ev, units: r.sold, pullEvents, hours: h, publishes: n, sumNet: r.net ?? 0, sumNetSq: r.net_sq ?? 0 }));
     let lowNote: string | undefined;
+    if (repricedHours > 0) lowNote = `in ${repricedHours} ${repricedHours === 1 ? 'hour' : 'hours'} the floor fell and about as many units came back cheaper as were counted sold: maybe a seller reposting, so the cautious figure leaves ${repricedHours === 1 ? 'that hour' : 'those hours'} out`;
     if (frontReplacedHourly) { lowPerDay = null; lowNote = 'the whole front at the floor was replaced in 80 percent of hours or more: a seller pulling and posting again reads as sales, so no cautious figure'; }
     // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
     out.set(r.item_id, { unitsPerDay, hours: Math.round(h * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,
-      lowPerDay, lowNote, frontReplacedHourly,
+      lowPerDay, lowNote, frontReplacedHourly, repricedHours,
       newPerDay: ((r.fresh ?? 0) / h) * 24, pulledPerDay: ((r.pulled ?? 0) / h) * 24,
       pullEvents, netPerDay: (Math.max(0, r.net ?? 0) / Math.max(h, 6)) * 24,
       hourlyMean: r.sold / h, hourlySd, hourlyHours: Math.round(h * 10) / 10,
