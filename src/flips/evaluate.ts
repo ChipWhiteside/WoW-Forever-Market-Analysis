@@ -384,6 +384,9 @@ export function priceWar(q: SellQuote): string | null {
   return `price war: ${perHour} new listings an hour, more than the ${Math.round(soldPerHour * 10) / 10} that sell`;
 }
 
+/** The note on a cooldown sub craft charged at its product's auction net (system review round 1, J3). */
+export const COOLDOWN_OPPORTUNITY = 'valued at what it sells for on the auction house, since it spends the cooldown';
+
 /** The buy legs for the first `traceEnd` trace entries: where to buy what, how many, at what average price, and the crafts. */
 export function legsOf(trace: TraceEntry[], traceEnd: number, inputs: FlipInputs, recipes: Map<number, FlipRecipe>): FlipLeg[] {
   const buys = new Map<string, FlipLeg & { total: number }>();
@@ -396,6 +399,7 @@ export function legsOf(trace: TraceEntry[], traceEnd: number, inputs: FlipInputs
       const r = recipes.get(e.recipeId!);
       const g = crafts.get(e.recipeId!) ?? { kind: 'craft' as const, itemId: e.itemId, name, units: 0, unitPrice: 0, who: r ? `${r.profession}: ${r.name}` : 'craft', places: [], total: 0, depth: e.depth };
       g.units += e.units; g.total += e.cost; g.depth = Math.min(g.depth, e.depth); crafts.set(e.recipeId!, g);
+      if (e.opportunity) g.note = COOLDOWN_OPPORTUNITY;
       continue;
     }
     const k = e.source === 'auction' ? `a:${e.houseId}:${e.itemId}` : `v:${e.vendor!.npcId}:${e.itemId}`;

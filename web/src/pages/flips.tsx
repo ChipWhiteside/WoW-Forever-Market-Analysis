@@ -14,7 +14,7 @@ interface Quote { claimPrice: number; netEach: number; listed: number | null; ba
 interface FlipDetail {
   key: string; kind: 'craft' | 'flip'; family: string; itemId: number; name: string; recipeId?: number; recipeName?: string; profession?: string; sellHouseId: number | null;
   buy: Leg[]; sell: Leg; perItem: number; best: Option; options: Option[]; sellQuote: Quote; repeatable: boolean; opening: 'new' | 'rising' | null; openHours72: number;
-  setup?: { skill: string; rank: number | null; cost: number | null; where: string | null; places: Place[] } | null; shares: string[]; afterShared?: { units: number; expectedProfit: number }; notes: string[]; dataAt: number;
+  setup?: { skill: string; rank: number | null; cost: number | null; where: string | null; places: Place[]; unknown?: boolean } | null; shares: string[]; afterShared?: { units: number; expectedProfit: number }; notes: string[]; dataAt: number;
 }
 interface Row { key: string; kind: 'craft' | 'flip'; family: string; house_id: number | null; item_id: number; state: string; rank: number | null; expected_profit: number; risk: string; detail: FlipDetail; icon_url: string | null; quality: string | null; house_name: string | null; faction: string | null; data_at: number }
 interface Resp { flips: Row[]; run: { at: number; data_at: number; ms: number; complete: boolean; report: { items: number; recipesTried: number; flips: number; incompleteReason?: string; heldBackByReason: Record<string, number>; suspects: string[] } } | null; heldBack: Array<{ key: string; family: string; itemId: number; name: string; perItem: number | null; reason: string }> }
@@ -100,6 +100,7 @@ function Toggle({ on, onClick, children, cls = '' }: { on: boolean; onClick: () 
   return <button onClick={onClick} className={`rounded-full px-3 py-1 ${on ? 'bg-ink/10 font-semibold' : 'border border-line'} ${cls}`}>{children}</button>;
 }
 
+const units = (n: number) => `${n.toLocaleString()} unit${n === 1 ? '' : 's'}`;
 const minutes = (m: number) => m < 1 ? 'under a minute' : m < 90 ? `${Math.round(m)} min` : `${(m / 60).toFixed(1)} hours`;
 
 export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOpenItem: (id: number) => void }) {
@@ -107,6 +108,9 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
   const craft = f.kind === 'craft';
   const q = d.sellQuote;
   const [open, setOpen] = useState(false);
+  // Buy lines show only what is bought; craft steps go under Make, and the product is never its own input.
+  const bought = d.buy.filter(l => l.kind !== 'craft');
+  const steps = d.buy.filter(l => l.kind === 'craft' && l.itemId !== d.itemId);
   return (
     <Card className={`border-l-4 p-4 ${craft ? 'border-l-craft' : 'border-l-flip'} ${f.state === 'gone' ? 'opacity-50' : ''}`}>
       <div className="flex items-start gap-3">
@@ -117,7 +121,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white ${craft ? 'bg-craft' : 'bg-flip'}`}>{craft ? 'Crafting' : 'Flipping'}</span>
-                <button onClick={() => onOpenItem(f.item_id)} className="truncate text-left text-base hover:underline"><ItemName name={d.name} id={f.item_id} quality={f.quality} /></button>
+                <button onClick={() => onOpenItem(f.item_id)} className="min-w-0 break-words text-left text-base hover:underline"><ItemName name={d.name} id={f.item_id} quality={f.quality} /></button>
               </div>
               <p className="mt-0.5 text-xs text-muted">
                 {FAMILY_LABEL[d.family] ?? d.family}
@@ -128,14 +132,16 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             </div>
             <div className="shrink-0 text-right">
               <div className={d.best.expectedProfit >= 0 ? 'text-good' : 'text-bad'}>{d.best.expectedProfit >= 0 && <span className="text-lg font-bold">+</span>}<Money c={d.best.expectedProfit} size="xl" /></div>
-              <p className="text-[11px] text-muted">expected overnight, {d.best.units} units</p>
+              <p className="text-[11px] text-muted">expected overnight, {units(d.best.units)}</p>
               <p className="text-xs"><Money c={d.perItem} size="sm" /> <span className="text-muted">per item</span></p>
             </div>
           </div>
 
           <ul className="mt-3 space-y-1.5 text-sm">
-            {d.buy.map((l, i) => <LegLine key={i} label={i ? '' : 'Buy'} leg={l} />)}
+            {bought.map((l, i) => <LegLine key={i} label={i ? '' : 'Buy'} leg={l} />)}
+            {bought.length === 0 && <li className="flex gap-2"><Label>Buy</Label><span className="text-muted">Nothing to buy: every input is made.</span></li>}
             {craft && <li className="flex gap-2"><Label>Make</Label><span>{d.recipeName ?? 'craft'}{d.profession ? ` (${d.profession})` : ''}: <b>{d.best.units}</b> made, about {minutes(d.best.minutes)} of work.</span></li>}
+            {steps.map((l, i) => <LegLine key={`m${i}`} label="" leg={l} first="Make first" />)}
             <LegLine label="Sell" leg={d.sell} />
             <li className="flex gap-2"><Label>Price</Label>
               <span>
@@ -154,11 +160,11 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             <li className="flex gap-2"><Label>Risk</Label>
               <span className="flex flex-wrap items-baseline gap-x-2">
                 <Chip tone={RISK_TONE[d.best.risk.level]}>{d.best.risk.level} risk</Chip>
-                <span><Money c={d.best.risk.atStake} size="sm" /> at stake, bad case <span className="text-bad"><Money c={-d.best.risk.badCaseLoss} size="sm" /></span>{d.best.risk.daysToSell != null ? `, about ${d.best.risk.daysToSell < 1 ? 'under a day' : `${d.best.risk.daysToSell.toFixed(1)} days`} to sell` : ''}.</span>
+                <span><Money c={d.best.risk.atStake} size="sm" /> at stake, bad case <span className="text-bad"><Money c={-d.best.risk.badCaseLoss} size="sm" /></span>{d.best.risk.daysToSell != null ? `, ${d.best.risk.daysToSell < 1 ? 'under a day' : `about ${d.best.risk.daysToSell.toFixed(1)} days`} to sell` : ''}.</span>
                 {d.best.risk.drivers.length > 0 && <span className="text-xs text-muted">{d.best.risk.drivers.join(', ')}.</span>}
               </span>
             </li>
-            {d.setup && <li className="flex gap-2"><Label>Setup</Label><span>Needs {d.setup.skill}{d.setup.rank != null ? ` ${d.setup.rank}` : ''}{d.setup.cost != null ? <>, learn for <Money c={d.setup.cost} size="sm" /></> : ''}{d.setup.where ? ` at ${d.setup.where}` : ''}. One time cost.</span></li>}
+            {d.setup && <li className="flex gap-2"><Label>Setup</Label><span>Needs {d.setup.skill}{d.setup.rank != null ? ` ${d.setup.rank}` : ''}{d.setup.cost != null ? <>, learn for <Money c={d.setup.cost} size="sm" /></> : ''}{d.setup.where ? (d.setup.unknown ? `, ${d.setup.where}` : ` at ${d.setup.where}`) : ''}. One time cost.</span></li>}
             {d.shares.length > 0 && <li className="flex gap-2"><Label>Shares</Label><span className="text-muted">Uses the same reagents or buyers as {d.shares.length} flip{d.shares.length > 1 ? 's' : ''} above{d.afterShared ? <>; doing both leaves <b>{d.afterShared.units}</b> units worth <Money c={d.afterShared.expectedProfit} size="sm" /></> : ''}.</span></li>}
           </ul>
 
@@ -170,7 +176,8 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
           </div>
 
           {open && (
-            <table className="mt-2 w-full text-sm">
+            <div className="mt-2 overflow-x-auto">
+            <table className="w-full whitespace-nowrap text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-muted"><th className="py-1">Amount</th><th>Units</th><th>Cost</th><th>Sells overnight</th><th>Expected profit</th><th>Per hour</th><th>Risk</th><th>Bad case</th></tr></thead>
               <tbody>{d.options.map(o => (
                 <tr key={o.label} className={`border-t border-line/60 ${o.label === 'best' ? 'font-semibold' : ''}`}>
@@ -181,6 +188,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
                 </tr>
               ))}</tbody>
             </table>
+            </div>
           )}
           {d.notes.length > 0 && <p className="mt-2 text-xs text-muted">{d.notes.join(' ')}</p>}
         </div>
@@ -193,13 +201,14 @@ function Label({ children }: { children?: React.ReactNode }) {
   return <span className="w-14 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">{children}</span>;
 }
 
-function LegLine({ label, leg }: { label: string; leg: Leg }) {
+function LegLine({ label, leg, first }: { label: string; leg: Leg; first?: string }) {
   const pl = leg.places[0];
   const href = pl ? mapHref(pl) : null;
   return (
     <li className="flex gap-2">
       <Label>{label}</Label>
       <span className="flex flex-wrap items-baseline gap-x-2">
+        {first && <span className="text-muted">{first}</span>}
         <span><b>{leg.units.toLocaleString()}</b> {leg.name}</span>
         <span className="text-muted">at</span><Money c={leg.unitPrice} size="sm" /><span className="text-muted">{label === 'Sell' ? 'each after the cut' : 'each'}</span>
         <span className="font-semibold">{leg.kind === 'any_vendor' ? 'to any vendor' : leg.who}</span>

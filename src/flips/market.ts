@@ -35,6 +35,8 @@ export interface TraceEntry {
   cost: number;
   depth: number;
   houseId?: number; listingId?: number; vendor?: VendorSource; recipeId?: number;
+  /** copper of `cost` that is the cooldown's opportunity cost, not gold paid (a sub craft on a cooldown) */
+  opportunity?: number;
 }
 
 export interface TakeMode {
@@ -57,6 +59,13 @@ export class Market {
   readonly byProduct = new Map<number, FlipRecipe[]>();
   private lbMemo = new Map<number, { v: number; need: number }>();
   private lbRoot = new Map<number, number>();
+  /**
+   * What one unit of an item nets on Chip's auction houses when it is listed (the cautious net of its sell quote), or
+   * null. A sub craft on a cooldown costs at least this: spending the cooldown gives up selling its product (system
+   * review round 1, finding J3: Cured Rugged Hide burned the Salt Shaker for 1s 47c while the salt nets about 35g).
+   */
+  opportunityOf: ((itemId: number) => number | null) | null = null;
+  private oppMemo = new Map<number, number>();
 
   constructor(readonly inputs: FlipInputs, private sourceRecipes: FlipRecipe[]) {
     for (const r of sourceRecipes) {
@@ -139,6 +148,13 @@ export class Market {
   /** Crafts a cooldown allows within one crafting session (cooldownCrafts). */
   cooldownCap(r: FlipRecipe): number {
     return cooldownCrafts(r, this.inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT);
+  }
+  /** The least one unit of a cooldown sub craft's product costs: its own auction net when listed, else 0. */
+  cooldownFloor(r: FlipRecipe): number {
+    if (!this.cooldownKey(r) || !this.opportunityOf) return 0;
+    let v = this.oppMemo.get(r.productId);
+    if (v == null) { v = Math.max(0, this.opportunityOf(r.productId) ?? 0); this.oppMemo.set(r.productId, v); }
+    return v;
   }
   cooldownLeft(r: FlipRecipe): number {
     const k = this.cooldownKey(r);
@@ -224,11 +240,12 @@ export class Market {
         // A sub craft in a profession Chip lacks is used only when nothing else supplies the reagent.
         if (pick && !this.canCraft(r)) continue;
         if (r.reagents.some(g => stack.has(g.itemId))) continue;
-        if (this.lowerBoundCraft(r) >= bestCost) continue;
+        const floor = this.cooldownFloor(r);
+        if (Math.max(this.lowerBoundCraft(r), floor) >= bestCost) continue;
         const m = this.mark();
         const c = this.craftOnce(r, stack, depth + 1, null);
         this.rollback(m);
-        if (c != null && c / this.yieldOf(r) < bestCost) { bestCost = c / this.yieldOf(r); pick = { kind: 'craft', r }; }
+        if (c != null && Math.max(c / this.yieldOf(r), floor) < bestCost) { bestCost = Math.max(c / this.yieldOf(r), floor); pick = { kind: 'craft', r }; }
       }
     }
     if (!pick) return null;
@@ -248,9 +265,12 @@ export class Market {
     const r = pick.r;
     const c = this.craftOnce(r, stack, depth + 1, trace)!;
     const y = this.yieldOf(r);
-    if (y > 1) { this.put(this.spare, itemId, { units: y - 1, unitCost: c / y }); this.addWaste((y - 1) * (c / y)); }
-    this.push(trace, { itemId, source: 'craft', units: y, cost: c, depth, recipeId: r.id });
-    return c / y;
+    // A cooldown sub craft is charged at least its product's auction net: the opportunity cost of the cooldown.
+    const unit = Math.max(c / y, this.cooldownFloor(r));
+    const opportunity = unit * y - c;
+    if (y > 1) { this.put(this.spare, itemId, { units: y - 1, unitCost: unit }); this.addWaste((y - 1) * unit); }
+    this.push(trace, { itemId, source: 'craft', units: y, cost: unit * y, depth, recipeId: r.id, ...(opportunity > 0 ? { opportunity } : {}) });
+    return unit;
   }
 
   /**

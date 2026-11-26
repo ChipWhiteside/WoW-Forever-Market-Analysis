@@ -37,6 +37,12 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
   const sourceRecipes = inputs.recipes.filter(r => r.live && !r.randomYield && r.reagents.length > 0);
   const market = new Market(inputs, sourceRecipes);
   const book = new SellBook(inputs);
+  // A cooldown sub craft costs at least what its product nets on the auction house when listed (system review J3).
+  market.opportunityOf = id => {
+    let best: number | null = null;
+    for (const h of inputs.houses) { const q = book.quote(h, id); if (q && (best == null || q.netEach > best)) best = q.netEach; }
+    return best;
+  };
   const gen = generate(inputs, market, book);
   const heldBack = gen.heldBack;
   const flips: Flip[] = [];
@@ -191,7 +197,13 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
       for (const o of e.options) {
         if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
         if (o.risk.level === 'low') o.risk.level = 'medium';
+        // A teaching item nothing sells or drops: nobody may be able to learn it, so the flip is high risk (system review J2).
+        if (setup.teachItem && setup.where?.includes(UNKNOWN_TEACH_SOURCE)) o.risk.level = 'high';
       }
+    }
+    // Only Horde trainers on record: a driver, never a level change; trainer lists usually match across factions (B21).
+    if (c.recipe.learnSource === 'trainer_horde_only' && setup.where === HORDE_ONLY) {
+      for (const o of e.options) if (!o.risk.drivers.includes(HORDE_ONLY_DRIVER)) o.risk.drivers.push(HORDE_ONLY_DRIVER);
     }
     if (setup.toolsNote) notes.push(setup.toolsNote);
   }
@@ -265,7 +277,7 @@ export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
   if (match.length || r.learnSource === 'trainer_horde_only') {
     const h = [...match].sort(byCost)[0];
     return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null,
-      where: r.learnSource === 'trainer_horde_only' ? 'Horde trainers only' : 'no Alliance trainer on record', places: [] };
+      where: r.learnSource === 'trainer_horde_only' ? HORDE_ONLY : 'no Alliance trainer on record', places: [] };
   }
   const base = { skill: r.profession, rank: r.learnSkill, cost: null, places: [] as Place[] };
   if (r.learnSource === 'auto') return { ...base, where: 'known when the profession is learned' };
@@ -308,6 +320,10 @@ export function toolsFor(r: FlipRecipe): { tools?: string[]; toolsNote?: string 
 
 /** The card line and risk driver for a recipe nobody knows how to learn yet (round 2 finding H4). */
 export const UNKNOWN_LEARN = 'how to learn it is not known yet';
+/** The setup line when only Horde trainers teach a recipe on record (learn_source trainer_horde_only). */
+export const HORDE_ONLY = 'Horde trainers only';
+/** Its risk driver (system review round 1, J1): said plainly, the level stays as it is. */
+export const HORDE_ONLY_DRIVER = 'no Alliance trainer on record; trainer lists usually match across factions (B21), check in game';
 /** A cooldown vendor path held back while the auction path learns (round 6 finding 3). */
 export const COOLDOWN_LEARNING = 'the auction house likely pays more; waiting for sales data';
 /** Why, when the only lead is a teaching item nothing sells or drops (round 6 finding 2). */
