@@ -11,7 +11,7 @@ import { computeHealth } from '../health/report.ts';
 import { registerExtraRoutes } from './routes-extra.ts';
 import { registerFlipRoutes } from './flips.ts';
 
-export interface ServerDeps { db: DB; engine: Engine | null; client: BlizzardClient | null; port: number; dataDir: string; log?: (m: string) => void }
+export interface ServerDeps { db: DB; engine: Engine | null; client: BlizzardClient | null; port: number; dataDir: string; log?: (m: string) => void; refreshWaitMs?: number }
 
 export function buildServer(deps: ServerDeps) {
   const { db } = deps;
@@ -64,7 +64,7 @@ export function buildServer(deps: ServerDeps) {
   });
 
   registerExtraRoutes(app, deps);
-  registerFlipRoutes(app, db);
+  registerFlipRoutes(app, db, deps.engine, deps.refreshWaitMs);
 
   const dist = join(PROJECT_ROOT, 'web', 'dist');
   if (existsSync(dist)) {
