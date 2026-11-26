@@ -13,11 +13,15 @@ const db = openDb(loadConfig().dataDir);
 const rows = reviewAlerts(db, { since: Date.now() - days * 24 * 3600_000 });
 console.log(`\n${rows.length} flip alert${rows.length === 1 ? '' : 's'} in the last ${days} days.`);
 for (const r of rows) {
-  console.log(`\n${new Date(r.at).toLocaleString()}  ${r.tier.toUpperCase()}  ${r.key}`);
+  console.log(`\n${new Date(r.at).toLocaleString()}  ${r.tier.toUpperCase()}  ${r.name}`);
   console.log(`  claimed ${money(r.expectedProfit)} overnight, ${money(r.perItem)} each on ${r.units}`);
   console.log(`  ${r.verdict}${r.soldAll != null ? `; ${r.soldAll} sold in all over ${r.snapshots} publishes, floor ${money(r.floorMin)} to ${money(r.floorMax)}` : ''}`);
 }
-const live = rows.filter(r => r.runsAfter && r.liveNext === r.runsAfter).length;
+const judged = rows.filter(r => !r.tooSoon);
+const live = judged.filter(r => r.liveNext === r.publishesAfter).length;
 const covered = rows.filter(r => r.soldNearClaim != null && r.soldNearClaim >= r.units).length;
-if (rows.length) console.log(`\nStill live at every next run: ${live} of ${rows.length}. Sold near the claim for the full amount: ${covered} of ${rows.filter(r => r.soldNearClaim != null).length} sold on a house.`);
+if (rows.length) {
+  console.log(`\nStill live at every next publish: ${live} of ${judged.length} with enough publishes to judge.${judged.length < rows.length ? ` ${rows.length - judged.length} too recent: too few publishes since to say yet.` : ''}`);
+  console.log(`Sold near the claim for the full amount: ${covered} of ${rows.filter(r => r.soldNearClaim != null).length} sold on a house.`);
+}
 db.close();

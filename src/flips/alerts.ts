@@ -1,5 +1,5 @@
 import type { DB } from '../store/db.ts';
-import { getKv, setKv } from '../store/db.ts';
+import { getKv, setKv, tx } from '../store/db.ts';
 import { money } from '../format/money.ts';
 import { FLIP_ALERTS } from '../rules/flips.ts';
 import { alertSettings, isQuiet, sendDiscord } from '../alerts/discord.ts';
@@ -8,7 +8,9 @@ import type { Flip, FlipRunReport } from './types.ts';
 /**
  * Discord alerts for the best flips only (Chip, November 26, docs/flip-plan.md section 0).
  * Every flip that clears every gate in one run is sent, Amazing first, in as few posts as Discord's 2,000 characters allow.
- * Each alert is logged in flip_alerts so the bars can be tuned (scripts/alert-review.ts).
+ * Each alert is logged in flip_alerts so the bars can be tuned (scripts/alert-review.ts). A row is claimed (pending)
+ * before its post goes out, in the same transaction as the repeat check, then marked sent or failed: two overlapping
+ * runs never send one flip twice, and a failed post is retried by the next run (refresh round 1 finding A).
  */
 export type Tier = 'good' | 'amazing';
 
@@ -78,6 +80,8 @@ export function formatFlipAlerts(chosen: Chosen[], appUrl: string | null): Array
 }
 
 const PENDING = 'flip_alerts_pending';
+/** A claim not marked sent or failed within this long belongs to a run that died while sending. */
+const PENDING_STALE_MS = 10 * 60_000;
 
 export interface FlipAlertResult { sent: number; posts: number; skipped: string | null; held: number }
 
@@ -92,17 +96,30 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   if (!report.complete) return none('run incomplete');
   if (now - report.dataAt > FLIP_ALERTS.freshMinutes * 60_000) return none('data not fresh');
   const s = flipAlertSettings(db);
-  const last = db.prepare('SELECT at, expected_profit FROM flip_alerts WHERE key = ? ORDER BY at DESC LIMIT 1');
-  const chosen: Chosen[] = [];
-  for (const f of flips) {
-    const j = judgeFlip(f, s, opts.held);
-    if (!j.tier) continue;
-    const profit = alertProfit(f);
-    const prev = last.get(f.key) as { at: number; expected_profit: number } | undefined;
-    if (prev && now - prev.at < FLIP_ALERTS.repeatHours * 3600_000 && profit < prev.expected_profit * (1 + FLIP_ALERTS.regrowth)) continue;
-    chosen.push({ flip: f, tier: j.tier, profit });
-  }
   const quiet = isQuiet(now, alertSettings(db));
+  // A failed post never counts as sent: only sent rows, and pending rows a run is still sending, block a repeat.
+  // A pending row older than PENDING_STALE_MS was left by a run that died mid send and is retried.
+  const last = db.prepare(`SELECT at, expected_profit FROM flip_alerts WHERE key = ? AND (status = 'sent' OR (status = 'pending' AND at >= ?)) ORDER BY at DESC LIMIT 1`);
+  const claim = db.prepare(`INSERT OR REPLACE INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at, item_id, house_id, claim_price, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`);
+  const pick = (): Chosen[] => {
+    const chosen: Chosen[] = [];
+    for (const f of flips) {
+      const j = judgeFlip(f, s, opts.held);
+      if (!j.tier) continue;
+      const profit = alertProfit(f);
+      const prev = last.get(f.key, now - PENDING_STALE_MS) as { at: number; expected_profit: number } | undefined;
+      if (prev && now - prev.at < FLIP_ALERTS.repeatHours * 3600_000 && profit < prev.expected_profit * (1 + FLIP_ALERTS.regrowth)) continue;
+      chosen.push({ flip: f, tier: j.tier, profit });
+    }
+    return chosen;
+  };
+  // The repeat check and the claim are one transaction with no await inside, so no other run can slip between them.
+  const chosen = quiet || !webhookUrl ? pick() : tx(db, () => {
+    const c = pick();
+    for (const x of c) claim.run(x.flip.key, now, x.tier, x.profit, x.flip.perItem, x.flip.best.units, x.flip.dataAt, x.flip.itemId, x.flip.sellHouseId, x.flip.sellQuote.claimPrice);
+    return c;
+  });
   if (!chosen.length) { if (!quiet) setKv(db, PENDING, '[]'); return none('nothing new'); }
   if (quiet) {
     const pending = new Set<string>(JSON.parse(getKv(db, PENDING) ?? '[]') as string[]);
@@ -112,20 +129,18 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   }
   if (!webhookUrl) return none('no webhook set');
   let sent = 0, posts = 0;
-  const log = db.prepare('INSERT OR REPLACE INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at, item_id, house_id, claim_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const byKey = new Map(chosen.map(c => [c.flip.key, c]));
+  const mark = db.prepare('UPDATE flip_alerts SET status = ? WHERE key = ? AND at = ?');
+  const failed: string[] = [];
   for (const p of formatFlipAlerts(chosen, opts.appUrl ?? null)) {
     const ok = await sendDiscord(webhookUrl, p.body, opts.fetchFn);
     db.prepare('INSERT INTO alerts_sent (at, channel, plays, body, ok) VALUES (?, ?, ?, ?, ?)').run(now, 'discord_flips', p.keys.length, p.body, ok ? 1 : 0);
-    if (!ok) continue;
+    for (const k of p.keys) mark.run(ok ? 'sent' : 'failed', k, now);
+    if (!ok) { failed.push(...p.keys); continue; }
     posts++;
-    for (const k of p.keys) {
-      const c = byKey.get(k)!;
-      log.run(k, now, c.tier, c.profit, c.flip.perItem, c.flip.best.units, c.flip.dataAt, c.flip.itemId, c.flip.sellHouseId, c.flip.sellQuote.claimPrice);
-      sent++;
-    }
+    sent += p.keys.length;
   }
-  setKv(db, PENDING, '[]');
+  // Held alerts whose post failed stay held, so the flush after quiet hours retries them instead of dropping them.
+  setKv(db, PENDING, JSON.stringify(failed));
   return { sent, posts, skipped: sent ? null : 'discord failed', held: 0 };
 }
 

@@ -29,9 +29,15 @@ export function registerFlipRoutes(app: FastifyInstance, db: DB, engine: Engine 
     try {
       const r = await engine.refresh({ waitMs: refreshWaitMs });
       const run = db.prepare('SELECT at, data_at, ms, complete, report FROM flip_runs ORDER BY at DESC LIMIT 1').get() as { at: number; data_at: number; ms: number; complete: number; report: string } | undefined;
-      const message = r.status === 'new'
-        ? `New data from Blizzard for ${[...new Set(r.publishes.map(p => p.house))].join(' and ')}: sales counted and flips rerun.`
-        : 'Nothing new from Blizzard yet (304). Flips rerun on the stored data.';
+      // Poll errors are said plainly, by house, and never read as a 304 (refresh round 1 finding D).
+      const byHouse = new Map<string, string[]>();
+      for (const e of r.errors) { const [house, , ...rest] = e.split(' '); const m = rest.join(' '); byHouse.set(house!, [...(byHouse.get(house!) ?? []), m]); }
+      const failures = [...byHouse].map(([h, ms]) => `Blizzard did not answer for house ${h}: ${[...new Set(ms)].join('; ')}.`).join(' ');
+      const message = r.status === 'failed'
+        ? `${failures} Flips not rerun; the list is from the last good data.`
+        : `${r.status === 'new'
+          ? `New data from Blizzard for ${[...new Set(r.publishes.map(p => p.house))].join(' and ')}: sales counted and flips rerun.`
+          : 'Nothing new from Blizzard yet (304). Flips rerun on the stored data.'}${failures ? ` ${failures}` : ''}`;
       return {
         status: r.status, message, publishes: r.publishes, errors: r.errors,
         flips: r.flips?.flips.length ?? 0, alerted: r.alerts?.sent ?? 0,

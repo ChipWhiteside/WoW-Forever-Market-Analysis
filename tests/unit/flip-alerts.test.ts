@@ -135,7 +135,12 @@ describe('flip alert message size', () => {
     const d = db();
     const fetchFn = (async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
     expect((await flipAlertCycle(d, 'h', [flip(25)], report(), { now: noon, fetchFn })).skipped).toBe('discord failed');
-    expect(d.prepare('SELECT COUNT(*) n FROM flip_alerts').get()).toEqual({ n: 0 });
+    // the claim stays, marked failed (refresh round 1 finding A), and never counts as sent
+    expect(d.prepare(`SELECT COUNT(*) n FROM flip_alerts WHERE status = 'sent'`).get()).toEqual({ n: 0 });
+    expect(d.prepare(`SELECT status FROM flip_alerts`).all()).toEqual([{ status: 'failed' }]);
+    const { sent, fetchFn: ok } = mockDiscord();
+    expect((await flipAlertCycle(d, 'h', [flip(25)], report(), { now: noon + 60_000, fetchFn: ok })).sent).toBe(1);
+    expect(sent).toHaveLength(1);
   });
 });
 
@@ -154,7 +159,7 @@ describe('alert review (scripts/alert-review.ts)', () => {
       VALUES (?, 111, 2589, ?, ?, 1, 1, 1, 1, '[]', ?)`);
     stat.run(1, noon + hour, 980, 12); stat.run(2, noon + 2 * hour, 950, 9); stat.run(3, noon + 3 * hour, 700, 30);
     const [r] = reviewAlerts(d, { now: noon + 5 * hour, since: noon - hour });
-    expect(r).toMatchObject({ key: 'r', tier: 'amazing', liveNext: 2, runsAfter: 3, soldNearClaim: 21, soldAll: 51, floorMin: 700, floorMax: 980, snapshots: 3 });
-    expect(r!.verdict).toBe('live at 2 of the next 3 runs; sold 21 near the claim, covers the 20');
+    expect(r).toMatchObject({ key: 'r', tier: 'amazing', liveNext: 2, publishesAfter: 3, tooSoon: false, soldNearClaim: 21, soldAll: 51, floorMin: 700, floorMax: 980, snapshots: 3 });
+    expect(r!.verdict).toBe('live at 2 of the next 3 publishes; sold 21 near the claim, covers the 20');
   });
 });

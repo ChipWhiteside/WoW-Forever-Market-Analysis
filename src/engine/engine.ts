@@ -26,8 +26,11 @@ import { flipAlertCycle, flushHeldFlipAlerts, type FlipAlertResult } from '../fl
 export class EngineBusyError extends Error {}
 
 export interface RefreshResult {
-  /** 'new': at least one of Chip's houses had a new publish, ingested and counted; 'unchanged': every poll was a 304 */
-  status: 'new' | 'unchanged';
+  /**
+   * 'new': at least one of Chip's houses had a new publish, ingested and counted; 'unchanged': every house that
+   * answered gave a 304; 'failed': no house answered, so the flips were not rerun (refresh round 1 finding D).
+   */
+  status: 'new' | 'unchanged' | 'failed';
   publishes: Array<{ house: number; kind: string; rows: number; at: number }>;
   errors: string[];
   flips: FlipRunResult | null;
@@ -48,8 +51,23 @@ export class Engine {
   readonly collector: Collector;
   private log: (m: string) => void;
   private running = false;
-  /** True while a poll round or a refresh holds the engine. */
+  /** True while a poll round, a refresh or a detect holds the engine. */
   get busy(): boolean { return this.running; }
+
+  /**
+   * The one engine lock. Rounds, refreshes and every detect path (startup, house pin) run under it, so no two of them
+   * ever overlap and an alert can never be sent twice (refresh round 1 finding A). Waits up to waitMs, then throws
+   * EngineBusyError. The check and the set run with no await between them, so two waiters can never both get in.
+   */
+  private async hold<T>(waitMs: number, fn: () => Promise<T>): Promise<T> {
+    const until = Date.now() + waitMs;
+    while (this.running) {
+      if (Date.now() >= until) throw new EngineBusyError('the engine is in the middle of a poll round; try again in a minute');
+      await new Promise(r => setTimeout(r, 200));
+    }
+    this.running = true;
+    try { return await fn(); } finally { this.running = false; }
+  }
   lastFlips: FlipRunResult | null = null;
   lastFlipAlerts: FlipAlertResult | null = null;
   lastHealth: ReturnType<typeof computeHealth> | null = null;
@@ -90,7 +108,7 @@ export class Engine {
         const r = await resolveItems(this.client, this.db, [...newIds], { maxAgeMs: Infinity });
         if (r.fetched || r.notFound) this.log(`catalog: ${r.fetched} items fetched, ${r.notFound} unknown to Blizzard, ${r.errors} errors`);
         await resolveIcons(this.client, this.db, 500);
-        ({ plays, alerted } = await this.detect());
+        ({ plays, alerted } = await this.detectHeld());
       }
       // Flip alerts held in quiet hours go out once the quiet period ends, if their flips are still live.
       if (!events.length) {
@@ -131,8 +149,16 @@ export class Engine {
     await post(state === 'ok' ? '**Health recovered.** Every house is publishing again.' : `**Health problem**\n${down.join('\n')}`);
   }
 
-  /** Detection over the latest data of every house. Cheap, a few hundred milliseconds. */
-  async detect(): Promise<{ plays: Play[]; alerted: number }> {
+  /**
+   * Detection over the latest data of every house, then the flips and their alerts. Takes the engine lock, waiting as
+   * long as a round or refresh needs: the startup detect and the house pin call this.
+   */
+  async detect(waitMs = Infinity): Promise<{ plays: Play[]; alerted: number }> {
+    return this.hold(waitMs, () => this.detectHeld());
+  }
+
+  /** The detect step itself. Cheap apart from the flips. The caller holds the engine lock. */
+  private async detectHeld(): Promise<{ plays: Play[]; alerted: number }> {
     const now = Date.now();
     const ctx = buildContext(this.db, this.collector, now);
     const typical = new Map(ctx.houses.map(h => [h.id, typicalFloors(this.db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours })]));
@@ -176,9 +202,9 @@ export class Engine {
 
   /**
    * The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together,
-   * stored for the page and trends, then the best of the best sent to Discord (src/flips/alerts.ts).
+   * stored for the page and trends, then the best of the best sent to Discord (src/flips/alerts.ts). The caller holds the engine lock.
    */
-  async flipsAndAlerts(now = Date.now()): Promise<{ flips: FlipRunResult | null; alerts: FlipAlertResult | null }> {
+  private async flipsAndAlerts(now = Date.now()): Promise<{ flips: FlipRunResult | null; alerts: FlipAlertResult | null }> {
     // Who can trade what, from this hour's listings first, so the flip gate and the page agree.
     try { itemTradeable(this.db, now); } catch (e) { this.log(`tradeable check failed: ${(e as Error).message}`); }
     const flips = hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
@@ -202,42 +228,39 @@ export class Engine {
    * 304 never skips the old detectors. Waits up to waitMs for a running round, then throws EngineBusyError.
    */
   async refresh(opts: { waitMs?: number } = {}): Promise<RefreshResult> {
-    const until = Date.now() + (opts.waitMs ?? 30_000);
-    while (this.running) {
-      if (Date.now() >= until) throw new EngineBusyError('the engine is in the middle of a poll round; try again in a minute');
-      await new Promise(r => setTimeout(r, 200));
-    }
-    this.running = true;
-    try {
+    return this.hold(opts.waitMs ?? 30_000, async () => {
       const events: SnapshotEvent[] = [];
       const errors: string[] = [];
       const jobs = chipHouses(this.db).flatMap(h => KINDS.map(k => ({ h, k })));
+      const answered = new Set<number>();
       const rows = new Map(trackedHouses(this.db).map(h => [h.id, h]));
       await pool(jobs, 4, async ({ h, k }) => {
         const row = rows.get(h.id);
         if (!row) { errors.push(`${h.id} ${k}: not a tracked house`); return; }
         try {
           const ev = await this.collector.poll(row, k);
+          answered.add(h.id);
           if (ev) { events.push(ev); this.log(`refresh: publish ${h.id} ${k}: ${ev.rows} rows, data from ${new Date(ev.publishedAt).toISOString()}`); }
         } catch (e) { errors.push(`${h.id} ${k}: ${(e as Error).message}`); }
       });
       if (errors.length) this.log(`refresh poll errors: ${errors.join(' | ')}`);
       const now = Date.now();
+      const publishes = events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt }));
+      // A failed poll is not a 304: with no house answering there is nothing to rerun on, so say so and stop.
+      if (!answered.size) return { status: 'failed' as const, publishes, errors, flips: null, alerts: null };
       let out: { flips: FlipRunResult | null; alerts: FlipAlertResult | null };
       if (events.length) {
         const newIds = new Set(events.flatMap(e => e.stats.filter(s => s.listings > 0).map(s => s.itemId)));
         try { await resolveItems(this.client, this.db, [...newIds], { maxAgeMs: Infinity }); await resolveIcons(this.client, this.db, 500); }
         catch (e) { this.log(`refresh catalog failed: ${(e as Error).message}`); }
         // detect() runs the flips; read back what it stored.
-        await this.detect();
+        await this.detectHeld();
         out = { flips: this.lastFlips, alerts: this.lastFlipAlerts };
       } else {
         out = await this.flipsAndAlerts(now);
       }
-      return { status: events.length ? 'new' : 'unchanged', publishes: events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt })), errors, ...out };
-    } finally {
-      this.running = false;
-    }
+      return { status: events.length ? 'new' as const : 'unchanged' as const, publishes, errors, ...out };
+    });
   }
 
   /** Once a day: refresh vendor sell prices, which hotfixes change (spec 17.3). Returns the changes as news. */

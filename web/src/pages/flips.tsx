@@ -117,10 +117,11 @@ function RefreshButton() {
     setState({ busy: true, text: null, bad: false });
     try {
       const res = await fetch('/api/flips/refresh', { method: 'POST' });
-      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; run?: { data_at: number } | null };
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; status?: string; errors?: string[]; run?: { data_at: number } | null };
       if (!res.ok) { setState({ busy: false, text: body.error ?? `Refresh failed (${res.status}).`, bad: true }); return; }
       await qc.invalidateQueries({ queryKey: ['flips'] });
-      setState({ busy: false, text: `${body.message ?? ''}${body.run ? ` ${dataTimeLine(body.run.data_at)}.` : ''}`.trim(), bad: false });
+      // A poll that failed is shown in red with Blizzard's answer, never as "nothing new" (refresh round 1 finding D).
+      setState({ busy: false, text: `${body.message ?? ''}${body.run ? ` ${dataTimeLine(body.run.data_at)}.` : ''}`.trim(), bad: body.status === 'failed' || !!body.errors?.length });
     } catch (e) {
       setState({ busy: false, text: `Refresh failed: ${(e as Error).message}`, bad: true });
     }
