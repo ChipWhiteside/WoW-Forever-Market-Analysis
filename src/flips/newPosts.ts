@@ -25,7 +25,8 @@ export interface NewPosts {
 
 /** Undercut units per day (posted under the floor of their hour); null when under NEW_POSTS.minHours were watched. */
 export function undercutPerDay(np: NewPosts | undefined, itemId: number): number | null {
-  if (!np || np.hours < NEW_POSTS.minHours) return null;
+  // Real publishes are not exactly an hour apart (six pairs summed to 5.999 h), so allow a tenth of an hour.
+  if (!np || np.hours < NEW_POSTS.minHours - 0.1) return null;
   return ((np.underFloor?.get(itemId) ?? 0) / np.hours) * 24;
 }
 
@@ -35,7 +36,8 @@ export function undercutPerDay(np: NewPosts | undefined, itemId: number): number
  * fallen; counting only posts at or under today's price read such a war as 0 (whole system review round 2, defect A).
  */
 export function newPerDayAt(np: NewPosts | undefined, itemId: number, post: number, share = NEW_POSTS.competeShare): number | null {
-  if (!np || np.hours < NEW_POSTS.minHours) return null;
+  // Real publishes are not exactly an hour apart (six pairs summed to 5.999 h), so allow a tenth of an hour.
+  if (!np || np.hours < NEW_POSTS.minHours - 0.1) return null;
   const top = post * share;
   let units = 0;
   for (const [p, u] of np.byItem.get(itemId) ?? []) { if (p > top) break; units += u; }

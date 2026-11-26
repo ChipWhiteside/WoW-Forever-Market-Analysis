@@ -44,7 +44,7 @@ export const hoursWatched = (d: FlipDemand | undefined): number => d?.hoursWatch
  */
 export function newPerDay(d: FlipDemand | undefined): { value: number; measured: boolean } {
   // the same 6 hour minimum as the learning gate (round 2 H2): one busy hour is not a night of new posts
-  if (d?.newPerDay != null && Number.isFinite(d.newPerDay) && hoursWatched(d) >= NEW_POSTS.minHours) {
+  if (d?.newPerDay != null && Number.isFinite(d.newPerDay) && hoursWatched(d) >= NEW_POSTS.minHours - 0.1) {
     const pulled = d.pulledPerDay != null && Number.isFinite(d.pulledPerDay) ? d.pulledPerDay : 0;
     return { value: Math.max(0, d.newPerDay - pulled), measured: true };
   }
