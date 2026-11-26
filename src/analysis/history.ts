@@ -33,7 +33,7 @@ const PULL_BAND = 1.25;
  * Pulls expected to read as sales in one hourly row, in events and units. Commodities: only the stack at the front can
  * be pulled and still read as bought (anything behind a stack still up reads as pulled), so the units at the floor
  * times the pull rate. Equipment: every copy within 1.25 times the floor, times the pull rate; each is one event and
- * one unit. Same arithmetic as the SQL in demandByItem, kept here for the simulator.
+ * one unit (units kept at 0, see below). Same arithmetic as the SQL in demandByItem, kept here for the simulator.
  */
 export function rowPulls(kind: 'commodities' | 'auctions', s: { listings: number; unitsAtFloor: number; floor: number | null; ladder: Array<[number, number]> }): { events: number; units: number } {
   if (kind === 'commodities') {
@@ -43,7 +43,10 @@ export function rowPulls(kind: 'commodities' | 'auctions', s: { listings: number
   if (s.floor == null) return { events: 0, units: 0 };
   let band = 0;
   for (const [p, u] of s.ladder) if (p <= s.floor * PULL_BAND) band += u;
-  return { events: PULL_RATE.equipment * band, units: PULL_RATE.equipment * band };
+  // Units are left out for equipment: there the counter also misses buys (a dearer copy picked, a buy erased as an
+  // undercut), which in the simulator offset the pulls, so taking them off the middle made it worse (B36). The
+  // cautious estimate still takes the pulled events off.
+  return { events: PULL_RATE.equipment * band, units: 0 };
 }
 
 /**
@@ -133,8 +136,7 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(s.kind) kind,
      SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * (listings > 0)
        ELSE ${PULL_RATE.equipment} * COALESCE((SELECT SUM(json_extract(j.value, '$[1]')) FROM json_each(ladder) j WHERE json_extract(j.value, '$[0]') <= floor * ${PULL_BAND}), 0) END) pull_events,
-     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * units_at_floor
-       ELSE ${PULL_RATE.equipment} * COALESCE((SELECT SUM(json_extract(j.value, '$[1]')) FROM json_each(ladder) j WHERE json_extract(j.value, '$[0]') <= floor * ${PULL_BAND}), 0) END) pull_units
+     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * units_at_floor ELSE 0 END) pull_units
      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
      WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
     .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string; pull_events: number; pull_units: number }>;

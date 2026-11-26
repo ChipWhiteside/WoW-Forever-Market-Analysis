@@ -174,7 +174,9 @@ export function listingHours(s: Seen | undefined): number | null {
  * in the bucket mapping); the time left at `prevAt` alone is used then.
  */
 export function expiryChance(l: Listing, seen: Seen | undefined, prevAt: number, curAt: number): { chance: number; conflict: boolean; beforeBuy: number } {
-  const slack = 0.05 * H; // publish times wobble by seconds; bucket edges are not exact to the second
+  // Publish stamps can lag the data by minutes (Last-Modified is when the file was written, not when the house was
+  // read), and a bucket edge read near the boundary can be off by a few minutes. Nine minutes covers both.
+  const slack = 0.15 * H;
   const b = BUCKET_HOURS[l.timeLeft];
   const own: [number, number] = [prevAt + b[0] * H - slack, prevAt + b[1] * H + slack];
   let [lo, hi] = own;
