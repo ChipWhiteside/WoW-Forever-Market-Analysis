@@ -2,6 +2,7 @@ import { CHEAP_LISTING } from '../rules/flips.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { money } from '../format/money.ts';
 import type { Market, TakeMode } from './market.ts';
+import { newPerDayAt } from './newPosts.ts';
 import type { SellBook } from './sellBook.ts';
 import type { FlipInputs, FlipItem, FlipRecipe } from './inputs.ts';
 import type { Candidate } from './evaluate.ts';
@@ -149,6 +150,8 @@ export function generate(inputs: FlipInputs, m: Market, book: SellBook): Generat
       const atOrUnder = ls.filter(l => l.unitPrice! <= post);
       const q: SellQuote = { ...base, claimPrice: claim, undercutPrice: post, netEach: netPerUnit(h.faction, post), ahead: atOrUnder.reduce((a, l) => a + l.quantity, 0),
         ownAhead: atOrUnder.filter(l => l.unitPrice! <= line).reduce((a, l) => a + l.quantity, 0),
+        // new posts that compete are those at or under the relist price, not the base quote's post price
+        ...relistNewPosts(inputs, h.id, itemId, post, base),
         note: `relist near the usual ${money(t.typicalFloor)}; the cheap ones sit ${Math.round((1 - ls[0]!.unitPrice! / t.typicalFloor) * 100)}% under it` };
       const mode: TakeMode = { houses: [h.id], vendor: false, craft: false };
       offer({ key: flipKey('cheap_listing', h.id, itemId), family: 'cheap_listing', itemId, name: name(itemId), sellHouse: h, quote: q, buyHouseIds: [h.id],
@@ -163,6 +166,14 @@ export function generate(inputs: FlipInputs, m: Market, book: SellBook): Generat
 
   out.candidates.push(...disenchant(inputs, out.notes));
   return out;
+}
+
+/** New posts at or under a relist price from the raw publishes, when they are on disk; else the base quote's. */
+function relistNewPosts(inputs: FlipInputs, houseId: number, itemId: number, post: number, base: SellQuote): Pick<SellQuote, 'newPerHour' | 'newOvernight' | 'newDerived'> {
+  const np = inputs.newPosts?.get(houseId);
+  if (!np) return { newPerHour: base.newPerHour, newOvernight: base.newOvernight, newDerived: base.newDerived };
+  const perDay = newPerDayAt(np, itemId, post);
+  return { newPerHour: (perDay ?? 0) / 24, newOvernight: ((perDay ?? 0) / 24) * inputs.settings.horizonHours, newDerived: perDay == null };
 }
 
 /**

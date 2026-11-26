@@ -48,6 +48,18 @@ describe('H2: new posts at or under Chip\'s post price, after 6 hours', () => {
     const inputs = buildFlipInputs(d, new Map([[111, [L(ITEM, 100, 10), L(ITEM, 100, 10)]]]), 8 * HOUR);
     expect(inputs.newPosts!.get(111)!.hours).toBe(8);
   });
+  it('a cheap listing counts new posts at its own relist price, not the base quote\'s', () => {
+    const ORE = 2770;
+    const inputs = inputsOf({ listings: { 111: [L(ORE, 50, 10), ...many(ORE, 100, 6, 10)] }, items: [item(ORE, 'Copper Ore', 5)],
+      typical: { 111: { [ORE]: 90 } }, demand: { 111: { [ORE]: sells(96, 100, { lowPerDay: 96, newPerDay: 0 }) } } });
+    // 48 new units at 95c in 24 hours: under the base post (99c), over the cheap listing's relist price (90 - 1 = 89c)
+    inputs.newPosts = new Map([[111, { hours: 24, byItem: new Map([[ORE, [[95, 48]] as Array<[number, number]>]]) }]]);
+    const { c } = evalKey(inputs, `cheap_listing:111:${ORE}`);
+    expect(c.quote.undercutPrice).toBe(89);
+    expect(c.quote.newPerHour).toBe(0);
+    // at the base quote's 99c post the same publishes count 48 a day
+    expect(newPerDayAt(inputs.newPosts.get(111), ORE, 99)).toBe(48);
+  });
   it('without raw publishes, sale counting\'s count is used, but not before 6 hours watched', () => {
     const early = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 48, hours: 4, hoursWatched: 4 } }))).quote(A, DYE)!;
     expect(early.newPerHour).toBe(0);
