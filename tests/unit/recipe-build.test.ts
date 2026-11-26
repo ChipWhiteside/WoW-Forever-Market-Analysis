@@ -137,6 +137,17 @@ describe('where a recipe is learned (round 2 fix 1)', () => {
     const r = buildRecipes(game, blizzard, { trainerRanks, exists: id => id !== 2406 && game.items.has(id) });
     expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSource: 'yellow', learnSkill: 95, teachItemId: null });
   });
+  it('round 3 D3: a teaching item not confirmed in Forever (no Forever item data, never listed) is skipped', () => {
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists, teachConfirmed: id => id !== 2406 });
+    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ teachItemId: null, learnSource: 'yellow', learnSkill: 95 });
+    expect(r.recipes.find(x => x.id === 1383)).toMatchObject({ teachItemId: 2555, learnSource: 'item' });
+  });
+  it('round 3 D6: RequiredSkillRank 0 gives no rank: the item is recorded, the learn rank falls through (here to yellow 90), never to 1', () => {
+    // Handbook of Deadly Poison V (21302) is the real case of rank 0; Recipe: Swiftness Potion stands in for it here.
+    const items = new Map(game.items).set(2555, { ...game.items.get(2555)!, requiredSkillRank: 0 });
+    const r = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id) });
+    expect(r.recipes.find(x => x.id === 1383)).toMatchObject({ teachItemId: 2555, teachSkill: null, learnSource: 'yellow', learnSkill: 90 });
+  });
   it('only Horde trainers teach it: their rank, flagged trainer_horde_only; with none at all, yellow is the last guess', () => {
     // Coarse Dynamite (2427, spell 3931) has no teaching item and AcquireMethod 0 in the real rows; the Horde rank is made up.
     const h = buildRecipes(game, blizzard, { trainerRanks, hordeRanks: new Map([[3931, 75]]), exists });

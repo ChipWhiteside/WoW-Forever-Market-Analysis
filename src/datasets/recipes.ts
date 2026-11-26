@@ -88,22 +88,31 @@ export interface RecipeBuildOpts {
   hordeRanks?: Map<number, number>;
   /** whether an item is in Forever (B27) */
   exists: (itemId: number) => boolean;
+  /**
+   * whether a teaching item is confirmed in Forever: Blizzard's Forever item data has it (status 200, source forever)
+   * or a house listed it. Stricter than `exists`, because ItemSparse keeps deprecated recipe items (Pattern: Double
+   * stitched Leather Gloves OLD 4295). Defaults to `exists`.
+   */
+  teachConfirmed?: (itemId: number) => boolean;
   /** the one tradeable verdict (itemTradeable: listings, then the Forever API, then ItemSparse); undefined for unknown items */
   tradeable?: (itemId: number) => boolean | undefined;
 }
 
 /**
- * The item that teaches a craft spell: of the Forever items whose learn effect casts it, the one needing the lowest
- * RequiredSkillRank, then the lowest id. Its rank is that RequiredSkillRank (0 means no rank needed, so 1).
+ * The item that teaches a craft spell: of the items whose learn effect casts it and that are confirmed in Forever
+ * (`confirmed`), the one needing the lowest RequiredSkillRank, then the lowest id. A RequiredSkillRank of 0 says
+ * nothing about the rank, so such an item is kept only when no ranked one exists, and gives no skill (null): the
+ * learn rank then falls through to the next source, never to 1.
  */
-export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, exists: (itemId: number) => boolean): { itemId: number; skill: number } | null {
+export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, confirmed: (itemId: number) => boolean): { itemId: number; skill: number | null } | null {
   if (spellId == null) return null;
-  let best: { itemId: number; skill: number } | null = null;
+  let best: { itemId: number; skill: number | null } | null = null;
+  const rank = (x: number | null) => x ?? Infinity;
   for (const itemId of game.teachers.get(spellId) ?? []) {
     const it = game.items.get(itemId);
-    if (!it || !exists(itemId)) continue;
-    const skill = Math.max(1, it.requiredSkillRank);
-    if (!best || skill < best.skill || (skill === best.skill && itemId < best.itemId)) best = { itemId, skill };
+    if (!it || !confirmed(itemId)) continue;
+    const skill = it.requiredSkillRank > 0 ? it.requiredSkillRank : null;
+    if (!best || rank(skill) < rank(best.skill) || (rank(skill) === rank(best.skill) && itemId < best.itemId)) best = { itemId, skill };
   }
   return best;
 }
@@ -213,7 +222,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
     const cd = spell != null ? game.cooldowns.get(spell) : undefined;
     const hasThresholds = !!s && (s.yellow > 0 || s.grey > 0);
     const yellow = hasThresholds ? s!.yellow : null, grey = hasThresholds ? s!.grey : null;
-    const teach = teachingItem(game, spell, opts.exists);
+    const teach = teachingItem(game, spell, opts.teachConfirmed ?? opts.exists);
     const learn = learnFrom({
       trainer: spell != null ? opts.trainerRanks.get(spell) : null,
       horde: spell != null ? opts.hordeRanks?.get(spell) : null,
@@ -450,7 +459,7 @@ export async function syncRecipes(client: BlizzardClient, db: DB, dataDir: strin
   const items = await resolveItems(client, db, [...ids], { maxAgeMs: Infinity, game });
   log(`recipes: ${ids.size} recipe items, ${items.fetched} fetched (${items.bySource.forever} forever, ${items.bySource.classic1x} classic1x), ${items.bySource.wago} from the game table only, ${items.bySource.none} unknown, ${items.errors} errors, ${client.throttled} throttled so far`);
   const sparse = applyItemSparse(db, game);
-  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), tradeable: tradeableFn(db) });
+  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), teachConfirmed: confirmedInForever(db), tradeable: tradeableFn(db) });
   const withThresholds = recipes.filter(r => r.yellow != null).length;
   writeRecipes(db, recipes, {
     version: `wago ${game.build} + blizzard`,
@@ -473,6 +482,14 @@ export function trainerRankMaps(db: DB): { trainerRanks: Map<number, number>; ho
     if (m && (m.get(r.spell_id) ?? Infinity) > r.rank) m.set(r.spell_id, r.rank);
   }
   return { trainerRanks, hordeRanks };
+}
+
+/** Confirmed in Forever: Blizzard's Forever item data has it, or any house listed it. Used for teaching items. */
+export function confirmedInForever(db: DB): (itemId: number) => boolean {
+  const known = new Set<number>();
+  for (const r of db.prepare(`SELECT id FROM items WHERE status = 200 AND data_source = 'forever'
+    UNION SELECT DISTINCT item_id FROM item_stats WHERE listings > 0 UNION SELECT DISTINCT item_id FROM item_daily`).all() as Array<{ id: number }>) known.add(r.id);
+  return id => known.has(id);
 }
 
 /** The catalog's tradeable verdict per item, as a lookup for buildRecipes. */
