@@ -128,8 +128,9 @@ export interface SparseCheck {
 /**
  * Copy bonding, stack size and vendor bundle size from the game's item table onto every catalog row it knows,
  * and cross check Blizzard's binding (B23) and sell price against ItemSparse where both exist. The binding column
- * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. Run it after the
- * vendor price refresh, so the live API side is today's: a server hotfix shows up as a disagreement here.
+ * keeps Blizzard's words (ON_ACQUIRE and so on), so the bind on pickup guards read it as before. The vendor price
+ * refresh only refetches rows older than 20 hours, so on its own this can compare against a day old API answer;
+ * the daily item check (checkItemsAfterRefresh) refetches the disagreeing items and every recipe product first.
  */
 export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCheck {
   sparseCache = game.items;
@@ -155,6 +156,54 @@ export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCh
     }
   });
   return { updated, compared, disagree, sellCompared, sellDisagree };
+}
+
+export interface TradeVerdict { tradeable: boolean; by: 'listed' | 'api' | 'itemsparse' | 'none'; reason: string | null }
+
+/** The last verdicts computed, so the flip gate (which has no database) reads the same answer. */
+let tradeCache: Map<number, TradeVerdict> | null = null;
+
+/**
+ * Can an item reach an auction house right now? One answer for the flip engine and the conversion filter.
+ * 1. Listed on a tracked house in the last 24 hours: tradeable, whatever any field says. Market evidence wins
+ *    (Blinding Powder 5530 is Bonding 1 in ItemSparse yet listed by the thousand).
+ * 2. Else, with Forever item data (data_source forever): the Forever API binding decides. ON_ACQUIRE or QUEST blocks.
+ * 3. Else ItemSparse Bonding 1 (pickup) or 4 (quest) blocks.
+ * Blizzard's Classic binding (data_source classic1x) alone never blocks: it describes another game.
+ * Items in neither the catalog nor a listing are absent from the map; callers decide (the conversion filter treats
+ * them as bound).
+ */
+export function itemTradeable(db: DB, now = Date.now()): Map<number, TradeVerdict> {
+  const out = new Map<number, TradeVerdict>();
+  for (const r of db.prepare(`SELECT DISTINCT item_id FROM item_stats WHERE listings > 0 AND published_at >= ? AND house_id IN (SELECT id FROM houses WHERE tracked = 1)`)
+    .all(now - 24 * 3600_000) as Array<{ item_id: number }>) out.set(r.item_id, { tradeable: true, by: 'listed', reason: null });
+  for (const r of db.prepare('SELECT id, binding, bonding, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; bonding: number | null; data_source: string | null; status: number }>) {
+    if (out.has(r.id)) continue;
+    if (r.status === 200 && r.data_source === 'forever') {
+      out.set(r.id, r.binding === 'ON_ACQUIRE' ? { tradeable: false, by: 'api', reason: 'binds on pickup, it cannot be sold on an auction house' }
+        : r.binding === 'QUEST' ? { tradeable: false, by: 'api', reason: 'a quest item, it cannot be sold on an auction house' }
+        : { tradeable: true, by: 'api', reason: null });
+      continue;
+    }
+    out.set(r.id, r.bonding === 1 ? { tradeable: false, by: 'itemsparse', reason: 'binds on pickup, it cannot be sold on an auction house' }
+      : r.bonding === 4 ? { tradeable: false, by: 'itemsparse', reason: 'a quest item, it cannot be sold on an auction house' }
+      : { tradeable: true, by: r.bonding == null ? 'none' : 'itemsparse', reason: null });
+  }
+  tradeCache = out;
+  return out;
+}
+
+/**
+ * Why an item cannot be listed, or null. Reads the verdicts from the last itemTradeable run; before any run (the
+ * flip CLI), falls back to the item's own fields: Blizzard binding or ItemSparse bonding, pickup or quest.
+ */
+export function tradeBlock(it: { id: number; binding: string | null; bonding: number | null } | undefined): string | null {
+  if (!it) return null;
+  const v = tradeCache?.get(it.id);
+  if (v) return v.reason;
+  if (it.binding === 'ON_ACQUIRE' || it.bonding === 1) return 'binds on pickup, it cannot be sold on an auction house';
+  if (it.binding === 'QUEST' || it.bonding === 4) return 'a quest item, it cannot be sold on an auction house';
+  return null;
 }
 
 /** Resolve icon urls for items that have a media id but no icon yet. */

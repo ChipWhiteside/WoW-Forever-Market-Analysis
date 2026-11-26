@@ -1,7 +1,7 @@
 import type { BlizzardClient } from '../blizzard/client.ts';
 import { ProfessionIndex, Profession, SkillTier, Recipe } from '../blizzard/contracts.ts';
 import { type DB, tx } from '../store/db.ts';
-import { pool, resolveItems, applyItemSparse, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
+import { pool, resolveItems, applyItemSparse, itemTradeable, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
 import { fetchGameData, loadNewestCachedGameData, parseCsv, type GameData } from './gamedata.ts';
 import { applyGameToEgLink, type GameFixes } from './eglink.ts';
 
@@ -77,12 +77,10 @@ export interface RecipeReport {
   randomYield: Array<{ id: number; name: string }>;
   live: number; notLive: number;
   /** conversions kept, left out because an item is not in Forever, because an item cannot be traded, or because the data does not prove the counts */
-  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; boundByApiOnly: number; unproven: Array<{ spellId: number; name: string; why: string }> };
+  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; unproven: Array<{ spellId: number; name: string; why: string }> };
 }
 
 /** Blizzard binding words that mean an item can never reach the auction house. */
-const BOUND_WORDS = new Set(['ON_ACQUIRE', 'QUEST']);
-
 export interface RecipeBuildOpts {
   /** craft spell -> lowest rank an Alliance or neutral trainer teaches it at (EG Link) */
   trainerRanks: Map<number, number>;
@@ -90,22 +88,31 @@ export interface RecipeBuildOpts {
   hordeRanks?: Map<number, number>;
   /** whether an item is in Forever (B27) */
   exists: (itemId: number) => boolean;
-  /** the live API's binding for an item (ON_ACQUIRE, QUEST...), from the items table; a hotfix can bind what ItemSparse leaves unbound */
-  apiBinding?: (itemId: number) => string | null | undefined;
+  /**
+   * whether a teaching item is confirmed in Forever: Blizzard's Forever item data has it (status 200, source forever)
+   * or a house listed it. Stricter than `exists`, because ItemSparse keeps deprecated recipe items (Pattern: Double
+   * stitched Leather Gloves OLD 4295). Defaults to `exists`.
+   */
+  teachConfirmed?: (itemId: number) => boolean;
+  /** the one tradeable verdict (itemTradeable: listings, then the Forever API, then ItemSparse); undefined for unknown items */
+  tradeable?: (itemId: number) => boolean | undefined;
 }
 
 /**
- * The item that teaches a craft spell: of the Forever items whose learn effect casts it, the one needing the lowest
- * RequiredSkillRank, then the lowest id. Its rank is that RequiredSkillRank (0 means no rank needed, so 1).
+ * The item that teaches a craft spell: of the items whose learn effect casts it and that are confirmed in Forever
+ * (`confirmed`), the one needing the lowest RequiredSkillRank, then the lowest id. A RequiredSkillRank of 0 says
+ * nothing about the rank, so such an item is kept only when no ranked one exists, and gives no skill (null): the
+ * learn rank then falls through to the next source, never to 1.
  */
-export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, exists: (itemId: number) => boolean): { itemId: number; skill: number } | null {
+export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, confirmed: (itemId: number) => boolean): { itemId: number; skill: number | null } | null {
   if (spellId == null) return null;
-  let best: { itemId: number; skill: number } | null = null;
+  let best: { itemId: number; skill: number | null } | null = null;
+  const rank = (x: number | null) => x ?? Infinity;
   for (const itemId of game.teachers.get(spellId) ?? []) {
     const it = game.items.get(itemId);
-    if (!it || !exists(itemId)) continue;
-    const skill = Math.max(1, it.requiredSkillRank);
-    if (!best || skill < best.skill || (skill === best.skill && itemId < best.itemId)) best = { itemId, skill };
+    if (!it || !confirmed(itemId)) continue;
+    const skill = it.requiredSkillRank > 0 ? it.requiredSkillRank : null;
+    if (!best || rank(skill) < rank(best.skill) || (rank(skill) === rank(best.skill) && itemId < best.itemId)) best = { itemId, skill };
   }
   return best;
 }
@@ -152,7 +159,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
   const report: RecipeReport = {
     build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, conversion: 0, none: 0, teachItem: 0 },
     byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
-    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, boundByApiOnly: 0, unproven: [] },
+    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, unproven: [] },
   };
   const profLines = new Map<number, string>();
   for (const p of blizzard.professions) profLines.set(p.id, p.name);
@@ -215,7 +222,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
     const cd = spell != null ? game.cooldowns.get(spell) : undefined;
     const hasThresholds = !!s && (s.yellow > 0 || s.grey > 0);
     const yellow = hasThresholds ? s!.yellow : null, grey = hasThresholds ? s!.grey : null;
-    const teach = teachingItem(game, spell, opts.exists);
+    const teach = teachingItem(game, spell, opts.teachConfirmed ?? opts.exists);
     const learn = learnFrom({
       trainer: spell != null ? opts.trainerRanks.get(spell) : null,
       horde: spell != null ? opts.hordeRanks?.get(spell) : null,
@@ -237,7 +244,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
     };
     out.push(r);
   }
-  out.push(...buildConversions(game, opts.exists, report, opts.apiBinding));
+  out.push(...buildConversions(game, opts.exists, report, opts.tradeable));
   for (const r of out) {
     report.recipes++;
     report.learn[r.learnSource ?? 'none']++;
@@ -262,7 +269,7 @@ const NUMBER_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, thre
  * names every count above 1, so inputs and outputs are proven from data, only when every item is in Forever, and
  * only when the game table shows every item can be traded (quest spells like "fill the flask" are left out).
  */
-export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, apiBinding?: RecipeBuildOpts['apiBinding']): BuiltRecipe[] {
+export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, tradeable?: RecipeBuildOpts['tradeable']): BuiltRecipe[] {
   const slaSpells = new Set([...game.sla.values()].map(s => s.spellId));
   const bySpell = new Map<number, Array<{ itemId: number; inputs: Array<{ itemId: number; quantity: number }> }>>();
   for (const u of game.itemUses) {
@@ -299,12 +306,16 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
     const live = exists(product) && inputs.every(i => exists(i.itemId));
     if (!live) { if (report) report.conversions.notLive++; continue; }
     // Quest items (fill a flask, sign a paper) pass every rule above but can never be bought or sold. Keep a conversion
-    // only when every item it touches can be traded: bound if EITHER the game table (bonding pickup or quest, or no row)
-    // OR the live API says pickup or quest, since a server hotfix can bind what ItemSparse leaves unbound (Rogue poisons).
+    // only when every item it touches can be traded, by the one verdict (catalog itemTradeable: recent listings, then the
+    // Forever API binding, then ItemSparse). An item with no verdict falls back to the game table: bonding pickup or
+    // quest, or no row, counts as bound.
     const touched = [product, ...inputs.map(i => i.itemId)];
-    const sparseBound = touched.some(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
-    const apiBound = touched.some(i => BOUND_WORDS.has(apiBinding?.(i) ?? ''));
-    if (sparseBound || apiBound) { if (report) { report.conversions.bound++; if (!sparseBound) report.conversions.boundByApiOnly++; } continue; }
+    const bound = touched.some(i => {
+      const v = tradeable?.(i);
+      if (v != null) return !v;
+      const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4;
+    });
+    if (bound) { if (report) report.conversions.bound++; continue; }
     const cd = game.cooldowns.get(spellId);
     const id = CONVERSION_ID_BASE + spellId;
     out.push({
@@ -392,7 +403,7 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
   const l = p.learn;
   return `${r.recipes} recipes (${p.source.both} both sources, ${p.source.wago} wago only, ${p.source.blizzard} blizzard only), ${p.live} live, `
     + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions `
-    + `(${p.conversions.bound} left out as bound, ${p.conversions.boundByApiOnly} of them by the live API only), `
+    + `(${p.conversions.bound} left out as bound), `
     + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; learned from: ${l.trainer_alliance} Alliance trainer, `
     + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.conversion} conversion, ${l.none} unknown; ${l.teachItem} have a teaching item; `
     + `items ${r.items.bySource.forever} forever, ${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
@@ -404,17 +415,26 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
 let lastGame: GameData | null = null;
 
 /**
- * Cross check the item catalog against ItemSparse after the daily vendor price refresh, so the live API's binding and
- * sell price are today's (a hotfix made 20 Rogue poisons bind on pickup with sell price 0 while ItemSparse still says
- * unbound). Both disagreement counts go in the log line and the gamedata dataset note.
+ * Cross check the item catalog against ItemSparse after the daily vendor price refresh. The refresh skips rows
+ * fetched in the last 20 hours, so first refetch from Blizzard every item that disagrees and every recipe product,
+ * then compare again: a server hotfix (20 Rogue poisons bound on pickup with sell price 0 on November 25) is seen the
+ * same day. Both disagreement counts go in the log line and the gamedata dataset note.
  */
-export function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}): string {
+export async function checkItemsAfterRefresh(db: DB, dataDir: string, log: (m: string) => void = () => {}, client?: BlizzardClient): Promise<string> {
   const game = lastGame ?? loadNewestCachedGameData(dataDir, { log });
   if (!game) throw new Error('no game tables cached yet, the recipes step fills them');
-  const c = applyItemSparse(db, game);
+  let c = applyItemSparse(db, game);
+  let refetched = '';
+  if (client) {
+    const ids = new Set<number>([...c.disagree.map(d => d.id), ...c.sellDisagree.map(d => d.id)]);
+    for (const r of db.prepare('SELECT DISTINCT crafted_item_id AS id FROM recipes WHERE crafted_item_id IS NOT NULL').all() as Array<{ id: number }>) ids.add(r.id);
+    const res = await resolveItems(client, db, [...ids], { maxAgeMs: 0, game });
+    refetched = `; refetched ${res.fetched} of ${ids.size} (disagreeing items and recipe products), ${res.priceChanges.length} sell price changes, ${res.errors} errors`;
+    c = applyItemSparse(db, game);
+  }
   const sample = (a: Array<{ id: number }>) => a.slice(0, 8).map(x => x.id).join(', ');
   const text = `binding disagrees with ItemSparse on ${c.disagree.length} of ${c.compared}${c.disagree.length ? ` (${sample(c.disagree)})` : ''}; `
-    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}`;
+    + `sell price disagrees on ${c.sellDisagree.length} of ${c.sellCompared}${c.sellDisagree.length ? ` (${sample(c.sellDisagree)})` : ''}${refetched}`;
   db.prepare(`UPDATE datasets SET note = ? WHERE name = 'gamedata'`).run(gamedataNote(game, text));
   return text;
 }
@@ -448,7 +468,7 @@ export async function syncRecipes(client: BlizzardClient, db: DB, dataDir: strin
   const items = await resolveItems(client, db, [...ids], { maxAgeMs: Infinity, game });
   log(`recipes: ${ids.size} recipe items, ${items.fetched} fetched (${items.bySource.forever} forever, ${items.bySource.classic1x} classic1x), ${items.bySource.wago} from the game table only, ${items.bySource.none} unknown, ${items.errors} errors, ${client.throttled} throttled so far`);
   const sparse = applyItemSparse(db, game);
-  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), apiBinding: apiBindings(db) });
+  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), teachConfirmed: confirmedInForever(db), tradeable: tradeableFn(db) });
   const withThresholds = recipes.filter(r => r.yellow != null).length;
   writeRecipes(db, recipes, {
     version: `wago ${game.build} + blizzard`,
@@ -473,9 +493,16 @@ export function trainerRankMaps(db: DB): { trainerRanks: Map<number, number>; ho
   return { trainerRanks, hordeRanks };
 }
 
-/** The live API's binding per item, from the catalog. */
-export function apiBindings(db: DB): (itemId: number) => string | null {
-  const m = new Map<number, string>();
-  for (const r of db.prepare(`SELECT id, binding FROM items WHERE status = 200 AND binding IS NOT NULL`).all() as Array<{ id: number; binding: string }>) m.set(r.id, r.binding);
-  return id => m.get(id) ?? null;
+/** Confirmed in Forever: Blizzard's Forever item data has it, or any house listed it. Used for teaching items. */
+export function confirmedInForever(db: DB): (itemId: number) => boolean {
+  const known = new Set<number>();
+  for (const r of db.prepare(`SELECT id FROM items WHERE status = 200 AND data_source = 'forever'
+    UNION SELECT DISTINCT item_id FROM item_stats WHERE listings > 0 UNION SELECT DISTINCT item_id FROM item_daily`).all() as Array<{ id: number }>) known.add(r.id);
+  return id => known.has(id);
+}
+
+/** The catalog's tradeable verdict per item, as a lookup for buildRecipes. */
+export function tradeableFn(db: DB): (itemId: number) => boolean | undefined {
+  const m = itemTradeable(db);
+  return id => m.get(id)?.tradeable;
 }

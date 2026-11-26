@@ -137,6 +137,17 @@ describe('where a recipe is learned (round 2 fix 1)', () => {
     const r = buildRecipes(game, blizzard, { trainerRanks, exists: id => id !== 2406 && game.items.has(id) });
     expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ learnSource: 'yellow', learnSkill: 95, teachItemId: null });
   });
+  it('round 3 D3: a teaching item not confirmed in Forever (no Forever item data, never listed) is skipped', () => {
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists, teachConfirmed: id => id !== 2406 });
+    expect(r.recipes.find(x => x.id === 1359)).toMatchObject({ teachItemId: null, learnSource: 'yellow', learnSkill: 95 });
+    expect(r.recipes.find(x => x.id === 1383)).toMatchObject({ teachItemId: 2555, learnSource: 'item' });
+  });
+  it('round 3 D6: RequiredSkillRank 0 gives no rank: the item is recorded, the learn rank falls through (here to yellow 90), never to 1', () => {
+    // Handbook of Deadly Poison V (21302) is the real case of rank 0; Recipe: Swiftness Potion stands in for it here.
+    const items = new Map(game.items).set(2555, { ...game.items.get(2555)!, requiredSkillRank: 0 });
+    const r = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id) });
+    expect(r.recipes.find(x => x.id === 1383)).toMatchObject({ teachItemId: 2555, teachSkill: null, learnSource: 'yellow', learnSkill: 90 });
+  });
   it('only Horde trainers teach it: their rank, flagged trainer_horde_only; with none at all, yellow is the last guess', () => {
     // Coarse Dynamite (2427, spell 3931) has no teaching item and AcquireMethod 0 in the real rows; the Horde rank is made up.
     const h = buildRecipes(game, blizzard, { trainerRanks, hordeRanks: new Map([[3931, 75]]), exists });
@@ -190,15 +201,16 @@ describe('conversions from item use spells', () => {
     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
     expect(r.report.conversions.bound).toBe(2);
   });
-  it('bound if EITHER source says so: the live API binds Lesser Magic Essence on pickup while ItemSparse says unbound (a server hotfix)', () => {
+  it('the one tradeable verdict decides: blocked when it says so even if ItemSparse is unbound, kept when it says tradeable even if ItemSparse binds', () => {
     expect(game.items.get(10938)?.bonding).toBe(0);
-    const r = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10938 ? 'ON_ACQUIRE' : null) });
+    const r = buildRecipes(game, blizzard, { trainerRanks, exists, tradeable: id => (id === 10938 ? false : undefined) });
     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
-    expect(r.report.conversions).toMatchObject({ bound: 2, boundByApiOnly: 2 });
-    const q = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10939 ? 'QUEST' : 'ON_USE') });
-    expect(q.report.conversions.bound).toBe(2);
-    const free = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: () => 'ON_EQUIP' });
-    expect(free.report.conversions.kept.length).toBe(2);
+    expect(r.report.conversions.bound).toBe(2);
+    const items = new Map(game.items).set(10938, { ...game.items.get(10938)!, bonding: 1 });
+    const listed = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => true });
+    expect(listed.report.conversions.kept.length).toBe(2);
+    const noVerdict = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => undefined });
+    expect(noVerdict.report.conversions.bound).toBe(2);
   });
 });
 

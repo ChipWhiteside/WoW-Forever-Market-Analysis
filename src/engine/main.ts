@@ -44,7 +44,7 @@ async function main() {
       await step('recipes', async () => summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))),
       await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
       // After the price refresh, so a server hotfix to binding or sell price shows against ItemSparse the same day.
-      await step('item check', async () => checkItemsAfterRefresh(db, cfg.dataDir, log)),
+      await step('item check', async () => checkItemsAfterRefresh(db, cfg.dataDir, log, client)),
       await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
     ];
     // Mark done only when every step worked, otherwise the next round retries the whole set.

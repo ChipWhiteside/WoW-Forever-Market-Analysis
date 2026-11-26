@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { checkItemsAfterRefresh } from '../../src/datasets/recipes.ts';
 import { BlizzardClient } from '../../src/blizzard/client.ts';
 import { ItemResponse } from '../../src/blizzard/contracts.ts';
-import { resolveItems, applyItemSparse, getItem } from '../../src/catalog/items.ts';
+import { resolveItems, applyItemSparse, getItem, itemTradeable, tradeBlock } from '../../src/catalog/items.ts';
 import { loadGameDataFromDir, type SparseItem } from '../../src/datasets/gamedata.ts';
 import { openDb } from '../../src/store/db.ts';
 import { tempDir } from '../helpers.ts';
@@ -131,8 +131,64 @@ describe('binding against ItemSparse.Bonding (B23)', () => {
     db.exec(`INSERT INTO datasets (name, version, fetched_at, records, note) VALUES ('gamedata', '1.60.1.71037', 0, 0, 'old')`);
     const { client } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
     await resolveItems(client, db, [6947], { game });
-    const line = checkItemsAfterRefresh(db, dir);
+    const line = await checkItemsAfterRefresh(db, dir);
     expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947)');
     expect((db.prepare(`SELECT note FROM datasets WHERE name = 'gamedata'`).get() as { note: string }).note).toBe(`wago wowf tables; ${line}`);
+  });
+});
+
+describe('the item check refetches recipe products and disagreeing items (round 3 D5)', () => {
+  it('a hotfix on a recipe product fetched an hour ago is seen the same day', async () => {
+    const dir = tempDir();
+    const wago = join(dir, 'datasets', 'wago', '1.60.1.71037');
+    mkdirSync(wago, { recursive: true });
+    for (const f of readdirSync(FIXTURE_DIR)) copyFileSync(join(FIXTURE_DIR, f), join(wago, f));
+    const db = openDb(dir, ':memory:');
+    // Before the hotfix: unbound, sells for 5, as ItemSparse says; fetched an hour ago, so the 20 hour refresh skips it.
+    db.exec(`INSERT INTO items (id, name, binding, sell_price, status, fetched_at, data_source) VALUES (6947, 'Instant Poison', NULL, 5, 200, ${Date.now() - 3600_000}, 'forever');
+      INSERT INTO recipes (id, name, profession, crafted_item_id, qty_min, qty_max, live, kind, source) VALUES (4807, 'Instant Poison', 'Poisons', 6947, 1, 1, 1, 'profession', 'wago');`);
+    expect(await checkItemsAfterRefresh(db, dir)).toBe('binding disagrees with ItemSparse on 0 of 1; sell price disagrees on 0 of 1');
+    const { client, calls } = fake({ '6947:static-forever-us': ok('item-6947-forever.json') });
+    const line = await checkItemsAfterRefresh(db, dir, () => {}, client);
+    expect(calls).toEqual(['6947:static-forever-us']);
+    expect(line).toBe('binding disagrees with ItemSparse on 1 of 1 (6947); sell price disagrees on 1 of 1 (6947); refetched 1 of 1 (disagreeing items and recipe products), 1 sell price changes, 0 errors');
+  });
+});
+
+// Round 3 D2: one tradeable verdict. Rows as the live catalog held them on November 25 (wowf.db copy), listings as
+// recorded on tracked houses: Blinding Powder 5530 and Encrypted Twilight Text 20404 listed that hour, Piccolo of the
+// Flaming Fire 13379 too; Instant Poison 6947 last listed November 24, more than 24 hours before.
+describe('itemTradeable: market evidence, then the Forever API, then ItemSparse (round 3 D2)', () => {
+  const NOW = 1795631176000;
+  const setup = () => {
+    const db = openDb(tempDir(), ':memory:');
+    db.exec(`INSERT INTO houses (id, name, faction, cut, tracked) VALUES (111, 'A', 'alliance', 0.05, 1), (999, 'Old', 'alliance', 0.05, 0);
+      INSERT INTO items (id, name, binding, bonding, status, fetched_at, data_source) VALUES
+        (5530, 'Blinding Powder', NULL, 1, 200, 0, 'forever'),
+        (20404, 'Encrypted Twilight Text', NULL, 4, 200, 0, 'forever'),
+        (13379, 'Piccolo of the Flaming Fire', 'ON_ACQUIRE', NULL, 200, 0, 'classic1x'),
+        (6947, 'Instant Poison', 'ON_ACQUIRE', 1, 200, 0, 'forever'),
+        (1, 'Unlisted, unbound in the API, bound in ItemSparse', NULL, 1, 200, 0, 'forever'),
+        (2, 'Unlisted, Classic says pickup', 'ON_ACQUIRE', 0, 200, 0, 'classic1x'),
+        (3, 'Unlisted, only ItemSparse', NULL, 1, 404, 0, 'wago');
+      INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder) VALUES
+        (1, 111, 5530, ${NOW}, 100, 1, 1, 6470, 40, '[]'), (1, 111, 20404, ${NOW}, 100, 1, 1, 45, 45, '[]'), (1, 111, 13379, ${NOW}, 100, 1, 1, 30, 30, '[]'),
+        (2, 111, 6947, 1795501512000, 10, 1, 1, 5, 5, '[]'), (3, 999, 1, ${NOW}, 10, 1, 1, 5, 5, '[]');`);
+    return db;
+  };
+  it('listed in the last 24 hours wins; poisons stay blocked; the API beats ItemSparse; Classic binding alone never blocks', () => {
+    const t = itemTradeable(setup(), NOW);
+    expect(t.get(5530)).toMatchObject({ tradeable: true, by: 'listed' });
+    expect(t.get(20404)).toMatchObject({ tradeable: true, by: 'listed' });
+    expect(t.get(13379)).toMatchObject({ tradeable: true, by: 'listed' });
+    expect(t.get(6947)).toMatchObject({ tradeable: false, by: 'api' });
+    expect(t.get(1)).toMatchObject({ tradeable: true, by: 'api' }); // its listing is on an untracked house
+    expect(t.get(2)).toMatchObject({ tradeable: true });
+    expect(t.get(3)).toMatchObject({ tradeable: false, by: 'itemsparse' });
+  });
+  it('the flip gate reads the same verdict', () => {
+    itemTradeable(setup(), NOW);
+    expect(tradeBlock({ id: 5530, binding: null, bonding: 1 })).toBeNull();
+    expect(tradeBlock({ id: 6947, binding: 'ON_ACQUIRE', bonding: 1 })).toMatch(/binds on pickup/);
   });
 });

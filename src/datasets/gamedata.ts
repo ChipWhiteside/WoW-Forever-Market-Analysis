@@ -40,6 +40,7 @@ export const WAGO_TABLES = {
   Item: ['ID', 'ClassID', 'SubclassID'],
   ItemEffect: ['ID', 'TriggerType', 'Charges', 'SpellID'],
   ItemXItemEffect: ['ItemEffectID', 'ItemID'],
+  Faction: ['ID', 'Name_lang', ...[0, 1, 2, 3].flatMap(i => [`ReputationRaceMasks${i}_0`, `ReputationBase_${i}`])],
 } as const satisfies Record<string, readonly string[]>;
 
 export type WagoTable = keyof typeof WAGO_TABLES;
@@ -119,6 +120,8 @@ export interface GameData {
   items: Map<number, SparseItem>;
   itemClass: Map<number, { classId: number; subclassId: number }>;
   itemUses: ItemUse[];
+  /** reputation factions; closedToAlliance when Alliance races start at Hated (-42000), locked: Horde only factions */
+  factions: Map<number, { name: string; closedToAlliance: boolean }>;
   /** craft spell -> the items that teach it (ItemEffect TriggerType 6), lowest item id first */
   teachers: Map<number, number[]>;
   /** set when the newest build could not be downloaded or failed its shape check, so an older cached build is in use */
@@ -224,7 +227,18 @@ export function buildGameData(build: string, t: Record<WagoTable, Table>): GameD
     teachers.set(u.spellId, a);
   }
   for (const a of teachers.values()) a.sort((x, y) => x - y);
-  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses, teachers };
+  // Faction.ReputationRaceMasks{i}_0 is the low word of a race mask, ReputationBase_{i} the standing those races start at.
+  // A mask holding Human (race 1, bit 0) that starts at -42000 (Hated, locked) closes the faction to the Alliance:
+  // The Defilers 510, Darkspear Raiders 2798, Earthen Ring 2787 and the Horde capitals read so; Steamwheedle towns
+  // have mask -1 at 500. Checked on build 1.60.1.71139 rows, November 26.
+  const factions = new Map<number, { name: string; closedToAlliance: boolean }>();
+  { const f = t.Faction; const iId = f.col('ID'), iN = f.col('Name_lang');
+    const im = [0, 1, 2, 3].map(i => f.col(`ReputationRaceMasks${i}_0`)), ib = [0, 1, 2, 3].map(i => f.col(`ReputationBase_${i}`));
+    for (const r of f.rows) {
+      const closed = im.some((c, k) => (num(r[c]) & 1) !== 0 && num(r[ib[k]!]) <= -42000);
+      factions.set(num(r[iId]), { name: r[iN] ?? '', closedToAlliance: closed });
+    } }
+  return { build, sla, skillLines, tradeSkillCategories, spellNames, spellDescriptions, reagents, creates, castMs, cooldowns, items, itemClass, itemUses, teachers, factions };
 }
 
 /** Read every table from one directory (a cached build, or a test fixture) and index it. */

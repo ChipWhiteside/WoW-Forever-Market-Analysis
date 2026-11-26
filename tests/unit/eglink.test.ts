@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { vendorFaction, steamwheedleTown, vendorUnitPrice, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
+import { vendorFaction, steamwheedleTown, vendorUnitPrice, UNUSABLE_GATE, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
   type EgVendor, type EgNpc, type EgCreature, type EgTrainer } from '../../src/datasets/eglink.ts';
 import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
 import { openDb } from '../../src/store/db.ts';
@@ -16,7 +16,7 @@ describe('vendor faction (test T4)', () => {
   it('Alliance NPC is Alliance (Edna Mullby)', () => expect(vendorFaction(S({ Alliance: [5, 6] }), new Set(['Alliance']))).toBe('alliance'));
   it('Old Man Heming (2626) is usable: Chip bought Bright Baubles from him in game (B3, V22)', () => {
     expect(vendorFaction(S({ Horde: [4] }), new Set(), 2626)).toBe('neutral');
-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 2626)).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 2626)).toBe('neutral');
   });
   // Round 2 fix 7: seen only by Horde at Neutral, outside a Steamwheedle town and not a named case: unconfirmed.
   it('seen only by Horde at Neutral elsewhere is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
@@ -27,7 +27,8 @@ describe('vendor faction (test T4)', () => {
     expect(steamwheedleTown(1452, 61.2, 37.1)).toBe('Everlook');   // Qia
     expect(steamwheedleTown(1413, 41.8, 38.6)).toBeNull();          // Kiknikle, not in Ratchet
     expect(steamwheedleTown(1434, 32.7, 29.2)).toBeNull();          // Nerrist, Grom'gol
-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 1, 'Ratchet')).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 1, 'Ratchet')).toBe('neutral');
+    expect(vendorFaction(S({ Horde: [4] }), new Set(['Horde']), 1, 'Ratchet')).toBe('horde');
     expect(vendorFaction(S({ Horde: [5], Alliance: [2] }), new Set(), 1, 'Ratchet')).toBe('horde');
   });
   it('seen by Alliance at Neutral is neutral', () => expect(vendorFaction(S({ Alliance: [4] }), new Set())).toBe('neutral'));
@@ -82,6 +83,15 @@ describe('round 2 fixes on real EG Link records', () => {
       { name: 'Elixir of Minor Strength', skill: 'Alchemy' }, { name: 'Cerulean Dye', skill: 'Alchemy' }]);
     expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 4210').get()).toEqual({ name: 'Spiced Wolf Meat', skill: 'Cooking' });
   });
+  it('round 3 D1: Creeg Bothunk (263570) stands inside the Ratchet box but EG Link records his side as Horde, so he stays Horde', () => {
+    const v = V(263570);
+    expect(v.length).toBeGreaterThan(0);
+    expect(steamwheedleTown(v[0]!.uiMap, v[0]!.x, v[0]!.y)).toBe('Ratchet');
+    expect(v.every(x => x.faction === 'horde')).toBe(true);
+  });
+  it('Old Man Heming (2626) from his real records is neutral: Bright Baubles usable', () => {
+    expect(V(2626, 6532).map(x => x.faction)).toEqual(['neutral']);
+  });
   it('fix 7: Kixxle (8305), seen only by Horde at Neutral, is unconfirmed; Kzixx (3134) stays neutral as a known neutral', () => {
     expect(V(8305).every(v => v.faction === 'unconfirmed')).toBe(true);
     expect(V(3134).every(v => v.faction === 'neutral')).toBe(true);
@@ -90,17 +100,21 @@ describe('round 2 fixes on real EG Link records', () => {
   it('fix 4: the gate is the item\'s own reputation need, not the lowest standing someone recorded', () => {
     expect(vendorGate(game.items.get(2324))).toBe('4');          // Bleach: no faction
     expect(vendorGate(game.items.get(20072))).toBe('5');         // Defiler's Talisman: MinReputation 4, Friendly
+    // Round 3 D4: The Defilers are closed to Alliance in the real Faction rows, so the talisman is never usable.
+    expect(vendorGate(game.items.get(20072), game.factions)).toBe(UNUSABLE_GATE);
+    expect([510, 2798, 2787, 76].map(f => game.factions.get(f)?.closedToAlliance)).toEqual([true, true, true, true]);
+    expect([21, 369, 470, 577, 2827, 72, 69].map(f => game.factions.get(f)?.closedToAlliance)).toEqual([false, false, false, false, false, false, false]);
     expect(vendorGate(game.items.get(20068))).toBe('8');         // Deathguard's Cloak: MinReputation 7, Exalted
     expect(vendorGate(undefined)).toBeNull();
     const db = openDb(tempDir(), ':memory:');
     const ins = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, item_id, price, price_by_standing, units_per_purchase, limited, standing_required) VALUES (?, 'x', 'alliance', ?, 1, ?, 1, 0, ?)`);
     ins.run(66, 2324, '{"6":23}', '6');      // only an Honored player recorded it: the item needs nothing
-    ins.run(1, 20072, '{"4":100}', '4');     // recorded at Neutral, but the item needs Friendly
+    ins.run(1, 20072, '{"4":100}', '4');     // recorded at Neutral, but the item needs Friendly with a Horde only faction
     ins.run(2, 999999, '{"6":90}', '4');     // not in the game table: the recorded standing stays
     const f = applyGameToEgLink(db, game);
     expect(db.prepare('SELECT item_id, standing_required FROM vendor_items ORDER BY npc_id').all()).toEqual([
-      { item_id: 20072, standing_required: '5' }, { item_id: 999999, standing_required: '6' }, { item_id: 2324, standing_required: '4' }]);
-    expect(f).toMatchObject({ vendorGated: 1, vendorGateChanged: 2, vendorNoItem: 1 });
+      { item_id: 20072, standing_required: '9' }, { item_id: 999999, standing_required: '6' }, { item_id: 2324, standing_required: '4' }]);
+    expect(f).toMatchObject({ vendorGated: 1, vendorGateChanged: 2, vendorNoItem: 1, vendorHordeOnly: 1 });
   });
 });
 

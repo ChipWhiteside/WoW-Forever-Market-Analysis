@@ -6,6 +6,7 @@ import type { SellBook } from './sellBook.ts';
 import type { FlipInputs, FlipItem, FlipRecipe } from './inputs.ts';
 import type { Candidate } from './evaluate.ts';
 import type { Family, HeldBack, HouseRef, SellQuote } from './types.ts';
+import { tradeBlock } from '../catalog/items.ts';
 
 /**
  * Every flip family, as candidates for the evaluator. A family only says what is bought, how, and where it sells;
@@ -20,9 +21,8 @@ export const flipKey = (family: Family, sellHouseId: number | null, itemId: numb
 /** Bind on pickup (Blizzard binding or the game table's Bonding 1) or a quest item: never sold on an auction house. */
 export function cannotList(it: FlipItem | undefined): string | null {
   if (!it) return null;
-  if (it.binding === 'ON_ACQUIRE' || it.bonding === 1) return 'binds on pickup, it cannot be sold on an auction house';
-  if (it.binding === 'QUEST' || it.bonding === 4) return 'a quest item, it cannot be sold on an auction house';
-  return null;
+  // One authority for both the flip engine and the conversion filter: listings, then Forever API, then ItemSparse.
+  return tradeBlock(it);
 }
 
 const houseWord = (h: HouseRef) => (h.faction === 'blackwater' ? 'Blackwater' : 'Alliance');
