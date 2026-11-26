@@ -2,7 +2,7 @@ import type { Listing } from '../analysis/aggregate.ts';
 import { judgeSell, type DetectorContext, type HouseCtx, type ItemCtx, type VendorOffer } from '../detectors/types.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { FLIP_GATES, LOW_ESTIMATE, NEW_POSTS, SELL_CHANCE, UNDERCUT } from '../rules/flips.ts';
-import { newPerDayAt } from './newPosts.ts';
+import { newPerDayAt, undercutPerDay } from './newPosts.ts';
 import { poissonLowerBound, poissonTail, poissonUpper } from './poisson.ts';
 import { money } from '../format/money.ts';
 import type { FlipDemand, FlipInputs } from './inputs.ts';
@@ -176,7 +176,12 @@ export class SellBook {
     // New posts at or under Chip's post price from the raw publishes when they are on disk (round 2 H2), else sale
     // counting's near the floor count.
     const np = this.inputs.newPosts?.get(h.id);
-    const atPost = np ? newPerDayAt(np, itemId, post) : null;
+    // Measured at the post price before any drift: lowering the price for a falling floor must not hide the very
+    // undercutters that make it fall (they keep posting under whatever the floor is).
+    const postBefore = driftDrop > 0 ? Math.max(post, judged.price - typicalUndercut(ls, judged.price)) : post;
+    const atPostOnly = np ? newPerDayAt(np, itemId, postBefore) : null;
+    // While the floor falls, every post under the floor of its hour ends up under Chip: the larger count is used.
+    const atPost = atPostOnly != null && driftDrop > 0 ? Math.max(atPostOnly, undercutPerDay(np, itemId) ?? 0) : atPostOnly;
     const low = lowPerDay(d), fresh = np ? { value: atPost ?? 0, measured: atPost != null } : newPerDay(d);
     const horizon = this.inputs.settings.horizonHours;
     const gates: string[] = [];

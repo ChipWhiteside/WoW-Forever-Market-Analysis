@@ -16,6 +16,17 @@ export interface NewPosts {
   hours: number;
   /** per item, new units by unit price, cheapest first */
   byItem: Map<number, Array<[price: number, units: number]>>;
+  /**
+   * per item, new units posted strictly under the floor of the publish before them: undercutters. In a falling market
+   * these end up under Chip whatever price he takes, so they are his competition there (round 2, defect A).
+   */
+  underFloor?: Map<number, number>;
+}
+
+/** Undercut units per day (posted under the floor of their hour); null when under NEW_POSTS.minHours were watched. */
+export function undercutPerDay(np: NewPosts | undefined, itemId: number): number | null {
+  if (!np || np.hours < NEW_POSTS.minHours) return null;
+  return ((np.underFloor?.get(itemId) ?? 0) / np.hours) * 24;
 }
 
 /**
@@ -38,19 +49,25 @@ export function dataDirOf(db: DB): string | null {
 }
 
 // Each pair of publishes is read once per process: the hourly run only reads the newest pair.
-const pairMemo = new Map<string, Map<number, Map<number, number>>>();
+interface Pair { byPrice: Map<number, Map<number, number>>; under: Map<number, number> }
+const pairMemo = new Map<string, Pair>();
 const PAIR_MEMO_MAX = 400;
 
-function newInPair(prev: Listing[], cur: Listing[]): Map<number, Map<number, number>> {
+function newInPair(prev: Listing[], cur: Listing[]): Pair {
   const seen = new Set(prev.map(l => l.id));
+  const floor = new Map<number, number>();
+  for (const l of prev) if (l.unitPrice != null && l.unitPrice > 0 && !(floor.get(l.itemId)! <= l.unitPrice)) floor.set(l.itemId, l.unitPrice);
   const out = new Map<number, Map<number, number>>();
+  const under = new Map<number, number>();
   for (const l of cur) {
     if (seen.has(l.id) || l.unitPrice == null || l.unitPrice <= 0) continue;
     let m = out.get(l.itemId);
     if (!m) out.set(l.itemId, (m = new Map()));
     m.set(l.unitPrice, (m.get(l.unitPrice) ?? 0) + l.quantity);
+    const f = floor.get(l.itemId);
+    if (f != null && l.unitPrice < f) under.set(l.itemId, (under.get(l.itemId) ?? 0) + l.quantity);
   }
-  return out;
+  return { byPrice: out, under };
 }
 
 /**
@@ -69,6 +86,7 @@ export function newPostsFromRaw(db: DB, houseId: number, now: number, windowHour
     FROM snapshots WHERE house_id = ? AND published_at <= ? AND published_at > ? ORDER BY kind, published_at`)
     .all(houseId, now, since - 2 * 3600_000) as Array<{ kind: string; t: number; h: number | null; counted: number }>;
   const agg = new Map<number, Map<number, number>>();
+  const underFloor = new Map<number, number>();
   const hoursByKind = new Map<string, number>();
   let read = 0;
   for (let i = 1; i < snaps.length; i++) {
@@ -85,7 +103,8 @@ export function newPostsFromRaw(db: DB, houseId: number, now: number, windowHour
     }
     read++;
     hoursByKind.set(cur.kind, (hoursByKind.get(cur.kind) ?? 0) + cur.h);
-    for (const [item, prices] of pair) {
+    for (const [item, u] of pair.under) underFloor.set(item, (underFloor.get(item) ?? 0) + u);
+    for (const [item, prices] of pair.byPrice) {
       let m = agg.get(item);
       if (!m) agg.set(item, (m = new Map()));
       for (const [p, u] of prices) m.set(p, (m.get(p) ?? 0) + u);
@@ -95,5 +114,5 @@ export function newPostsFromRaw(db: DB, houseId: number, now: number, windowHour
   const byItem = new Map<number, Array<[number, number]>>();
   for (const [item, m] of agg) byItem.set(item, [...m].sort((a, b) => a[0] - b[0]));
   const hours = Math.min(...['auctions', 'commodities'].map(k => hoursByKind.get(k) ?? 0));
-  return { hours, byItem };
+  return { hours, byItem, underFloor };
 }
