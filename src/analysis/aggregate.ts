@@ -104,6 +104,8 @@ export const EQUIP_SURVIVOR_MARGIN = 1.25;
 export const EQUIP_SOLD_BAND = 1.25;
 /** A market with this many listings or fewer last hour is thin: cancel and relist matching is looser there. */
 export const THIN_LISTINGS = 5;
+/** On a thin market, fresh posts that hold the vanished units to within this share are a repost of them. */
+export const REPOST_UNITS = 0.25;
 
 /**
  * Commodity buy order: the buy window takes the cheapest listing first and, at one price, the newest listing (highest
@@ -350,9 +352,24 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
           }
           if (best) { used.add(best.id); e.verdict = 'undercut'; }
         }
+        // A seller who reposts in other stack sizes, or far cheaper, is still reposting (round 3: 3 stacks of 20 posted
+        // again as 2 of 30 read 679 a day with no buyer). When the fresh posts left over hold the units still judged
+        // sold to within 25 percent, at any price below the dearest of them (or up to 25 percent over it), the lot is
+        // a repost. When every one of them was first seen at the last publish (posted an hour ago, gone now), at any
+        // price: a seller trying -30 percent and back (round 3). The simulator has no such case either way.
+        const left = candidates.filter(e => e.verdict === 'sold');
+        if (left.length) {
+          let units = 0, dearest = 0;
+          for (const e of left) { units += e.lost; if (e.l.unitPrice! > dearest) dearest = e.l.unitPrice!; }
+          const allYoung = left.every(e => { const s0 = opts.seen?.get(e.l.id); return s0 != null && s0.postedAfter != null && s0.firstSeen >= prevAt; });
+          const capP = allYoung ? Infinity : dearest * (1 + REPOST_UNITS);
+          let posted = 0;
+          for (const n of fresh) if (!used.has(n.id) && n.unitPrice! <= capP) posted += n.quantity;
+          if (Math.abs(posted - units) <= units * REPOST_UNITS) for (const e of left) e.verdict = 'undercut';
+        }
       } else {
         // Deep equipment market: an undercut (same or lower, at most 20 percent lower), the same listing length when
-        // known, and what provoked it: a cheaper copy that was already up last hour. Fresh posts are bucketed by
+        // known, and what provoked it: a cheaper copy that was already up last hour (or a young copy reposted cheaper). Fresh posts are bucketed by
         // quantity and length and sorted by price, so each candidate finds the closest post at or under its price
         // in log time (a plain scan took minutes on a 200,000 listing snapshot).
         let cheapestSurvivor = Infinity;
@@ -368,22 +385,33 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
           pool.ls.sort((a, b) => a.unitPrice! - b.unitPrice! || a.id - b.id);
           pool.next = pool.ls.map((_, i) => i);
         }
+        const youngMatched: Lost[] = [];
         for (const e of candidates) {
           const old = e.l.unitPrice!;
-          if (!(cheapestSurvivor < old)) continue;
+          // What provoked the undercut: a cheaper copy already up last hour. Without one, the floor seller repricing
+          // his own copies (round 3: 3 percent down each hour on a market of 10 copies read 48 sales a day with no
+          // buyer): copies first seen at the last publish, gone now, each with a strictly cheaper new post in its place,
+          // two or more in the hour (a seller moves his copies together).
+          const s0 = opts.seen?.get(e.l.id);
+          const young = s0 != null && s0.postedAfter != null && s0.firstSeen >= prevAt;
+          if (!(cheapestSurvivor < old) && !young) continue;
+          const cap = cheapestSurvivor < old ? old : old - 1;
           const dOld = listingHours(opts.seen?.get(e.l.id));
           let best: { pool: Pool; i: number } | null = null;
           for (const [key, pool] of pools) {
             const [q, d] = key.split(':');
             if (Number(q) !== e.l.quantity) continue;
             if (dOld != null && d !== '?' && Number(d) !== dOld) continue;
-            const i = takeAtOrBelow(pool, old);
+            const i = takeAtOrBelow(pool, cap);
             if (i < 0 || pool.ls[i]!.unitPrice! < old * 0.8) continue;
             const p = pool.ls[i]!.unitPrice!;
             if (!best || p > best.pool.ls[best.i]!.unitPrice! || (p === best.pool.ls[best.i]!.unitPrice! && pool.ls[i]!.id > best.pool.ls[best.i]!.id)) best = { pool, i };
           }
-          if (best) { best.pool.next[best.i] = best.i - 1; e.verdict = 'undercut'; }
+          if (best) { best.pool.next[best.i] = best.i - 1; e.verdict = 'undercut'; if (!(cheapestSurvivor < old)) youngMatched.push(e); }
         }
+        // One young copy bought and a cheaper post after it is the usual undercut chain: in the simulator one copy
+        // matched this way was bought 502 times against 251 reposts; two or more at once, 26 against 20.
+        if (youngMatched.length < 2) for (const e of youngMatched) e.verdict = 'sold';
       }
     }
 

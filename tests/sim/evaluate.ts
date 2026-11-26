@@ -4,8 +4,8 @@
  * demand estimates built on the counter (src/analysis/history.ts): the middle less expected pulls (`net`) and the
  * cautious low estimate, which should sit under the true rate about 95 percent of the time.
  */
-import { aggregate, nextSeen, type Seen, type Diagnostics } from '../../src/analysis/aggregate.ts';
-import { rowNet, rowPullRate, lowEstimate, expectedPullEvents } from '../../src/analysis/history.ts';
+import { aggregate, nextSeen, type Seen, type Diagnostics, type ItemStat } from '../../src/analysis/aggregate.ts';
+import { rowNet, rowPullRate, lowEstimate, expectedPullEvents, repostedAcross } from '../../src/analysis/history.ts';
 import { aggregate as oldAggregate } from './old-aggregate.ts';
 import { simulate, MEASURED_CANCELS, type MarketType, type SimOpts } from './market.ts';
 
@@ -40,8 +40,9 @@ export interface Score {
   lowWindows: number;
   lowUnder: number;
   lowShare: number;
-  /** the same for windows of 6 (the gate), 24 and 72 hours */
-  low: Record<number, { windows: number; under: number; share: number }>;
+  /** the same for windows of 6 (the gate), 24 and 72 hours. `zero`: windows whose truth is 0 (nothing bought), and
+   * `falseSale`: of those, the share where the low is above 0 (a sale that never happened). */
+  low: Record<number, { windows: number; under: number; share: number; zero: number; falseSale: number }>;
   breaches: number;
   ageConflicts: number;
   /** per seed daily errors, for the spread */
@@ -53,14 +54,23 @@ export const WINDOWS = [6, 24, 72] as const;
 export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts> = {}): Score {
   let truth = 0, invisible = 0, oldSum = 0, newSum = 0, netSum = 0, oldHour = 0, newHour = 0, hours = 0, buyers = 0, events = 0;
   let oldDayAll = 0, newDayAll = 0, netDayAll = 0;
-  const lowAcc = new Map<number, { windows: number; under: number; share: number }>(WINDOWS.map(w => [w, { windows: 0, under: 0, share: 0 }]));
+  const lowAcc = new Map<number, Acc>(WINDOWS.map(w => [w, { windows: 0, under: 0, share: 0, zero: 0, falseSale: 0 }]));
   const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
   const perSeed: Score['perSeed'] = [];
   for (const seed of seeds) {
     const run = simulate({ type, seed, ...extra });
     const kind = run.commodity ? 'commodities' : 'auctions';
+    // Every publish's rows first: a pull before one publish and a post again after it is judged from the next row
+    // (repostedAcross, as demandByItem does).
+    const statsAt: Array<Map<number, ItemStat> | null> = [];
     let seen: Map<number, Seen> | null = null;
-    let prevStats: Map<number, { listings: number; unitsAtFloor: number }> | null = null;
+    for (let k = 0; k < run.snapshots.length; k++) {
+      const cur = run.snapshots[k]!, prev = k > 0 ? run.snapshots[k - 1]! : null;
+      const before = seen;
+      seen = nextSeen(before, cur.listings, cur.at, prev, !!prev);
+      statsAt.push(prev ? new Map(aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag }).map(s => [s.itemId, s])) : null);
+    }
+    let prevStats: Map<number, ItemStat> | null = null;
     const day = new Map<string, { t: number; o: number; n: number; x: number }>();
     type Win = { t: number; sold: number; ev: number; rate: number; net: number; netSq: number };
     const win = new Map<string, Win>();
@@ -69,13 +79,11 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
     for (let k = 0; k < run.snapshots.length; k++) {
       const cur = run.snapshots[k]!;
       const prev = k > 0 ? run.snapshots[k - 1]! : null;
-      const before = seen;
-      seen = nextSeen(before, cur.listings, cur.at, prev, !!prev);
       if (!prev) continue;
       hours++;
-      const n = aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag });
       const o = oldAggregate(cur.listings, prev.listings, { commodity: run.commodity });
-      const nm = new Map(n.map(s => [s.itemId, s]));
+      const nm = statsAt[k]!;
+      const nextM = statsAt[k + 1] ?? null;
       if (!prevStats) prevStats = new Map(aggregate(prev.listings, null, { commodity: run.commodity }).map(s => [s.itemId, s]));
       const ps = prevStats;
       const om = new Map(o.map(s => [s.itemId, Math.max(0, (s.goneUnitsNearFloor ?? 0) - (s.goneUnitsExpiringNearFloor ?? 0))]));
@@ -83,14 +91,18 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
       for (const item of items) {
         const t = run.visible[k]!.get(item) ?? 0, ov = om.get(item) ?? 0;
         const s = nm.get(item);
-        const nv = s?.soldUnits ?? 0;
         const before = ps.get(item) ?? s;
+        const nx = nextM?.get(item);
+        const across = !!s && repostedAcross(before?.listings ?? 0, before?.floor ?? null, s.soldUnits ?? 0, s.listings,
+          nx ? { newNearFloor: nx.newNearFloor, floor: nx.floor, gapMs: run.snapshots[k + 1]!.at - cur.at, differenced: true } : null);
+        const nv = across ? 0 : s?.soldUnits ?? 0;
+        const ev = across ? 0 : s?.soldEvents ?? 0;
         const xv = s ? rowNet(kind, before?.listings ?? 0, before?.unitsAtFloor ?? 0, nv) : 0;
         const rate = s ? rowPullRate(kind, before?.listings ?? 0) : 0;
         truth += t; oldSum += ov; newSum += nv; netSum += xv;
         sTruth += t; sOld += ov; sNew += nv; sNet += xv;
         oldHour += Math.abs(ov - t); newHour += Math.abs(nv - t);
-        events += s?.soldEvents ?? 0;
+        events += ev;
         buyers += run.buyers[k]!.get(item) ?? 0;
         const key = `${item}:${Math.floor((k - 1) / 24)}`;
         const d = day.get(key) ?? { t: 0, o: 0, n: 0, x: 0 };
@@ -99,7 +111,7 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
         for (const W of WINDOWS) {
           const wk = `${W}:${item}:${Math.floor((k - 1) / W)}`;
           const w = win.get(wk) ?? { t: 0, sold: 0, ev: 0, rate: 0, net: 0, netSq: 0 };
-          w.t += t; w.sold += nv; w.ev += s?.soldEvents ?? 0; w.rate += rate; w.net += xv; w.netSq += xv * xv;
+          w.t += t; w.sold += nv; w.ev += ev; w.rate += rate; w.net += xv; w.netSq += xv * xv;
           win.set(wk, w);
         }
       }
@@ -118,10 +130,12 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
     for (const [wk, w] of win) {
       const [W, , idx] = wk.split(':');
       const wh = winHours.get(`${W}:${idx}`)!;
-      if (wh.n < Number(W) || w.t <= 0) continue; // whole windows only, with sales to compare against
+      if (wh.n < Number(W)) continue; // whole windows only
       const low = lowEstimate({ events: w.ev, units: w.sold, pullEvents: expectedPullEvents(w.rate, w.ev, wh.n), hours: wh.h, publishes: wh.n, sumNet: w.net, sumNetSq: w.netSq });
-      const trueRate = (w.t / wh.h) * 24;
       const a = lowAcc.get(Number(W))!;
+      // Nothing bought: any low above 0 is a false sale, which the share under the truth below never sees.
+      if (w.t <= 0) { a.zero++; if (low > 0) a.falseSale++; continue; }
+      const trueRate = (w.t / wh.h) * 24;
       a.windows++;
       if (low <= trueRate) a.under++;
       a.share += low / trueRate;
@@ -139,16 +153,19 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
   };
 }
 
-function lowFields(acc: Map<number, { windows: number; under: number; share: number }>) {
+type Acc = { windows: number; under: number; share: number; zero: number; falseSale: number };
+function lowFields(acc: Map<number, Acc>) {
   const low: Score['low'] = {};
-  for (const [W, a] of acc) low[W] = { windows: a.windows, under: a.windows ? a.under / a.windows : 1, share: a.windows ? a.share / a.windows : 0 };
+  for (const [W, a] of acc) low[W] = { windows: a.windows, under: a.windows ? a.under / a.windows : 1, share: a.windows ? a.share / a.windows : 0,
+    zero: a.zero, falseSale: a.zero ? a.falseSale / a.zero : 0 };
   return { low, lowWindows: low[72]!.windows, lowUnder: low[72]!.under, lowShare: low[72]!.share };
 }
 
 /** The low estimate's usefulness per window length: share of windows at or under the truth, and mean low over truth. */
 export function lowTable(scores: Score[]): string {
-  const head = ['market', ...WINDOWS.flatMap(W => [`${W}h windows`, `${W}h under truth`, `${W}h low / truth`])];
-  const rows = scores.map(s => [s.type, ...WINDOWS.flatMap(W => [String(s.low[W]!.windows), `${(s.low[W]!.under * 100).toFixed(0)}%`, `${(s.low[W]!.share * 100).toFixed(0)}%`])]);
+  const head = ['market', ...WINDOWS.flatMap(W => [`${W}h windows`, `${W}h under truth`, `${W}h low / truth`, `${W}h no sale windows`, `${W}h false sale`])];
+  const rows = scores.map(s => [s.type, ...WINDOWS.flatMap(W => [String(s.low[W]!.windows), `${(s.low[W]!.under * 100).toFixed(0)}%`, `${(s.low[W]!.share * 100).toFixed(0)}%`,
+    String(s.low[W]!.zero), `${(s.low[W]!.falseSale * 100).toFixed(0)}%`])]);
   const w = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i]!.length)));
   const line = (r: string[]) => '| ' + r.map((c, i) => c.padEnd(w[i]!)).join(' | ') + ' |';
   return [line(head), '|' + w.map(x => '-'.repeat(x + 2)).join('|') + '|', ...rows.map(line)].join('\n');

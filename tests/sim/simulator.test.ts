@@ -26,6 +26,12 @@
  *    38% and 60%.
  *  - Out of sample: seeds 301 to 312 must meet the same marks (measured deep 48 / 74%, equipment 45 / 68%, thin net
  *    bias +11%, thin under truth 93 to 98%).
+ *  - Round 3 repost rules (thin lots reposted in any sizes, young floor copies repriced together, thin markets
+ *    emptied and posted again across a publish): low over truth at 6 / 24 / 72 hours after them, seeds 201 to 212:
+ *    deep 48 / 74 / 86% (unchanged), equipment 45 / 69 / 80% (was 46 / 69 / 80), thin 12 / 32 / 60% (was 13 / 35 /
+ *    63); thin new bias +18.5% (was +22.3), net +5.5% (was +9.3). Thin marks: at least 8% at 6 hours and 25% at 24.
+ *    Windows with no sale at all: thin 576 of 6 hours, the low above 0 in 1%; equipment only 26, the low above 0 in
+ *    88% of them (counted, not marked: too few).
  *  - The stack growth check never fires. Age conflicts appear only because the simulator reads bucket edges a few
  *    minutes off (a fresh 2 hour listing can read LONG); the counter then falls back to the time left alone, and with
  *    an exact clock there are none (the real snapshots have none either, B37).
@@ -39,7 +45,7 @@ import { score } from './evaluate.ts';
 const seeds = Array.from({ length: 12 }, (_, i) => 201 + i);
 const outOfSample = Array.from({ length: 12 }, (_, i) => 301 + i);
 const few = seeds.slice(0, 5);
-const useful = { deep: { 6: 0.4, 24: 0.65 }, equipment: { 6: 0.38, 24: 0.6 } } as const;
+const useful = { deep: { 6: 0.4, 24: 0.65 }, equipment: { 6: 0.38, 24: 0.6 }, thin: { 6: 0.08, 24: 0.25 } } as const;
 
 describe('sale counter against simulated truth, sellers pulling at the measured rates', () => {
   for (const [label, set] of [['seeds 201 to 212', seeds], ['out of sample, seeds 301 to 312', outOfSample]] as const) {
@@ -71,6 +77,12 @@ describe('sale counter against simulated truth, sellers pulling at the measured 
       expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 1.25);
       expect(Math.abs(s.netBias)).toBeLessThanOrEqual(0.15);
       for (const W of [6, 24, 72]) expect(s.low[W]!.under).toBeGreaterThanOrEqual(0.9);
+      // The repost rules of round 3 must not erase the real sales that make the low useful.
+      expect(s.low[6]!.share).toBeGreaterThanOrEqual(useful.thin[6]);
+      expect(s.low[24]!.share).toBeGreaterThanOrEqual(useful.thin[24]);
+      // Windows where nothing was bought: a low above 0 there is a sale that never happened.
+      expect(s.low[6]!.zero).toBeGreaterThan(100);
+      expect(s.low[6]!.falseSale).toBeLessThanOrEqual(0.1);
       expect(s.breaches).toBe(0);
     }, 60_000);
   }
