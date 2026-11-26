@@ -193,6 +193,13 @@ The first test round recomputed 13 flips to the copper, then showed the market m
 7. **Market evidence wins on binding:** an item listed on your house in the last day is tradeable, whatever a table says.
 8. **Steamwheedle towns are neutral** (Booty Bay, Ratchet, Gadgetzan, Everlook), never for an NPC recorded as Horde.
 
+### Refinements from the third test round (November 26)
+1. **The queue runs on the low estimate.** Sales tonight and tomorrow use the cautious number, never the middle one. Two repricing events no longer make a 500g flip.
+2. **A recipe item nobody sells or drops** reads "how to learn it is not known yet" and is a risk.
+3. **Cooldowns wait while learning.** A cooldown craft is not sold to a vendor while its auction price is over twice as high and still being learned.
+4. **No second deposit while a listing is still up.** A 24 hour listing covers the first 14 hours of tomorrow.
+5. **The bad case clears the units ahead at its own slower rate,** and the small row stays inside one crafting session.
+
 ### In game checks for Chip (each settles a ledger row)
 1. Vendor one Seasoned Wolf Kabob and one Barbaric Shoulders: does the vendor pay what the tool says?
 2. List one item each at 2, 8 and 24 hours on Alliance and on Blackwater: note the deposits (settles T7).

@@ -137,7 +137,8 @@ export function refSold(mu: number, ahead: number, n: number, upe = 1): number {
  * then (with mu24, tomorrow's mean sale events) the unsold relisted for one more deposit at the front of tomorrow's
  * queue (nothing else is left ahead in these fixtures), when that beats selling them to a vendor.
  */
-export function refRevenue(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; n: number; upe?: number; mu24?: number; shortTonight?: number; shortTomorrow?: number }): number {
+export function refRevenue(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; n: number; upe?: number; mu24?: number; shortTonight?: number; shortTomorrow?: number;
+  /** share of tomorrow the first listing still covers */ cover?: number }): number {
   const t1 = refSold(o.mu, o.ahead, o.n, o.upe);
   const s1 = t1 * (o.shortTonight ?? 1), left = o.n - s1;
   const keep = s1 * o.net + left * (o.salvage - o.deposit);
@@ -146,7 +147,12 @@ export function refRevenue(o: { mu: number; ahead: number; net: number; salvage:
   const tomorrow = refSold(o.mu24, 0, whole, o.upe) + frac * (refSold(o.mu24, 0, whole + 1, o.upe) - refSold(o.mu24, 0, whole, o.upe));
   const s2 = Math.min(left, tomorrow * (o.shortTomorrow ?? 1));
   const end = left - s2;
-  return Math.max(keep, (s1 + s2) * o.net - left * o.deposit - end * (o.deposit - o.salvage));
+  // Round 6: tonight's 24 hour listing is still up for 14 of tomorrow's 24 hours (a 10 hour night), so 14/24 of
+  // tomorrow's sales pay no second deposit. Options: vendor now, let the listing run out then vendor, or relist at expiry.
+  const up = s2 * (o.cover ?? 14 / 24);
+  const runOut = (s1 + up) * o.net + (left - up) * (o.salvage - o.deposit);
+  const relist = (s1 + s2) * o.net - (left - up) * o.deposit - end * (o.deposit - o.salvage);
+  return Math.max(keep, runOut, relist);
 }
 
 /** The quantity with the most expected profit, by the independent recompute, for a flat unit cost (ties to fewer). */

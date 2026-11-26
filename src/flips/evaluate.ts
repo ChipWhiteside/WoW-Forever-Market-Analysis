@@ -164,13 +164,18 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   // tonight's events. His relisted units take the next places in it.
   const queue24 = carries ? overnightQueue(q, CARRYOVER.tomorrowHours) : null;
   const aheadTomorrow = carries ? Math.max(0, q.ahead + o.capUsed - queue.meanEvents * queue.unitsPerEvent) : 0;
+  // The bad case clears the units ahead at its own rate: half of tonight's expected sales (round 6, low finding 3).
+  const aheadTomorrowBad = carries ? Math.max(0, q.ahead + o.capUsed - SALES_SHORTFALL * queue.meanEvents * queue.unitsPerEvent) : 0;
+  // Tonight's 24 hour listing is still up for the first hours of tomorrow: units sold then pay no second deposit.
+  const cover = coverShare(o.horizonHours);
   const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + (queue24 ? queue24.lastPos : 0)));
   // A vendor sale only takes units that clear the vendor margin (VENDOR_MARGIN): the walk stops at the first that does not.
   const margin = toVendor ? vendorMargin(net) : 0;
   const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && net - unit < margin);
   if (toVendor) {
+    // When the very first step fails the margin it alone is kept, so the run holds it back as too thin (round 6, low 1).
     const cut = w.steps.findIndex(s => net - s.cost / s.units < margin);
-    if (cut > 0) w.steps.length = cut;
+    if (cut >= 0) w.steps.length = Math.max(1, cut);
   }
   // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
   const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
@@ -188,8 +193,10 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   // What n units bring in, tonight and (carryover) tomorrow, at a price and with shortfalls (settle, below).
   const tonight = (n: number) => sold.soldAt(n);
   const tomorrowSold = queue24 ? tomorrowCurve(queue24, aheadTomorrow, limit) : () => 0;
+  const tomorrowSoldBad = queue24 ? tomorrowCurve(queue24, aheadTomorrowBad, limit) : () => 0;
+  // A shortfall tonight (the bad case, half sales) also leaves more of the units ahead for tomorrow.
   const revenue = (n: number, netAt: number, shortTonight = 1, shortTomorrow = 1) =>
-    settle(n, tonight(n), tomorrowSold, netAt, salvage, depositEach, shortTonight, shortTomorrow, carries);
+    settle(n, tonight(n), shortTonight < 1 ? tomorrowSoldBad : tomorrowSold, netAt, salvage, depositEach, shortTonight, shortTomorrow, carries, cover);
   const expectedAt = (n: number, cost: number, s: Step) => revenue(n, net).value - cost - (minutesAt(n, s) / 60) * o.timeRate;
   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
@@ -236,7 +243,10 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const mostN = Math.min(MAX_UNITS, toVendor ? Math.max(bestN, freeN) : Math.max(bestN, topN));
   const most = option('most', mostN);
   if (!toVendor && mostN > bestN && riskCapped) most.note = most.note ? `most profit, higher risk; ${most.note}` : 'most profit, higher risk';
-  const options = [option('small', Math.min(SMALL_QUANTITY, maxN)), option('best', bestN), most];
+  // The small row stays inside one crafting session too, like the best and the most (round 6, low finding 2).
+  let smallN = Math.min(SMALL_QUANTITY, maxN);
+  while (smallN > 1 && costAt(smallN).s.castMinutes > session + 1e-9) smallN--;
+  const options = [option('small', smallN), option('best', bestN), most];
   return { walk: w, cap, depositEach, maxN, goldCapped, sessionCapped, firstUnitCost: w.steps[0]!.cost / w.steps[0]!.units, options, best: options[1]!, bestStep: stepFor(w, bestN), at };
 }
 
@@ -323,24 +333,40 @@ export function tomorrowCurve(queue24: Queue, aheadTomorrow: number, maxUnits: n
 }
 
 /**
- * What n posted units bring in (before their cost), round 2 finding H1 and the round 5 fix. `tonight` units are
- * expected to sell tonight; the rest are relisted (one more deposit each) and sell tomorrow through tomorrow's queue
- * (`tomorrowSold` of however many are left), when that beats selling them to a vendor:
- *   sold tonight x net + sold tomorrow x net - relisted x deposit lost tonight - still unsold x (deposit lost tomorrow - salvage)
- * else: sold tonight x net + unsold x (salvage - deposit). `shortTonight` scales tonight's sales and `shortTomorrow`
- * tomorrow's (1 expected; the bad case halves both, and the units tonight's shortfall leaves go to tomorrow's queue).
- * Returns the value and the units sold tomorrow.
+ * Share of tomorrow's window that tonight's listing still covers: a 24 hour listing posted for a 10 hour night is up for
+ * 14 of tomorrow's 24 hours (round 6, low finding 4). Sale events are spread evenly over the window, so that share of
+ * tomorrow's sales happens before any relisting.
+ */
+export const coverShare = (horizonHours: number) => Math.min(1, Math.max(0, (LISTING_HOURS - horizonHours) / CARRYOVER.tomorrowHours));
+
+/**
+ * What n posted units bring in (before their cost), round 2 finding H1, the round 5 fix and round 6 (low finding 4).
+ * `tonight` units are expected to sell tonight; the rest sell tomorrow through tomorrow's queue (`tomorrowSold` of
+ * however many are left). Tonight's listing is still up for the `cover` share of tomorrow, so those sales pay no
+ * second deposit; the units still unsold when it expires lose their deposit and are relisted for one more, which is
+ * lost again on whatever is still unsold at the end. The best of three:
+ *   vendor now: sold tonight x net + unsold x (salvage - deposit)
+ *   let it run out: sold tonight x net + sold while still up x net + the rest x (salvage - deposit)
+ *   relist: sold tonight x net + sold tomorrow x net - unsold at expiry x deposit - still unsold x (deposit - salvage)
+ * (with `cover` 1 the listing covers all of tomorrow: no relisting, one deposit lost on what is still unsold).
+ * `shortTonight` scales tonight's sales and `shortTomorrow` tomorrow's (1 expected; the bad case halves both, and the
+ * units tonight's shortfall leaves go to tomorrow's queue). Returns the value and the units sold tomorrow.
  */
 export function settle(n: number, tonight: number, tomorrowSold: (left: number) => number, netAt: number, salvage: number, deposit: number,
-  shortTonight: number, shortTomorrow: number, carries: boolean): { value: number; tomorrow: number } {
+  shortTonight: number, shortTomorrow: number, carries: boolean, cover = 0): { value: number; tomorrow: number } {
   const s1 = Math.min(n, tonight * shortTonight);
   const left = n - s1;
   const keep = s1 * netAt + left * (salvage - deposit);
   if (!carries || left <= 0) return { value: keep, tomorrow: 0 };
   const s2 = Math.min(left, tomorrowSold(left) * shortTomorrow);
   const end = left - s2;
-  const relist = s1 * netAt + s2 * netAt - left * deposit - end * deposit + end * salvage;
-  return relist > keep ? { value: relist, tomorrow: s2 } : { value: keep, tomorrow: 0 };
+  let best = { value: keep, tomorrow: 0 };
+  const consider = (value: number, tomorrow: number) => { if (value > best.value) best = { value, tomorrow }; };
+  if (cover >= 1) { consider(s1 * netAt + s2 * netAt + end * (salvage - deposit), s2); return best; }
+  const sUp = s2 * Math.max(0, cover);
+  if (sUp > 0) consider(s1 * netAt + sUp * netAt + (left - sUp) * (salvage - deposit), sUp);
+  consider(s1 * netAt + s2 * netAt - (left - sUp) * deposit - end * deposit + end * salvage, s2);
+  return best;
 }
 
 /**

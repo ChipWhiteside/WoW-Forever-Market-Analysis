@@ -111,19 +111,21 @@ describe('properties', () => {
     expect(Math.abs(e.at(1).risk.badCaseLoss - bad(1, 5020, 20, 48))).toBeLessThanOrEqual(1);
     // the same with half the sales at the claimed price, the "at half sales" number on the card
     expect(Math.abs(e.at(1).risk.halfSalesProfit! - (refRevenue({ mu: 20, mu24: 48, ahead: 0, net: 7077, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 }) - 5020))).toBeLessThanOrEqual(1);
-    // No proven demand (low estimate 0.8 a day, 12 a day middle, none new: 5 sale events overnight): nothing carries over,
+    // No proven demand (low estimate 0.8 a day, 12 a day middle, none new): the queue runs on the low estimate (round 6),
+    //   0.8 x 10/24 = 1/3 of a sale event overnight, never the middle's 5. Nothing carries over,
     //   unsold units are worth only their 75c vendor price, each unit past the queue adds its cost and lost deposit.
     const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 0.8, newPerDay: 0 } })), DYE_KEY).e;
     let prev = -1;
     for (let n = 1; n <= 10; n++) { const loss = thin.at(n).risk.badCaseLoss; expect(loss).toBeGreaterThanOrEqual(prev); prev = loss; }
     expect(thin.at(10).risk.level).toBe('high');
-    expect(thin.at(10).expectedProfit).toBe(Math.round(refExpected({ mu: 5, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 55440, n: 10 })));
-    expect(thin.at(10).risk.badCaseLoss).toBe(bad(10, 55440, 5));
+    // (units past a 0.1% chance are not walked, SELL_CHANCE.negligible: a few copper at most here)
+    expect(Math.abs(thin.at(10).expectedProfit - refExpected({ mu: 0.8 * 10 / 24, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 55440, n: 10 }))).toBeLessThanOrEqual(5);
+    expect(Math.abs(thin.at(10).risk.badCaseLoss - bad(10, 55440, 0.8 * 10 / 24))).toBeLessThanOrEqual(5);
     expect(thin.at(10).risk.drivers).toContain('more units than sell overnight');
-    // The same thin market with proven demand (1.2 a day low): unsold units relist and sell tomorrow (events over both
-    //   days 12 x 34/24 = 17), so the loss is smaller
+    // The same thin market with proven demand (1.2 a day low): unsold units sell tomorrow (1.2 events tomorrow), so the
+    //   loss is smaller
     const proven = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 1.2, newPerDay: 0 } })), DYE_KEY).e;
-    expect(Math.abs(proven.at(10).risk.badCaseLoss - bad(10, 55440, 5, 12))).toBeLessThanOrEqual(1);
+    expect(Math.abs(proven.at(10).risk.badCaseLoss - bad(10, 55440, 1.2 * 10 / 24, 1.2))).toBeLessThanOrEqual(1);
     expect(proven.at(10).risk.badCaseLoss).toBeLessThan(thin.at(10).risk.badCaseLoss);
   });
   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {

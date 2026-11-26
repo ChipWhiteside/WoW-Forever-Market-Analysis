@@ -237,19 +237,22 @@ describe('independent sale counting test: the cautious estimate and the overnigh
   it('finding 2: with an hourly mean and spread, overnight sales are normal, not one Poisson event an hour', () => {
     // Copper Ore pattern: about 2,000 units an hour in one run, sd 600 an hour; 15,000 ahead; 10 hour night: mean 20,000
     const base = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 0 } }))).quote(A, DYE)!;
-    const normal = overnightQueue({ ...base, newPerHour: 0, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10);
+    // the low estimate is at the hourly mean here (48,000 a day), so the night's mean is the hourly mean's
+    const normal = overnightQueue({ ...base, newPerHour: 0, salesPerDayLow: 48000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10);
     // sd over the night = sqrt(10) x 600 = 1,897; position 15,001: z = (15000.5 - 20000) / 1897 = -2.64, near certain
     expect(normal.at(15001)).toBeCloseTo(1 - normalCdf((15000.5 - 20000) / (Math.sqrt(10) * 600)), 12);
     expect(normal.at(15001)).toBeGreaterThan(0.99);
     expect(normal.at(20000)).toBeCloseTo(0.5, 2);
     expect(normal.lastPos).toBe(Math.floor(20000 + 3.1 * Math.sqrt(10) * 600 + 0.5));
     // competing new posts come off the mean; never under 0
-    expect(overnightQueue({ ...base, newPerHour: 2500, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10).at(1)).toBe(0);
+    expect(overnightQueue({ ...base, newPerHour: 2500, salesPerDayLow: 48000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10).at(1)).toBe(0);
+    // round 6 finding 1: a low estimate under the hourly mean sets the night's mean (24,000 a day: 10,000 a night)
+    expect(overnightQueue({ ...base, newPerHour: 0, salesPerDayLow: 24000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10).at(10000)).toBeCloseTo(0.5, 2);
     // the event model, with one event an hour of 2,000 units, reads the same queue as a coin toss
-    const events = overnightQueue({ ...base, newPerHour: 0, salesPerDayMid: 48000, unitsPerEvent: 2000, hourlyMean: null, hourlySd: null }, 10);
+    const events = overnightQueue({ ...base, newPerHour: 0, salesPerDayLow: 48000, salesPerDayMid: 96000, unitsPerEvent: 2000, hourlyMean: null, hourlySd: null }, 10);
     expect(events.at(15001)).toBeLessThan(0.9);
     // under 6 hours of hourly figures the event model is used
-    const short = overnightQueue({ ...base, newPerHour: 0, salesPerDayMid: 48000, unitsPerEvent: 2000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 4 }, 10);
+    const short = overnightQueue({ ...base, newPerHour: 0, salesPerDayLow: 48000, salesPerDayMid: 96000, unitsPerEvent: 2000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 4 }, 10);
     expect(short.at(15001)).toBe(events.at(15001));
     // normal cdf sanity
     expect(normalCdf(0)).toBeCloseTo(0.5, 7);

@@ -58,8 +58,8 @@ describe('H3: risk', () => {
     expect(full.at(1).risk.badCaseLoss).toBe(badAt(6650));
   });
   it('the level: high past the expected profit, medium past half of it, low otherwise, at every quantity', () => {
-    // without proven demand (low 0.8 a day) unsold units are worth only the vendor price, so all three levels show up
-    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 7200, lowPerDay: 0.8 } })), DYE_KEY);
+    // a thin queue (low 24 a day, 12 new: 5 sale events overnight, round 6) and a 72s low: all three levels show up
+    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 7200, lowPerDay: 24 } })), DYE_KEY);
     const seen = new Set<string>();
     for (let n = 1; n <= 20; n++) {
       const o = e.at(n);
@@ -82,15 +82,21 @@ describe('H3: risk', () => {
   it('big deposits: the best amount stops well before what the queue could take, and half sales lose (the Truesilver case)', () => {
     // Ore at 1g, the bar posted near 1g 40c, with a 5s vendor price: a 24 hour deposit of floor(500 x 0.2 x 24) = 24s a bar.
     const BAR = 6037, ORE = 7911;
-    // No carryover here (low estimate 0.8 a day): an unsold bar is worth its 5s vendor price and loses the deposit.
-    const ev = evalKey(inputsOf({ listings: { 111: [L(ORE, 10000, 400), ...many(BAR, 14000, 6, 20)] }, items: [item(ORE, 'Truesilver Ore', 100), item(BAR, 'Truesilver Bar', 500)],
+    const bars = (low: number) => evalKey(inputsOf({ listings: { 111: [L(ORE, 10000, 400), ...many(BAR, 14000, 6, 20)] }, items: [item(ORE, 'Truesilver Ore', 100), item(BAR, 'Truesilver Bar', 500)],
       recipes: [recipe(10098, 'Smelt Truesilver', BAR, [[ORE, 1]], { profession: 'Mining' })],
-      demand: { 111: { [BAR]: sells(480, 14000, { lowPerDay: 0.8, newPerDay: 0 }) } } }), `craft_auction:111:${BAR}:10098`).e;
+      demand: { 111: { [BAR]: sells(480, 14000, { lowPerDay: low, newPerDay: 0 }) } } }), `craft_auction:111:${BAR}:10098`).e;
+    // Round 6: the queue runs on the low estimate. A 0.8 a day low under a 480 a day middle is a third of a sale
+    //   overnight, never the middle's 200: nothing pays.
+    const thin = bars(0.8);
+    expect(thin.cap).toBeLessThan(1);
+    expect(thin.best!.expectedProfit).toBeLessThanOrEqual(0);
+    // With a 480 a day low: 200 sale events overnight and 480 tomorrow. Even the most profit (risk aside) stops well
+    //   before what both days could take, where a unit's chance no longer covers its 24s deposit risk; the best (risk
+    //   not high) is at or under it.
+    const ev = bars(480);
     const f = { best: ev.best! };
     const most = ev.options.find(o => o.label === 'most')!;
-    // 200 sale events expected overnight; even the most profit (risk aside) stops before the queue's capacity, where a
-    //   unit's chance no longer covers its 24s deposit risk; the best (risk not high) is at or under it
-    expect(most.units).toBeLessThan(Math.ceil(ev.cap));
+    expect(most.units).toBeLessThan(Math.ceil(ev.cap * (1 + 24 / 10)));
     expect(f.best.units).toBeLessThanOrEqual(most.units);
     expect(f.best.expectedProfit).toBeLessThanOrEqual(most.expectedProfit);
     expect(f.best.risk.deposits).toBe(f.best.units * 2400);
