@@ -1,7 +1,8 @@
-import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
+import type { TraceEntry } from './market.ts';
 import { money } from '../format/money.ts';
-import { AUCTION_HOUSES } from '../datasets/places.ts';
-import { Market } from './market.ts';
+import { AUCTION_HOUSES, type Place } from '../datasets/places.ts';
+import { Market, cooldownCrafts } from './market.ts';
 import { SellBook } from './sellBook.ts';
 import { generate } from './families.ts';
 import { evaluate, legsOf, auctionUse, type Candidate, type Evaluation } from './evaluate.ts';
@@ -48,6 +49,11 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
       heldBack.push({ key: c.key, family: c.family, itemId: c.itemId, name: c.name, perItem, reason, code, sellHouseId: c.sellHouse?.id ?? null, recipeId: c.recipe?.id });
     try {
       const toVendor = c.quote.houseId == null;
+      // A vendor price known only from Classic data is never ranked on (round 2 finding M3).
+      if (toVendor && inputs.items.get(c.itemId)?.dataSource === 'classic1x') {
+        hold('vendor price comes from Classic data, not confirmed in Forever', 'vendor_unverified');
+        continue;
+      }
       if (!e.walk.steps.length) {
         if (c.recipe && market.cooldownLeft(c.recipe) <= 0) hold('its cooldown is used up', 'cooldown', null);
         else hold('nothing can be bought for it right now', 'no supply', null);
@@ -71,6 +77,10 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
           'no expected profit overnight', perItem);
         continue;
       }
+      if (toVendor && perItem < vendorMargin(c.quote.netEach)) {
+        hold(`profit each ${money(perItem)} is under the vendor margin of ${money(Math.ceil(vendorMargin(c.quote.netEach)))} (vendor rates are unverified)`, 'vendor margin too thin', perItem);
+        continue;
+      }
       if (!toVendor) {
         const cv = c.quote.cv ?? WOBBLE.unknownCv;
         const wobble = Math.max(WOBBLE.minCopper, Math.round(c.quote.claimPrice * cv));
@@ -83,6 +93,31 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
       const kept = e.walk.trace.slice();
       market.rollback(e.walk.startMark);
       e.walk.trace = kept;
+    }
+  }
+
+  // A product that sells better on the auction house (round 2 finding M4): the vendor card names the auction price, and
+  // a cooldown recipe's vendor path is held back when its auction path is expected to make more (the cooldown is spent
+  // either way, so only the better use of it is shown).
+  const auctionBest = new Map<string, Flip>();
+  for (const f of flips) if (f.sellHouseId != null) {
+    const k = `${f.recipeId ?? ''}:${f.itemId}`;
+    if (!auctionBest.has(k) || auctionBest.get(k)!.best.expectedProfit < f.best.expectedProfit) auctionBest.set(k, f);
+  }
+  for (let i = flips.length - 1; i >= 0; i--) {
+    const f = flips[i]!;
+    if (f.sellHouseId != null) continue;
+    for (const h of inputs.houses) {
+      const q = book.quote(h, f.itemId);
+      if (!q || q.gates.length || q.hoursWatched < LEARNING_HOURS || !(q.netEach > f.sellQuote.netEach)) continue;
+      f.notes.push(`sells for ${money(q.claimPrice)} on the ${h.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house`);
+    }
+    const better = auctionBest.get(`${f.recipeId ?? ''}:${f.itemId}`);
+    if (f.recipeId != null && recipes.get(f.recipeId)?.cooldownMs && better && better.best.expectedProfit > f.best.expectedProfit) {
+      heldBack.push({ key: f.key, family: f.family, itemId: f.itemId, name: f.name, perItem: f.perItem, sellHouseId: null, recipeId: f.recipeId,
+        reason: `its cooldown is worth more on the auction house: about ${money(better.best.expectedProfit)} there`, code: 'auction pays more' });
+      evals.delete(f.key);
+      flips.splice(i, 1);
     }
   }
 
@@ -116,14 +151,24 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   if (q.note) notes.push(q.note);
   if (!toVendor) {
     notes.push(`${plural(q.ahead, 'unit')} listed at or under your price, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate); about ${round1(b.expectedSold)} of your ${b.units} expected to sell overnight`);
+    if ((b.soldTomorrow ?? 0) > 0) notes.push(`about ${round1(b.soldTomorrow!)} more expected to sell tomorrow once relisted`);
+    if ((b.soldTomorrow ?? 0) > b.expectedSold) notes.push(MOSTLY_TOMORROW);
     notes.push(q.newDerived ? 'new listings under you are not measured yet for this item; none are assumed'
       : `about ${Math.round(q.newOvernight ?? 0)} new listings usually appear under you overnight`);
     if (q.lowDerived) notes.push(`the low sales estimate is worked out here from ${plural(Math.floor(q.saleEvents ?? 0), 'sale')} seen (sales counted as listings bought, not units); sale counting has not given one yet`);
     if (h!.faction === 'blackwater') notes.push('the Blackwater deposit is not verified yet (test T7)');
   }
+  let setup: Flip['setup'] = null;
   if (c.recipe) {
-    const cap = c.recipe.cooldownMs ? Math.max(1, Math.ceil((inputs.settings.horizonHours * 3600_000) / c.recipe.cooldownMs)) : null;
-    if (cap != null) notes.push(`its cooldown allows ${plural(cap, 'craft')} tonight`);
+    const cap = c.recipe.cooldownMs ? cooldownCrafts(c.recipe, inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT) : null;
+    if (cap != null) notes.push(`its cooldown allows ${plural(cap, 'craft')} in one crafting session`);
+    setup = { ...setupFor(c.recipe, inputs)!, ...professionsNeeded(c.recipe, e.walk.trace, step.traceEnd, recipes), ...toolsFor(c.recipe) };
+    if (setup.needs && setup.needs.length > 1) notes.push(`${setup.needsText}: ${setup.needs.length} professions (an alt may cover one)`);
+    if (setup.unknown) {
+      notes.push(UNKNOWN_LEARN);
+      for (const o of e.options) if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
+    }
+    if (setup.toolsNote) notes.push(setup.toolsNote);
   }
   if (buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'))) notes.push('a limited stock vendor is assumed to hold one bundle');
   if (e.goldCapped) notes.push('capped by your gold on hand');
@@ -144,7 +189,7 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     sellHouseId: h?.id ?? null, buy, sell, perItem, best: b, options: e.options, sellQuote: q, repeatable, opening,
     // earlier distinct hours plus this one, never more than the 72 hours it counts (round 1 finding L3)
     openHours72: Math.min(OPENING.trendHours, (inputs.history.openHours.get(c.key) ?? 0) + 1),
-    setup: c.recipe ? setupFor(c.recipe, inputs) : null,
+    setup,
     shares: [], afterShared: { units: b.units, expectedProfit: b.expectedProfit },
     notes, dataAt: Math.min(...inputs.houses.filter(x => x.id === h?.id || c.buyHouseIds.includes(x.id)).map(x => x.publishedAt || inputs.now), inputs.now),
     score: b.expectedProfit,
@@ -186,12 +231,53 @@ export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
     return { skill: r.profession, rank: r.learnSkill, cost: Number.isFinite(cost) ? cost : null, where: prices ? `${name}: ${prices}` : `${name} (no seller seen)`,
       places: vendor && (floor == null || vendor.unitPrice <= floor) ? vendor.places : [], ...extra };
   }
+  // Only Horde rows matched: say so plainly only when the catalog says Horde trainers alone teach it (round 2 M1).
   if (match.length || r.learnSource === 'trainer_horde_only') {
     const h = [...match].sort(byCost)[0];
-    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null, where: 'Horde trainers only', places: [] };
+    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null,
+      where: r.learnSource === 'trainer_horde_only' ? 'Horde trainers only' : 'no Alliance trainer on record', places: [] };
   }
-  return { skill: r.profession, rank: r.learnSkill, cost: null, where: null, places: [] };
+  const base = { skill: r.profession, rank: r.learnSkill, cost: null, places: [] as Place[] };
+  if (r.learnSource === 'auto') return { ...base, where: 'known when the profession is learned' };
+  if (r.learnSource === 'conversion') return { ...base, where: 'no recipe to learn: using the item does it' };
+  if (r.learnSource === 'trainer_alliance') return { ...base, where: 'an Alliance trainer (which one is not on record)' };
+  if (r.learnSource === 'item') return { ...base, where: 'taught by an item (which one is not on record)' };
+  // Nothing on record (learn source missing or only the yellow skill fallback): never a reason to hide, always said (round 2 H4).
+  return { ...base, where: UNKNOWN_LEARN, unknown: true };
 }
+
+/**
+ * Every profession a craft tree uses at the best amount (round 2 finding H3): the top recipe and every sub craft in
+ * the trace, with the highest learn skill each profession needs. Shown, never a gate: Chip has alts.
+ */
+export function professionsNeeded(top: FlipRecipe, trace: TraceEntry[], end: number, recipes: Map<number, FlipRecipe>): { needs: NonNullable<Flip['setup']>['needs']; needsText: string } {
+  const by = new Map<string, { profession: string; rank: number | null; recipes: string[] }>();
+  const add = (r: FlipRecipe) => {
+    const p = by.get(r.profession) ?? { profession: r.profession, rank: null, recipes: [] };
+    if (r.learnSkill != null && (p.rank == null || r.learnSkill > p.rank)) p.rank = r.learnSkill;
+    if (!p.recipes.includes(r.name)) p.recipes.push(r.name);
+    by.set(r.profession, p);
+  };
+  add(top);
+  for (let i = 0; i < end; i++) { const t = trace[i]!; if (t.source === 'craft' && t.recipeId != null) { const r = recipes.get(t.recipeId); if (r) add(r); } }
+  const needs = [...by.values()];
+  const words = needs.map((n, i) => `${n.profession}${n.rank != null ? ` ${n.rank}` : ''}${i > 0 ? ` (${n.recipes.join(', ')})` : ''}`);
+  return { needs, needsText: `needs ${words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0]}` };
+}
+
+/**
+ * Tools a recipe needs (round 2 finding M4). The game tables this build reads carry no tool requirement (SpellTotems is
+ * not downloaded), so only the tools in KNOWN_TOOLS are named; a cooldown recipe without one gets a plain note.
+ */
+export function toolsFor(r: FlipRecipe): { tools?: string[]; toolsNote?: string } {
+  const known = Object.entries(KNOWN_TOOLS).filter(([name]) => recipeKey(r.name) === recipeKey(name)).map(([, tool]) => tool);
+  if (known.length) return { tools: known, toolsNote: `needs a ${known.join(' and a ')} to craft (Classic knowledge, unverified in Forever)` };
+  if (r.cooldownMs) return { toolsNote: 'any tool this recipe needs is not on record yet; check it in game before buying' };
+  return {};
+}
+
+/** The card line and risk driver for a recipe nobody knows how to learn yet (round 2 finding H4). */
+export const UNKNOWN_LEARN = 'how to learn it is not known yet';
 
 /**
  * The shared pass. Walk the ranked list top down; each flip takes the reagent listings, vendor stock, cooldowns, sale
@@ -258,3 +344,6 @@ function suspects(inputs: FlipInputs, flips: Flip[], notes: string[]): string[] 
   if (!flips.length) out.push('no flips found this run');
   return out;
 }
+
+/** The card line when more of the best amount is expected to sell tomorrow than tonight (round 2 finding H1). */
+export const MOSTLY_TOMORROW = 'most of this sells tomorrow, not tonight';

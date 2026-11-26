@@ -29,6 +29,13 @@ export const GOLD_SETTING = 'gold_on_hand';
 export const CRAFT_SESSION_MINUTES_DEFAULT = 30;
 export const CRAFT_SESSION_SETTING = 'craft_session_minutes';
 
+/**
+ * The professions Chip has (round 2 finding H3), optional JSON: ["Tailoring", "Alchemy"] or {"Tailoring": 300}. When set,
+ * a sub craft in a profession he lacks (or above his skill) is bought instead when anything sells it; the recipe on the
+ * card is never blocked, it can be trained. Unset: every sub craft is used and listed on the card.
+ */
+export const MY_PROFESSIONS_SETTING = 'my_professions';
+
 /** Plan section 6, quantity table: "for example 10, the best amount, and the most the market can take". */
 export const SMALL_QUANTITY = 10;
 
@@ -81,6 +88,15 @@ export const UNDERCUT = { levels: 6, maxShare: 0.05, singleLevelShare: 0.01, min
  */
 export const WOBBLE = { unknownCv: 0.1, minCopper: 1 };
 
+/**
+ * Vendor sales (round 2 finding M3). Forever's vendor rates are unverified, and the market shows thousands of crafted
+ * units posted at exactly the vendor price, so a vendor flip needs at least 5c and 5 percent of the vendor price per
+ * unit of margin, or it is held back. A vendor price that comes only from Classic data (items.data_source classic1x)
+ * is never ranked on.
+ */
+export const VENDOR_MARGIN = { minCopper: 5, minShare: 0.05 };
+export const vendorMargin = (vendorPrice: number) => Math.max(VENDOR_MARGIN.minCopper, vendorPrice * VENDOR_MARGIN.minShare);
+
 /** Gates (plan section 6). Strength stays evidence plus a show gate at 40, the same as the Now page (PRICE.showAt). */
 export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
 
@@ -92,22 +108,29 @@ export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
  * half of it, low otherwise. A price war: the floor fell more than 10 percent this hour, or more new units are posted
  * an hour than sell. Drivers are named in plain words past these first guess thresholds.
  */
-export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1 };
+export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1,
+  /** risk is at least medium when under half the units posted are expected to sell tonight, high under a quarter (round 2 H1) */
+  tonightMedium: 0.5, tonightHigh: 0.25 };
+
+/**
+ * New listings that compete with Chip overnight (round 2 finding H2): only units other sellers posted at or under his
+ * own post price, read from the raw publishes of the last 24 hours, and only once 6 hours of publishes were watched
+ * (the same 6 hours as LEARNING_HOURS). Before that new posts are not measured: 0 is used and the card says so.
+ */
+export const NEW_POSTS = { minHours: 6, windowHours: 24 };
 
 /** Bad case: only this share of the units expected to sell actually sell (coordinator decision, round 1 H3). */
 export const SALES_SHORTFALL = 0.5;
 
 /**
- * What an unsold unit is worth the next morning (coordinator decision, round 2). A product with proven demand (the low
- * estimate sells at least 1 a day) is not lost when it does not sell overnight: Chip relists it. Its carryover value is
- * the net at the price of the case being priced (the expected post price for expected profit, the bad case price for
- * the bad case) minus `relistDeposits` more deposits for posting it again, never below what a vendor pays. Without
- * proven demand an unsold unit is worth only the vendor price (0 when no vendor buys it). In both cases the deposit
- * paid tonight is lost on top. Carryover covers at most `days` days of the low estimate (units past what one more day
- * can sell are worth the vendor price), so a thin market never turns every unsold unit into a near sale and the best
- * amount stays tied to demand. A first rule, unverified until the backtest follows unsold units into the next day.
+ * Unsold units carry over (coordinator decisions, rounds 2 and 3). A product with proven demand (the low estimate
+ * sells at least 1 a day) is relisted the next morning for one more deposit, and its chance of selling tomorrow comes
+ * from the same queue as tonight's, run over the next 24 hours: the units still ahead, then tomorrow's competing new
+ * posts. Relisting is chosen only when it beats selling to a vendor. In the bad case tomorrow's sales are halved
+ * (badShare), on top of tonight's shortfall. Without proven demand an unsold unit is worth only the vendor price.
+ * Replaces the flat day of the low estimate, which let flips that sell nothing tonight look safe (round 2 H1).
  */
-export const CARRYOVER = { minLowPerDay: 1, relistDeposits: 1, days: 1 };
+export const CARRYOVER = { minLowPerDay: 1, tomorrowHours: 24, badShare: 0.5 };
 
 /**
  * Fresh data: a run whose newest snapshot of one of Chip's houses is older than 2 hours is incomplete, never a
@@ -158,6 +181,12 @@ export const OPENING = { newWindowHours: 1.6, trendHours: 72 };
  * (plan section 3, live run: "transmute chains priced as if they had no cooldown"). Classic behaviour, unverified in Forever.
  */
 export const TRANSMUTE_FALLBACK = { pattern: /^Transmute:/i, cooldownMs: 24 * 3600_000, category: -1 };
+
+/**
+ * Tools a recipe needs to be crafted, by recipe name, when the game tables this build reads do not say (round 2 finding
+ * M4). Classic knowledge, unverified in Forever: Refined Deeprock Salt is made with a Salt Shaker.
+ */
+export const KNOWN_TOOLS: Record<string, string> = { 'Refined Deeprock Salt': 'Salt Shaker' };
 
 /** A limited stock vendor is assumed to hold one bundle until stock sizes are recorded (EG Link has no counts). */
 export const VENDOR_LIMITED_BUNDLES = 1;

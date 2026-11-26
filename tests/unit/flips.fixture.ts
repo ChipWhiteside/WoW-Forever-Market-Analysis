@@ -120,15 +120,39 @@ export function refTail(mu: number, j: number): number {
 
 /** Expected profit of n units at queue positions ahead + 1 .. ahead + n, `upe` units per sale event (plan section 6). */
 export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number;
-  /** carryover: up to `cap` unsold units are worth `each` (relisted next day), the rest the salvage price */
-  carry?: { each: number; cap: number } }): number {
-  let sold = 0;
-  for (let k = 1; k <= o.n; k++) sold += refTail(o.mu, Math.ceil((o.ahead + k) / (o.upe ?? 1)));
-  return sold * o.net + refWorth(o.n - sold, o.salvage, o.carry) - (o.n - sold) * o.deposit - o.cost;
+  /** carryover: the mean sale events over tonight and the next 24 hours together; unsold units are relisted when that pays */
+  mu2?: number; shortTonight?: number; shortTomorrow?: number }): number {
+  return refRevenue(o) - o.cost;
 }
 
-/** What `unsold` units are worth the next morning: `carry.cap` of them at `carry.each`, the rest at the salvage price. */
-export function refWorth(unsold: number, salvage: number, carry?: { each: number; cap: number }): number {
-  const carried = carry ? Math.min(unsold, carry.cap) : 0;
-  return carried * (carry?.each ?? 0) + (unsold - carried) * salvage;
+/** Units sold by queue position over a mean of `mu` events: positions ahead + 1 .. ahead + n. */
+export function refSold(mu: number, ahead: number, n: number, upe = 1): number {
+  let sold = 0;
+  for (let k = 1; k <= n; k++) sold += refTail(mu, Math.ceil((ahead + k) / upe));
+  return sold;
+}
+
+/**
+ * What n posted units bring in, written out independently of src/flips/evaluate.ts settle: tonight's sales at the net,
+ * then (with mu2) the unsold relisted for one more deposit and sold tomorrow through the same queue, when that beats
+ * selling them to a vendor.
+ */
+export function refRevenue(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; n: number; upe?: number; mu2?: number; shortTonight?: number; shortTomorrow?: number }): number {
+  const t1 = refSold(o.mu, o.ahead, o.n, o.upe);
+  const s1 = t1 * (o.shortTonight ?? 1), left = o.n - s1;
+  const keep = s1 * o.net + left * (o.salvage - o.deposit);
+  if (o.mu2 == null) return keep;
+  const s2 = Math.min(left, Math.max(0, refSold(o.mu2, o.ahead, o.n, o.upe) - t1) * (o.shortTomorrow ?? 1));
+  const end = left - s2;
+  return Math.max(keep, (s1 + s2) * o.net - left * o.deposit - end * (o.deposit - o.salvage));
+}
+
+/** The quantity with the most expected profit, by the independent recompute, for a flat unit cost (ties to fewer). */
+export function refBest(o: { mu: number; mu2?: number; ahead: number; net: number; salvage: number; deposit: number; unitCost: number; maxN: number }): { n: number; e: number } {
+  let best = { n: 1, e: -Infinity };
+  for (let n = 1; n <= o.maxN; n++) {
+    const e = refExpected({ ...o, cost: o.unitCost * n, n });
+    if (e > best.e + 1e-9) best = { n, e };
+  }
+  return best;
 }

@@ -1,5 +1,14 @@
 import type { Listing } from '../analysis/aggregate.ts';
-import { MAX_CRAFT_DEPTH, VENDOR_LIMITED_BUNDLES } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, MAX_CRAFT_DEPTH, VENDOR_LIMITED_BUNDLES } from '../rules/flips.ts';
+
+/**
+ * Crafts a cooldown allows inside one crafting session (round 2 finding M2): one now, then one each time it comes
+ * back within the session, 1 + floor(session / cooldown). Recipes sharing a cooldown category share the count.
+ */
+export function cooldownCrafts(r: Pick<FlipRecipe, 'cooldownMs'>, sessionMinutes: number): number {
+  if (!r.cooldownMs || r.cooldownMs <= 0) return Infinity;
+  return 1 + Math.floor((sessionMinutes * 60_000) / r.cooldownMs);
+}
 import type { FlipInputs, FlipRecipe, VendorSource } from './inputs.ts';
 import type { CostCurve, CurveStep } from './types.ts';
 
@@ -114,15 +123,22 @@ export class Market {
     return best ?? this.vendorFor(itemId);
   }
 
+  /** Whether Chip can make this sub craft himself (settings.myProfessions; unset allows every craft). */
+  canCraft(r: FlipRecipe): boolean {
+    const mine = this.inputs.settings.myProfessions;
+    if (!mine) return true;
+    if (!mine.has(r.profession)) return false;
+    const skill = mine.get(r.profession);
+    return skill == null || r.learnSkill == null || r.learnSkill <= skill;
+  }
   yieldOf(r: FlipRecipe): number { return Math.max(1, r.qtyMin || 1); }
   cooldownKey(r: FlipRecipe): string | null {
     if (!r.cooldownMs || r.cooldownMs <= 0) return null;
     return r.cooldownCategory ? `cat:${r.cooldownCategory}` : `rec:${r.id}`;
   }
-  /** Crafts a cooldown allows within the horizon: one now, then one each time it comes back. */
+  /** Crafts a cooldown allows within one crafting session (cooldownCrafts). */
   cooldownCap(r: FlipRecipe): number {
-    if (!r.cooldownMs || r.cooldownMs <= 0) return Infinity;
-    return Math.max(1, Math.ceil((this.inputs.settings.horizonHours * 3600_000) / r.cooldownMs));
+    return cooldownCrafts(r, this.inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT);
   }
   cooldownLeft(r: FlipRecipe): number {
     const k = this.cooldownKey(r);
@@ -205,6 +221,8 @@ export class Market {
     if (mode.craft && depth < MAX_CRAFT_DEPTH && !stack.has(itemId)) {
       for (const r of this.byProduct.get(itemId) ?? []) {
         if (this.cooldownLeft(r) <= 0) continue;
+        // A sub craft in a profession Chip lacks is used only when nothing else supplies the reagent.
+        if (pick && !this.canCraft(r)) continue;
         if (r.reagents.some(g => stack.has(g.itemId))) continue;
         if (this.lowerBoundCraft(r) >= bestCost) continue;
         const m = this.mark();

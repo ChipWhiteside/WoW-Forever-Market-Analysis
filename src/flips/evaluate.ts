@@ -1,5 +1,5 @@
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
+import { vendorMargin, CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
 import { overnightQueue, type Queue } from './sellBook.ts';
@@ -57,7 +57,8 @@ export interface Evaluation {
   at(n: number): QuantityOption;
 }
 
-const isStackable = (it: FlipItem | undefined) => it?.stackSize !== 1;
+/** Stacks only when the game says so: an unknown stack size is treated as one per listing (round 2 finding L1). */
+const isStackable = (it: FlipItem | undefined) => it?.stackSize != null && it.stackSize > 1;
 
 /** Incremental effort: minutes to buy and craft everything in the trace so far (posting and selling are added per N). */
 class Effort {
@@ -154,13 +155,21 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const sellItem = inputs.items.get(c.itemId);
   const depositEach = toVendor ? 0 : deposit(c.sellHouse!.faction, sellItem?.sellPrice, 1, LISTING_HOURS);
   const net = q.netEach;
-  // Auction sales: walk to the larger of the small quantity and the last position with a real chance tonight, plus
-  // what one more day can take when unsold units carry over (CARRYOVER); past that a unit is worth only the vendor
-  // price and loses its deposit. Vendor sales: walk while units still cost under what the vendor pays.
+  // Auction sales: walk to the larger of the small quantity and the last position with a real chance of selling by the
+  // end of tomorrow when unsold units carry over (CARRYOVER), else tonight. Vendor sales: walk while units clear the
+  // vendor margin.
   const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
-  const carryUnits = !toVendor && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay ? Math.ceil((q.salesPerDayLow ?? 0) * CARRYOVER.days) : 0;
-  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + carryUnits));
-  const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && unit >= net);
+  const carries = carryover(q);
+  const queue2 = carries ? overnightQueue(q, o.horizonHours + CARRYOVER.tomorrowHours) : queue;
+  const probe2 = carries ? soldCurve(q, queue2, o.capUsed, MAX_UNITS) : probe;
+  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe2.lastUseful));
+  // A vendor sale only takes units that clear the vendor margin (VENDOR_MARGIN): the walk stops at the first that does not.
+  const margin = toVendor ? vendorMargin(net) : 0;
+  const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && net - unit < margin);
+  if (toVendor) {
+    const cut = w.steps.findIndex(s => net - s.cost / s.units < margin);
+    if (cut > 0) w.steps.length = cut;
+  }
   // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
   const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
   const sold = probe;
@@ -174,22 +183,24 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const nonStack = !isStackable(sellItem);
   const minutesAt = (n: number, s: Step) => s.buyMinutes + (toVendor ? EFFORT.vendorSellMin : EFFORT.postMin + (nonStack ? (n - 1) * EFFORT.postUnitMin : 0));
   const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
-  const worth = (unsoldUnits: number) => unsoldWorth(q, q.netEach, salvage, depositEach, unsoldUnits);
-  const expectedAt = (n: number, cost: number, s: Step) => {
-    const k = sold.soldAt(n);
-    return k * net - cost + worth(n - k) - (n - k) * depositEach - (minutesAt(n, s) / 60) * o.timeRate;
-  };
+  // What n units bring in, tonight and (carryover) tomorrow, at a price and with shortfalls (settle, below).
+  const tonight = (n: number) => sold.soldAt(n);
+  const byTomorrow = (n: number) => (carries ? Math.max(tonight(n), probe2.soldAt(n)) : tonight(n));
+  const revenue = (n: number, netAt: number, shortTonight = 1, shortTomorrow = 1) =>
+    settle(n, tonight(n), byTomorrow(n), netAt, salvage, depositEach, shortTonight, shortTomorrow, carries);
+  const expectedAt = (n: number, cost: number, s: Step) => revenue(n, net).value - cost - (minutesAt(n, s) / 60) * o.timeRate;
   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
     const { cost, s } = costAt(n);
     const k = sold.soldAt(n);
+    const tomorrow = revenue(n, net).tomorrow;
     const minutes = minutesAt(n, s);
     const expectedProfit = Math.round(expectedAt(n, cost, s));
     const over = s.castMinutes > session + 1e-9;
-    return { label, units: n, cost: Math.round(cost), expectedSold: Math.round(k * 10) / 10, expectedProfit, minutes: Math.round(minutes * 10) / 10,
+    return { label, units: n, cost: Math.round(cost), expectedSold: Math.round(k * 10) / 10, soldTomorrow: Math.round(tomorrow * 10) / 10, expectedProfit, minutes: Math.round(minutes * 10) / 10,
       castMinutes: Math.round(s.castMinutes * 10) / 10,
       note: over ? `${Math.round(s.castMinutes)} minutes of crafting, more than one ${session} minute session` : undefined,
-      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, k, cap, depositEach, expectedProfit, w, salvage) };
+      goldPerHour: minutes > 0 ? Math.round(expectedProfit / (minutes / 60)) : null, risk: riskOf(c, inputs, n, cost, k, cap, expectedProfit, w, depositEach, (netAt, a, b) => revenue(n, netAt, a, b).value) };
   };
   const at = (n: number) => option('best', Math.max(1, Math.min(n, Math.max(1, available))));
   if (maxN <= 0) return { walk: w, cap, depositEach, maxN, goldCapped, firstUnitCost: w.steps[0] ? w.steps[0].cost / w.steps[0].units : null, sessionCapped: false, options: [], best: null, bestStep: -1, at };
@@ -216,7 +227,8 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
  * deposit. Gold at stake counts every deposit.
  * High when the bad case loses more than the flip is expected to make, medium when it loses more than half of it.
  */
-function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, depositEach: number, expected: number, w: Walk, salvage: number): Risk {
+function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold: number, cap: number, expected: number, w: Walk, depositEach: number,
+  revenueAt: (netAt: number, shortTonight: number, shortTomorrow: number) => number): Risk {
   const q = c.quote;
   const drivers: string[] = [];
   let netBad = q.netEach, daysToSell: number | null = 0;
@@ -247,29 +259,40 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
       if (listed && u / listed > RISK.thinSupplyShare) { drivers.push(`thin supply of ${inputs.items.get(it)?.name ?? `item ${it}`}`); break; }
     }
   }
+  // Bad case: the bad price, half tonight's expected sales, and half of tomorrow's (carryover halved, round 2 H1).
   // A vendor buys every unit at a fixed price: no shortfall and no price drop.
-  const soldBad = q.houseId == null ? n : sold * SALES_SHORTFALL;
-  const left = n - soldBad;
-  const badCaseLoss = Math.max(0, Math.round(cost - (soldBad * netBad + unsoldWorth(q, netBad, salvage, depositEach, left) - left * depositEach)));
-  const halfSalesProfit = Math.round(soldBad * q.netEach + unsoldWorth(q, q.netEach, salvage, depositEach, left) - left * depositEach - cost);
-  const level: Risk['level'] = badCaseLoss > expected ? 'high' : badCaseLoss > expected / 2 ? 'medium' : 'low';
+  const auction = q.houseId != null;
+  const badCaseLoss = Math.max(0, Math.round(cost - revenueAt(netBad, auction ? SALES_SHORTFALL : 1, auction ? CARRYOVER.badShare : 1)));
+  const halfSalesProfit = Math.round(revenueAt(q.netEach, auction ? SALES_SHORTFALL : 1, auction ? CARRYOVER.badShare : 1) - cost);
+  let level: Risk['level'] = badCaseLoss > expected ? 'high' : badCaseLoss > expected / 2 ? 'medium' : 'low';
+  // Units that mostly do not sell tonight are risky whatever tomorrow promises (round 2 H1).
+  if (auction && sold < n * RISK.tonightHigh) level = 'high';
+  else if (auction && sold < n * RISK.tonightMedium && level === 'low') level = 'medium';
+  if (auction && sold < n * RISK.tonightMedium) drivers.push(`only ${Math.round(sold * 10) / 10} of ${n} expected to sell tonight`);
   return { atStake: Math.round(cost + n * depositEach), badCaseLoss, halfSalesProfit, deposits: Math.round(n * depositEach), daysToSell, level, drivers };
 }
 
+/** Whether unsold units carry over to tomorrow: an auction sale of a product with proven demand (CARRYOVER). */
+export const carryover = (q: SellQuote) => q.houseId != null && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay;
+
 /**
- * What the units left unsold at the end of the night are worth (CARRYOVER), before tonight's lost deposits, which the
- * caller charges on top. With proven demand (the low estimate sells at least 1 a day) Chip relists them: each is worth
- * the net at `netAtPrice` (the case's price after the cut) less the deposits to post it again, never under the vendor
- * price, for as many units as one more day of the low estimate can take. The rest, and every unsold unit without
- * proven demand, are worth the vendor price (0 when no vendor buys it). A vendor sale never has unsold units.
+ * What n posted units bring in (before their cost), round 2 finding H1. `tonight` units are expected to sell tonight
+ * and `byTomorrow` by the end of tomorrow, both through the same queue (the units ahead, then tomorrow's new posts).
+ * With carryover the unsold units are relisted (one more deposit each) when that beats selling them to a vendor:
+ *   sold tonight x net + sold tomorrow x net - relisted x deposit lost tonight - still unsold x (deposit lost tomorrow - salvage)
+ * else: sold tonight x net + unsold x (salvage - deposit). `shortTonight` and `shortTomorrow` scale the two days'
+ * sales (1 expected; the bad case halves both). Returns the value and the units sold tomorrow.
  */
-export function unsoldWorth(q: SellQuote, netAtPrice: number, salvage: number, depositEach: number, unsold: number): number {
-  if (q.houseId == null || unsold <= 0) return 0;
-  const low = q.salesPerDayLow ?? 0;
-  if (low < CARRYOVER.minLowPerDay) return unsold * salvage;
-  const carried = Math.min(unsold, low * CARRYOVER.days);
-  const each = Math.max(salvage, netAtPrice - CARRYOVER.relistDeposits * depositEach);
-  return carried * each + (unsold - carried) * salvage;
+export function settle(n: number, tonight: number, byTomorrow: number, netAt: number, salvage: number, deposit: number,
+  shortTonight: number, shortTomorrow: number, carries: boolean): { value: number; tomorrow: number } {
+  const s1 = Math.min(n, tonight * shortTonight);
+  const left = n - s1;
+  const keep = s1 * netAt + left * (salvage - deposit);
+  if (!carries || left <= 0) return { value: keep, tomorrow: 0 };
+  const s2 = Math.min(left, Math.max(0, byTomorrow - tonight) * shortTomorrow);
+  const end = left - s2;
+  const relist = s1 * netAt + s2 * netAt - left * deposit - end * deposit + end * salvage;
+  return relist > keep ? { value: relist, tomorrow: s2 } : { value: keep, tomorrow: 0 };
 }
 
 /**

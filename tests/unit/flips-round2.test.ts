@@ -3,10 +3,11 @@
  * finding, each with its numbers stated (docs/flip-plan.md section 6, "Refinements from the first independent test").
  */
 import { describe, it, expect } from 'vitest';
-import { A, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refTail, DYE, DYE_RECIPE } from './flips.fixture.ts';
+import { A, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refRevenue, refTail, DYE, DYE_RECIPE } from './flips.fixture.ts';
 import { Market } from '../../src/flips/market.ts';
 import { SellBook, overnightQueue, lowPerDay, newPerDay } from '../../src/flips/sellBook.ts';
-import { soldCurve, priceWar, unsoldWorth } from '../../src/flips/evaluate.ts';
+import { soldCurve, priceWar, settle } from '../../src/flips/evaluate.ts';
+import { MOSTLY_TOMORROW } from '../../src/flips/run.ts';
 import { buildFlipInputs, enrichDemand, vendorUnitPrice, type FlipDemand } from '../../src/flips/inputs.ts';
 import { demandByItem } from '../../src/analysis/history.ts';
 import { poissonLowerBound } from '../../src/flips/poisson.ts';
@@ -26,7 +27,7 @@ describe('H1: learning, and the low estimate over sale events', () => {
     expect(run(ceruleanAtBens({ dyeDemand: { hours: 6, hoursWatched: 6 } })).flips.find(f => f.key === DYE_KEY)).toBeDefined();
   });
   it('a vendor sale never waits for learning: a vendor buys without limit', () => {
-    const r = run({ listings: { 111: [L(2589, 10, 20)] }, items: [item(2589, 'Linen Cloth', 13)] });
+    const r = run({ listings: { 111: [L(2589, 10, 20)] }, items: [item(2589, 'Linen Cloth', 20)] });
     expect(r.flips.find(f => f.family === 'auction_vendor')).toBeDefined();
   });
   it('the ranking uses the event bound: 3 events of 94.67 units over 12 hours', () => {
@@ -45,7 +46,8 @@ describe('H3: risk', () => {
     const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { hours: 24, hoursWatched: 24 } })), DYE_KEY);
     // the dye has proven demand, so the unsold half carries over at the bad price less one more deposit (round 3)
     const S1 = refTail(20, 1);
-    const badAt = (netBad: number) => Math.max(0, Math.round(5020 - (S1 / 2 * netBad + (1 - S1 / 2) * (netBad - 360 - 360))));
+    void S1;
+    const badAt = (netBad: number) => Math.max(0, Math.round(5020 - refRevenue({ mu: 20, mu2: 68, ahead: 0, net: netBad, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 })));
     expect(e.at(1).risk.badCaseLoss).toBe(badAt(5343));
     expect(e.at(1).risk.drivers).toContain('under 3 days of prices seen, a 25% drop assumed for the bad case');
     // a low seen under the 25% drop is used: 40s nets 3800
@@ -117,7 +119,7 @@ describe('H4: the chance each unit sells falls smoothly', () => {
     // no cliff: the 20th unit (the old flat capacity) still sells more often than not, the 25th sometimes
     expect(curve.soldAt(20) - curve.soldAt(19)).toBeGreaterThan(0.5);
     expect(curve.soldAt(25) - curve.soldAt(24)).toBeGreaterThan(0.1);
-    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16, carry: { each: 7077 - 360, cap: 60 } })));
+    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16, mu2: 68 })));
   });
   it('a seller pulling and reposting is not new competition: new = max(0, new - pulled) (round 3)', () => {
     // Poached Sunscale Salmon pattern: about 1,700 units pulled near the floor and 822 posted again in one hour
@@ -266,23 +268,47 @@ describe('sale events and new posts from the stored hourly counts', () => {
   });
 });
 
-describe('carryover: an unsold unit of a product with proven demand is relisted, not lost (round 3)', () => {
-  it('worth the net at the case price less one more deposit, never under the vendor price, for one day of the low estimate', () => {
-    const q = new SellBook(inputsOf(ceruleanAtBens())).quote(A, DYE)!;
-    // 60 a day low: up to 60 units at 7077 - 360 = 6717 each, the rest at the 75c vendor price
-    expect(unsoldWorth(q, 7077, 75, 360, 10)).toBe(10 * 6717);
-    expect(unsoldWorth(q, 7077, 75, 360, 70)).toBe(60 * 6717 + 10 * 75);
-    // at a bad case price under the deposits it is never below the vendor price
-    expect(unsoldWorth(q, 300, 75, 360, 2)).toBe(2 * 75);
-    // no proven demand (under 1 a day): vendor price only; no vendor price: 0
-    expect(unsoldWorth({ ...q, salesPerDayLow: 0.9 }, 7077, 75, 360, 4)).toBe(4 * 75);
-    expect(unsoldWorth({ ...q, salesPerDayLow: 0.9 }, 7077, 0, 360, 4)).toBe(0);
-    // a vendor sale never has unsold units
-    expect(unsoldWorth({ ...q, houseId: null }, 7077, 75, 360, 4)).toBe(0);
+describe('carryover through the same queue (round 2 of independent testing, H1)', () => {
+  it('settle: tonight at the net; the rest relisted for one more deposit and sold tomorrow, when that beats the vendor', () => {
+    // 10 posted, 6 expected tonight, 9 by tomorrow night, net 100, vendor 10, deposit 20
+    //   relist: 9 x 100 - 4 relisted x 20 - 1 left x (20 - 10) = 810; vendor instead: 600 + 4 x (10 - 20) = 560
+    expect(settle(10, 6, 9, 100, 10, 20, 1, 1, true)).toEqual({ value: 810, tomorrow: 3 });
+    expect(settle(10, 6, 9, 100, 10, 20, 1, 1, false)).toEqual({ value: 560, tomorrow: 0 });
+    // bad case halves both days: 3 tonight, 1.5 tomorrow: 4.5 x 100 - 7 x 20 - 5.5 x 10 = 255, over the vendor 3 x 100 - 70 = 230
+    expect(settle(10, 6, 9, 100, 10, 20, 0.5, 0.5, true)).toEqual({ value: 255, tomorrow: 1.5 });
+    // tomorrow sells nothing more: relisting only adds deposits, so the vendor is chosen
+    expect(settle(10, 6, 6, 100, 10, 20, 1, 1, true)).toEqual({ value: 560, tomorrow: 0 });
   });
-  it('yardstick: Cerulean Dye is low risk once unsold dye carries over', () => {
-    const dye = run(ceruleanAtBens()).flips.find(f => f.key === DYE_KEY)!;
-    expect(dye.best).toMatchObject({ units: 38, expectedProfit: 34005 });
-    expect(dye.best.risk).toMatchObject({ badCaseLoss: 0, level: 'low' });
+  it('a flip that sells nothing tonight is never low risk: the Dye with 70 new posts a day (more than its 60 sales)', () => {
+    const r = run(ceruleanAtBens({ dyeDemand: { newPerDay: 70 } }));
+    const f = r.flips.find(x => x.key === DYE_KEY);
+    // new posts outrun sales tonight and tomorrow, so nothing is expected to sell: held back, and high risk at any amount
+    expect(f).toBeUndefined();
+    expect(r.heldBack.find(h => h.key === DYE_KEY)).toMatchObject({ code: 'no expected profit overnight' });
+    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 70 } })), DYE_KEY);
+    for (const n of [1, 5, 10]) {
+      expect(e.at(n).risk.level).toBe('high');
+      expect(e.at(n).risk.drivers).toContain(`only 0 of ${n} expected to sell tonight`);
+    }
+  });
+  it('risk is at least medium under half sold tonight and high under a quarter, whatever tomorrow promises', () => {
+    // 60 a day middle, 40 new a day: 8.3 events tonight, 28.3 over both days. Bad case at the 70s low keeps most rows cheap.
+    const { e } = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 40 } })), DYE_KEY);
+    for (let n = 1; n <= 38; n++) {
+      const o = e.at(n);
+      if (o.expectedSold < n * 0.25) expect(o.risk.level).toBe('high');
+      else if (o.expectedSold < n * 0.5) expect(o.risk.level).not.toBe('low');
+    }
+    const half = [...Array(38).keys()].map(i => e.at(i + 1)).find(o => o.expectedSold < o.units * 0.5)!;
+    expect(half.risk.drivers.join(' ')).toMatch(/expected to sell tonight/);
+  });
+  it('the card says when most of it sells tomorrow, not tonight', () => {
+    // 60 a day middle, 40 new a day: about 8 tonight; with the lichen ladder the best runs well past that
+    const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: 40 } })).flips.find(x => x.key === DYE_KEY)!;
+    expect(f.best.soldTomorrow!).toBeGreaterThan(f.best.expectedSold);
+    expect(f.notes).toContain(MOSTLY_TOMORROW);
+    expect(f.best.risk.level).not.toBe('low');
+    // the plain Dye at Ben's prices sells more tonight than tomorrow: no such line
+    expect(run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!.notes).not.toContain(MOSTLY_TOMORROW);
   });
 });

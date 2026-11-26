@@ -5,8 +5,9 @@ import type { Place } from '../datasets/places.ts';
 import { demandByItem, typicalFloors, type Typical } from '../analysis/history.ts';
 import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, MY_PROFESSIONS_SETTING, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
+import { newPostsFromRaw, type NewPosts } from './newPosts.ts';
 import type { HouseRef } from './types.ts';
 
 /**
@@ -36,6 +37,8 @@ export type FlipDemand = Demand & {
 export interface FlipItem {
   id: number; name: string; sellPrice: number | null; binding: string | null; bonding: number | null; quality: string | null;
   stackSize: number | null; vendorStack: number | null; purchaseQuantity: number | null;
+  /** where name, prices and binding came from: forever | classic1x | wago (items.data_source) */
+  dataSource?: string | null;
 }
 
 export interface FlipRecipe {
@@ -58,6 +61,11 @@ export interface FlipSettings {
   timeRate: number; goldOnHand: number | null; horizonHours: number;
   /** minutes of casting one crafting session allows; the best quantity of a craft stays inside it */
   craftSessionMinutes?: number;
+  /**
+   * The professions Chip has, with his skill when he gave one (settings key my_professions, JSON: ["Tailoring"] or
+   * {"Tailoring": 300}). Unset (null): every sub craft is allowed and only listed.
+   */
+  myProfessions?: Map<string, number | null> | null;
 }
 
 export interface FlipInputs {
@@ -77,6 +85,8 @@ export interface FlipInputs {
   typical: Map<number, Map<number, Typical>>;
   /** lowest hourly floor over 3 days per house and item, the fallback when Demand.low3d is missing */
   low3d: Map<number, Map<number, number>>;
+  /** new listings by price per house from the raw publishes (newPosts.ts); absent when raw snapshots are not on disk */
+  newPosts?: Map<number, NewPosts>;
   /** hours of floors behind low3d per house and item (the item's first floor ever recorded to now) */
   low3dHours?: Map<number, Map<number, number>>;
   drivers: Map<number, Driver>;
@@ -143,16 +153,18 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     if (newest) {
       h.publishedAt = newest;
       const age = (now - newest) / 3600_000;
-      if (age > FRESH_HOURS) problems.push(`data is ${Math.round(age * 10) / 10} hours old on house ${h.id}`);
+      // rounded up, so a run just past the gate never reads "2 hours old" (round 2 finding L3)
+      if (age > FRESH_HOURS) problems.push(`data is ${Math.ceil(age * 10) / 10} hours old on house ${h.id}`);
     }
     if (!h.publishedAt) h.publishedAt = now;
   }
 
   const items = new Map<number, FlipItem>();
-  for (const r of db.prepare('SELECT id, name, sell_price, binding, bonding, quality, stack_size, vendor_stack, purchase_quantity FROM items').all() as Array<Record<string, unknown>>) {
+  for (const r of db.prepare('SELECT id, name, sell_price, binding, bonding, quality, stack_size, vendor_stack, purchase_quantity, data_source FROM items').all() as Array<Record<string, unknown>>) {
     const id = Number(r.id);
     items.set(id, { id, name: (r.name as string | null) ?? `Item ${id}`, sellPrice: num(r.sell_price), binding: (r.binding as string | null) ?? null, bonding: num(r.bonding),
-      quality: (r.quality as string | null) ?? null, stackSize: num(r.stack_size), vendorStack: num(r.vendor_stack), purchaseQuantity: num(r.purchase_quantity) });
+      quality: (r.quality as string | null) ?? null, stackSize: num(r.stack_size), vendorStack: num(r.vendor_stack), purchaseQuantity: num(r.purchase_quantity),
+      dataSource: (r.data_source as string | null) ?? null });
   }
   if (!items.size) problems.push('item catalog missing');
 
@@ -202,7 +214,10 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const typical = new Map<number, Map<number, Typical>>();
   const low3d = new Map<number, Map<number, number>>();
   const low3dHours = new Map<number, Map<number, number>>();
+  const newPosts = new Map<number, NewPosts>();
   for (const h of houses) {
+    const np = newPostsFromRaw(db, h.id, now);
+    if (np) newPosts.set(h.id, np);
     demand.set(h.id, enrichDemand(db, h.id, now, demandByItem(db, h.id, { now }) as Map<number, FlipDemand>));
     typical.set(h.id, typicalFloors(db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours }));
     // The 3 day low and how many hours of floors stand behind it (round 1 finding H3: under 72, a 25 percent drop is assumed).
@@ -235,11 +250,23 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const gold = num(setting(GOLD_SETTING));
   const session = num(setting(CRAFT_SESSION_SETTING));
   return {
-    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, drivers: demandDrivers(db), trainers, recipeItems,
+    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, newPosts, drivers: demandDrivers(db), trainers, recipeItems,
     history: { recent, openHours },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
-      craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT },
+      craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT, myProfessions: parseProfessions(setting(MY_PROFESSIONS_SETTING), notes) },
   };
+}
+
+/** my_professions: a JSON list of names or an object of name to skill. Anything else is ignored and noted. */
+export function parseProfessions(raw: string | undefined, notes: string[] = []): Map<string, number | null> | null {
+  if (raw == null || raw.trim() === '') return null;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (Array.isArray(v)) return new Map(v.filter(x => typeof x === 'string').map(x => [x as string, null]));
+    if (v && typeof v === 'object') return new Map(Object.entries(v as Record<string, unknown>).map(([k, n]) => [k, typeof n === 'number' && Number.isFinite(n) ? n : null]));
+  } catch { /* noted below */ }
+  notes.push(`setting ${MY_PROFESSIONS_SETTING} is not a JSON list or object, ignored`);
+  return null;
 }
 
 /**
