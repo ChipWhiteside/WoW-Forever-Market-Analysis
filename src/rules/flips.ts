@@ -110,6 +110,13 @@ export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
  */
 export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1 };
 
+/**
+ * New listings that compete with Chip overnight (round 2 finding H2): only units other sellers posted at or under his
+ * own post price, read from the raw publishes of the last 24 hours, and only once 6 hours of publishes were watched
+ * (the same 6 hours as LEARNING_HOURS). Before that new posts are not measured: 0 is used and the card says so.
+ */
+export const NEW_POSTS = { minHours: 6, windowHours: 24 };
+
 /** Bad case: only this share of the units expected to sell actually sell (coordinator decision, round 1 H3). */
 export const SALES_SHORTFALL = 0.5;
 

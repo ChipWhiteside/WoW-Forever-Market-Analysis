@@ -7,6 +7,7 @@ import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
 import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, MY_PROFESSIONS_SETTING, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
+import { newPostsFromRaw, type NewPosts } from './newPosts.ts';
 import type { HouseRef } from './types.ts';
 
 /**
@@ -84,6 +85,8 @@ export interface FlipInputs {
   typical: Map<number, Map<number, Typical>>;
   /** lowest hourly floor over 3 days per house and item, the fallback when Demand.low3d is missing */
   low3d: Map<number, Map<number, number>>;
+  /** new listings by price per house from the raw publishes (newPosts.ts); absent when raw snapshots are not on disk */
+  newPosts?: Map<number, NewPosts>;
   /** hours of floors behind low3d per house and item (the item's first floor ever recorded to now) */
   low3dHours?: Map<number, Map<number, number>>;
   drivers: Map<number, Driver>;
@@ -211,7 +214,10 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const typical = new Map<number, Map<number, Typical>>();
   const low3d = new Map<number, Map<number, number>>();
   const low3dHours = new Map<number, Map<number, number>>();
+  const newPosts = new Map<number, NewPosts>();
   for (const h of houses) {
+    const np = newPostsFromRaw(db, h.id, now);
+    if (np) newPosts.set(h.id, np);
     demand.set(h.id, enrichDemand(db, h.id, now, demandByItem(db, h.id, { now }) as Map<number, FlipDemand>));
     typical.set(h.id, typicalFloors(db, h.id, { now, minReadings: UNDERPRICED.minReadings, hours: UNDERPRICED.windowHours }));
     // The 3 day low and how many hours of floors stand behind it (round 1 finding H3: under 72, a 25 percent drop is assumed).
@@ -244,7 +250,7 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const gold = num(setting(GOLD_SETTING));
   const session = num(setting(CRAFT_SESSION_SETTING));
   return {
-    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, drivers: demandDrivers(db), trainers, recipeItems,
+    now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, newPosts, drivers: demandDrivers(db), trainers, recipeItems,
     history: { recent, openHours },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
       craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT, myProfessions: parseProfessions(setting(MY_PROFESSIONS_SETTING), notes) },

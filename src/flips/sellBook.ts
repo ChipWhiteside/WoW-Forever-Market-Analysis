@@ -1,7 +1,8 @@
 import type { Listing } from '../analysis/aggregate.ts';
 import { judgeSell, type DetectorContext, type HouseCtx, type ItemCtx, type VendorOffer } from '../detectors/types.ts';
 import { netPerUnit } from '../rules/fees.ts';
-import { FLIP_GATES, LOW_ESTIMATE, SELL_CHANCE, UNDERCUT } from '../rules/flips.ts';
+import { FLIP_GATES, LOW_ESTIMATE, NEW_POSTS, SELL_CHANCE, UNDERCUT } from '../rules/flips.ts';
+import { newPerDayAt } from './newPosts.ts';
 import { poissonLowerBound, poissonTail, poissonUpper } from './poisson.ts';
 import { money } from '../format/money.ts';
 import type { FlipDemand, FlipInputs } from './inputs.ts';
@@ -39,7 +40,8 @@ export const hoursWatched = (d: FlipDemand | undefined): number => d?.hoursWatch
  * competing new = max(0, newPerDay - pulledPerDay). Never guessed: unmeasured reads 0 and the card says so.
  */
 export function newPerDay(d: FlipDemand | undefined): { value: number; measured: boolean } {
-  if (d?.newPerDay != null && Number.isFinite(d.newPerDay)) {
+  // the same 6 hour minimum as the learning gate (round 2 H2): one busy hour is not a night of new posts
+  if (d?.newPerDay != null && Number.isFinite(d.newPerDay) && hoursWatched(d) >= NEW_POSTS.minHours) {
     const pulled = d.pulledPerDay != null && Number.isFinite(d.pulledPerDay) ? d.pulledPerDay : 0;
     return { value: Math.max(0, d.newPerDay - pulled), measured: true };
   }
@@ -134,7 +136,11 @@ export class SellBook {
     const post = Math.max(1, claim - undercut);
     let ahead = 0;
     for (const l of ls) { if (l.unitPrice! > post) break; ahead += l.quantity; }
-    const low = lowPerDay(d), fresh = newPerDay(d);
+    // New posts at or under Chip's post price from the raw publishes when they are on disk (round 2 H2), else sale
+    // counting's near the floor count.
+    const np = this.inputs.newPosts?.get(h.id);
+    const atPost = np ? newPerDayAt(np, itemId, post) : null;
+    const low = lowPerDay(d), fresh = np ? { value: atPost ?? 0, measured: atPost != null } : newPerDay(d);
     const horizon = this.inputs.settings.horizonHours;
     const gates: string[] = [];
     // The same "sold near" rule judgeSell uses: at least one sale seen and a price it happened at.
