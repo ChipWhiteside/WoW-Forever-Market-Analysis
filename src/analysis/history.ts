@@ -183,6 +183,7 @@ function normalQuantile(p: number): number {
  * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses
  * (lowEstimate): the larger of a t bound on hourly net units and a Poisson bound on sale events. Under 6 differenced
  * publishes it is null, never projected, and it is null when the whole front was replaced in 80 percent of hours or more.
+ * Thin markets emptied and posted again at the next publish count no sale (repostedAcross).
  * `netPerDay` is the middle less the share expected to be pulls (commodities). `hourlyMean` and `hourlySd` describe
  * hourly sold units over every watched publish, zero hours included, for the flip engine's overnight queue.
  */
