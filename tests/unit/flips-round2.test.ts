@@ -26,7 +26,7 @@ describe('H1: learning, and the low estimate over sale events', () => {
     expect(run(ceruleanAtBens({ dyeDemand: { hours: 6, hoursWatched: 6 } })).flips.find(f => f.key === DYE_KEY)).toBeDefined();
   });
   it('a vendor sale never waits for learning: a vendor buys without limit', () => {
-    const r = run({ listings: { 111: [L(2589, 10, 20)] }, items: [item(2589, 'Linen Cloth', 13)] });
+    const r = run({ listings: { 111: [L(2589, 10, 20)] }, items: [item(2589, 'Linen Cloth', 20)] });
     expect(r.flips.find(f => f.family === 'auction_vendor')).toBeDefined();
   });
   it('the ranking uses the event bound: 3 events of 94.67 units over 12 hours', () => {

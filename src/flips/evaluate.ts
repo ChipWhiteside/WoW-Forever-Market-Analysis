@@ -1,5 +1,5 @@
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
+import { vendorMargin, CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
 import { overnightQueue, type Queue } from './sellBook.ts';
@@ -161,7 +161,13 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
   const carryUnits = !toVendor && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay ? Math.ceil((q.salesPerDayLow ?? 0) * CARRYOVER.days) : 0;
   const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + carryUnits));
-  const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && unit >= net);
+  // A vendor sale only takes units that clear the vendor margin (VENDOR_MARGIN): the walk stops at the first that does not.
+  const margin = toVendor ? vendorMargin(net) : 0;
+  const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && net - unit < margin);
+  if (toVendor) {
+    const cut = w.steps.findIndex(s => net - s.cost / s.units < margin);
+    if (cut > 0) w.steps.length = cut;
+  }
   // A last craft or vendor bundle can overshoot the limit; no row ever goes past MAX_UNITS (round 1 finding L6).
   const available = w.steps.length ? Math.min(MAX_UNITS, w.steps[w.steps.length - 1]!.cumUnits) : 0;
   const sold = probe;

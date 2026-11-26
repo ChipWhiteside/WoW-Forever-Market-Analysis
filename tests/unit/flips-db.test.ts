@@ -19,7 +19,7 @@ function db(): DB {
     (113, 'Horde Auction House', 'horde', 0.05, 0, 0), (116, 'Blackwater Auction House', 'blackwater', 0.15, 1, 0),
     (117, 'Blackwater Auction House', 'blackwater', 0.15, 1, 0);
     INSERT INTO items (id, name, quality, sell_price, status, fetched_at, bonding, vendor_stack) VALUES
-    (2589, 'Linen Cloth', 'COMMON', 13, 200, 0, 0, NULL), (2770, 'Copper Ore', 'COMMON', 5, 200, 0, 0, NULL), (2840, 'Copper Bar', 'COMMON', 10, 200, 0, 0, NULL),
+    (2589, 'Linen Cloth', 'COMMON', 20, 200, 0, 0, NULL), (2770, 'Copper Ore', 'COMMON', 5, 200, 0, 0, NULL), (2840, 'Copper Bar', 'COMMON', 10, 200, 0, 0, NULL),
     (3371, 'Empty Vial', 'COMMON', 1, 200, 0, 0, 5), (9999, 'Odd Thing', 'COMMON', 50, 200, 0, 0, NULL);
     INSERT INTO recipes (id, name, profession, crafted_item_id, qty_min, qty_max, learn_skill, spell_id) VALUES
     (2657, 'Smelt Copper', 'Mining', 2840, 1, 1, 1, 2657), (9001, 'Odd Bomb', 'Engineering', 9999, 1, 3, 1, NULL), (53851, 'Smelt Copper (Test)', 'Test Profession [DNT]', 2840, 1, 1, 1, NULL);

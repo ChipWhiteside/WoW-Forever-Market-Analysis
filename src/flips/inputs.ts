@@ -36,6 +36,8 @@ export type FlipDemand = Demand & {
 export interface FlipItem {
   id: number; name: string; sellPrice: number | null; binding: string | null; bonding: number | null; quality: string | null;
   stackSize: number | null; vendorStack: number | null; purchaseQuantity: number | null;
+  /** where name, prices and binding came from: forever | classic1x | wago (items.data_source) */
+  dataSource?: string | null;
 }
 
 export interface FlipRecipe {
@@ -155,10 +157,11 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   }
 
   const items = new Map<number, FlipItem>();
-  for (const r of db.prepare('SELECT id, name, sell_price, binding, bonding, quality, stack_size, vendor_stack, purchase_quantity FROM items').all() as Array<Record<string, unknown>>) {
+  for (const r of db.prepare('SELECT id, name, sell_price, binding, bonding, quality, stack_size, vendor_stack, purchase_quantity, data_source FROM items').all() as Array<Record<string, unknown>>) {
     const id = Number(r.id);
     items.set(id, { id, name: (r.name as string | null) ?? `Item ${id}`, sellPrice: num(r.sell_price), binding: (r.binding as string | null) ?? null, bonding: num(r.bonding),
-      quality: (r.quality as string | null) ?? null, stackSize: num(r.stack_size), vendorStack: num(r.vendor_stack), purchaseQuantity: num(r.purchase_quantity) });
+      quality: (r.quality as string | null) ?? null, stackSize: num(r.stack_size), vendorStack: num(r.vendor_stack), purchaseQuantity: num(r.purchase_quantity),
+      dataSource: (r.data_source as string | null) ?? null });
   }
   if (!items.size) problems.push('item catalog missing');
 

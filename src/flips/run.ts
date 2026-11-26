@@ -1,4 +1,4 @@
-import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
 import type { TraceEntry } from './market.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES, type Place } from '../datasets/places.ts';
@@ -49,6 +49,11 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
       heldBack.push({ key: c.key, family: c.family, itemId: c.itemId, name: c.name, perItem, reason, code, sellHouseId: c.sellHouse?.id ?? null, recipeId: c.recipe?.id });
     try {
       const toVendor = c.quote.houseId == null;
+      // A vendor price known only from Classic data is never ranked on (round 2 finding M3).
+      if (toVendor && inputs.items.get(c.itemId)?.dataSource === 'classic1x') {
+        hold('vendor price comes from Classic data, not confirmed in Forever', 'vendor_unverified');
+        continue;
+      }
       if (!e.walk.steps.length) {
         if (c.recipe && market.cooldownLeft(c.recipe) <= 0) hold('its cooldown is used up', 'cooldown', null);
         else hold('nothing can be bought for it right now', 'no supply', null);
@@ -70,6 +75,10 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
       if (b.expectedProfit <= 0) {
         hold(e.cap < 1 && !toVendor ? `not enough sells overnight: about ${round1(e.cap)} expected after the units ahead and new posts` : 'no expected profit once unsold units lose their deposit',
           'no expected profit overnight', perItem);
+        continue;
+      }
+      if (toVendor && perItem < vendorMargin(c.quote.netEach)) {
+        hold(`profit each ${money(perItem)} is under the vendor margin of ${money(Math.ceil(vendorMargin(c.quote.netEach)))} (vendor rates are unverified)`, 'vendor margin too thin', perItem);
         continue;
       }
       if (!toVendor) {

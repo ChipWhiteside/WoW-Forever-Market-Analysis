@@ -205,28 +205,34 @@ describe('today\'s junk stays out', () => {
 });
 
 describe('effort never buries crafting', () => {
-  it('2,000 crafts for 2c each: shown, ranked far below; best stays in one 30 minute session, most shows all 100 minutes', () => {
+  it('2,000 crafts for 12c each: shown, ranked far below; best stays in one 30 minute session, most shows all 100 minutes', () => {
     const CHEAP = 4306, KIT = 4304;
     const f = bensMarket();
     f.listings[111]!.push(...many(CHEAP, 98, 20, 100));
-    f.items.push(item(CHEAP, 'Silk Cloth', 25), item(KIT, 'Silk Kit', 100));
+    f.items.push(item(CHEAP, 'Silk Cloth', 25), item(KIT, 'Silk Kit', 110));
     f.recipes!.push(recipe(9000, 'Silk Kit', KIT, [[CHEAP, 1]], { profession: 'Tailoring' }));
     const r = run(f);
     const kit = r.flips.find(x => x.itemId === KIT)!;
     expect(kit.family).toBe('craft_vendor');
-    // One 30 minute session at 3 seconds a cast is 600 crafts: 600 x 2c = 1,200 (12s)
+    // One 30 minute session at 3 seconds a cast is 600 crafts: 600 x 12c = 7,200 (72s)
     expect(kit.best.units).toBe(600);
     expect(kit.best.castMinutes).toBe(30);
-    expect(kit.best.expectedProfit).toBe(1200);
+    expect(kit.best.expectedProfit).toBe(7200);
     expect(kit.best.note).toBeUndefined();
-    // The most row: all 2,000 listed at 98c, sold to a vendor at 100c: 2c x 2,000 = 4,000 (40s), 100 minutes of casting
+    // The most row: all 2,000 listed at 98c, sold to a vendor at 1s 10c: 12c x 2,000 = 24,000 (2g 40s), 100 minutes of casting
     const most = kit.options.find(o => o.label === 'most')!;
     expect(most.units).toBe(2000);
-    expect(most.expectedProfit).toBe(4000);
+    expect(most.expectedProfit).toBe(24000);
     expect(most.minutes).toBeGreaterThanOrEqual(100);
     expect(most.note).toBe('100 minutes of crafting, more than one 30 minute session');
     expect(kit.notes.join(' ')).toMatch(/one 30 minute crafting session/);
     expect(kit.rank).toBeGreaterThan(r.flips.find(x => x.key === DYE_KEY)!.rank!);
+    // At 2c a craft (a 1s vendor price) it is under the 5c vendor margin and held back (round 2 M3)
+    const thin = bensMarket();
+    thin.listings[111]!.push(...many(CHEAP, 98, 20, 100));
+    thin.items.push(item(CHEAP, 'Silk Cloth', 25), item(KIT, 'Silk Kit', 100));
+    thin.recipes!.push(recipe(9000, 'Silk Kit', KIT, [[CHEAP, 1]], { profession: 'Tailoring' }));
+    expect(run(thin).heldBack.find(h => h.itemId === KIT && h.family === 'craft_vendor')).toMatchObject({ code: 'vendor margin too thin' });
   });
   it('a craft and a plain flip with equal expected profit rank side by side', () => {
     const P = 9101, V = 9102, R = 9103;
@@ -245,12 +251,12 @@ describe('effort never buries crafting', () => {
 
 describe('other families', () => {
   it('auction to vendor: listings under what a vendor pays, every unit counts', () => {
-    const r = run({ listings: { 111: [L(2589, 10, 20), L(2589, 12, 14), L(2589, 13, 50)] }, items: [item(2589, 'Linen Cloth', 13)] });
+    const r = run({ listings: { 111: [L(2589, 10, 20), L(2589, 14, 14), L(2589, 16, 50)] }, items: [item(2589, 'Linen Cloth', 20)] });
     const f = r.flips.find(x => x.family === 'auction_vendor')!;
-    // (13 - 10) x 20 + (13 - 12) x 14 = 74; the 13c listing makes nothing
+    // (20 - 10) x 20 + (20 - 14) x 14 = 284; the 16c listing clears 4c, under the 5c vendor margin (round 2 M3)
     expect(f.best.units).toBe(34);
-    expect(f.best.expectedProfit).toBe(74);
-    expect(f.sell).toMatchObject({ kind: 'any_vendor', unitPrice: 13 });
+    expect(f.best.expectedProfit).toBe(284);
+    expect(f.sell).toMatchObject({ kind: 'any_vendor', unitPrice: 20 });
     expect(f.repeatable).toBe(false);
   });
   it('cross house: buy on Alliance 111, sell on Blackwater', () => {

@@ -88,6 +88,15 @@ export const UNDERCUT = { levels: 6, maxShare: 0.05, singleLevelShare: 0.01, min
  */
 export const WOBBLE = { unknownCv: 0.1, minCopper: 1 };
 
+/**
+ * Vendor sales (round 2 finding M3). Forever's vendor rates are unverified, and the market shows thousands of crafted
+ * units posted at exactly the vendor price, so a vendor flip needs at least 5c and 5 percent of the vendor price per
+ * unit of margin, or it is held back. A vendor price that comes only from Classic data (items.data_source classic1x)
+ * is never ranked on.
+ */
+export const VENDOR_MARGIN = { minCopper: 5, minShare: 0.05 };
+export const vendorMargin = (vendorPrice: number) => Math.max(VENDOR_MARGIN.minCopper, vendorPrice * VENDOR_MARGIN.minShare);
+
 /** Gates (plan section 6). Strength stays evidence plus a show gate at 40, the same as the Now page (PRICE.showAt). */
 export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
 

@@ -193,9 +193,9 @@ describe('vendor sales', () => {
     const r = run({ listings: { 111: [L(ORE, 5, 30), L(ORE, 8, 30), L(ORE, 20, 100)] }, items: [item(ORE, 'Copper Ore', 2), item(BAR, 'Copper Bar', 10)],
       recipes: [recipe(2657, 'Smelt Copper', BAR, [[ORE, 1]], { profession: 'Mining' })] });
     const f = r.flips.find(x => x.family === 'craft_vendor')!;
-    // 30 x (10 - 5) + 30 x (10 - 8) = 210; the 20c ore would lose
-    expect(f.best.units).toBe(60);
-    expect(f.best.expectedProfit).toBe(210);
+    // 30 x (10 - 5) = 150; the 8c ore clears only 2c, under the 5c vendor margin (round 2 M3), and the 20c ore would lose
+    expect(f.best.units).toBe(30);
+    expect(f.best.expectedProfit).toBe(150);
     expect(f.kind).toBe('craft');
     expect(f.sellHouseId).toBeNull();
   });
