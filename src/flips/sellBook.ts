@@ -21,9 +21,12 @@ import type { HouseRef, SellQuote } from './types.ts';
  * events seen, times the mean units per event, over the hours watched (at least 6). Null when no event count exists:
  * the low estimate is never projected from units alone (round 1 finding H1).
  */
-export function lowPerDay(d: FlipDemand | undefined): { value: number | null; derived: boolean } {
+export function lowPerDay(d: FlipDemand | undefined): { value: number | null; derived: boolean; pending?: boolean } {
   if (!d) return { value: null, derived: false };
   if (d.lowPerDay != null && Number.isFinite(d.lowPerDay)) return { value: Math.max(0, d.lowPerDay), derived: false };
+  // Sale counting ran (it reports hours watched) and has no low estimate yet: not known, never derived here around its
+  // own minimum of publishes (independent sale counting test, finding 1). The flip waits as learning.
+  if (d.hoursWatched != null) return { value: null, derived: false, pending: true };
   if (d.saleEvents == null || !Number.isFinite(d.saleEvents)) return { value: null, derived: true };
   const hours = Math.max(hoursWatched(d), LOW_ESTIMATE.minHours);
   const upe = d.unitsPerEvent != null && d.unitsPerEvent > 0 ? d.unitsPerEvent : 1;
@@ -85,6 +88,22 @@ export interface Queue {
 
 export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
   if (q.houseId == null) return { at: () => 1, lastPos: Infinity, meanEvents: Infinity, unitsPerEvent: 1 };
+  // Hourly spread measured (sale counting's hourlyMean and hourlySd over at least 6 hours): units sold over the night
+  // are normal with mean H x hourly mean and sd sqrt(H) x hourly sd, less the competing new posts, never under 0.
+  // One hour's run of sales is not one event, so a deep steady market is not read as a coin toss (independent sale
+  // counting test, finding 2). The Poisson event model is used otherwise.
+  if (q.hourlyMean != null && q.hourlySd != null && (q.hourlyHours ?? 0) >= SELL_CHANCE.normalMinHours) {
+    const mean = Math.max(0, horizonHours * q.hourlyMean - q.newPerHour * horizonHours);
+    const sd = Math.sqrt(horizonHours) * Math.max(0, q.hourlySd);
+    const at = (pos: number) => {
+      if (pos <= 0) return 1;
+      if (mean <= 0) return 0;
+      if (sd <= 0) return pos <= mean ? 1 : 0;
+      return 1 - normalCdf((pos - 0.5 - mean) / sd);
+    };
+    const lastPos = mean <= 0 ? 0 : Math.max(0, Math.floor(mean + sd * SELL_CHANCE.normalTailSd + 0.5));
+    return { at, lastPos, meanEvents: mean, unitsPerEvent: 1 };
+  }
   const upe = q.unitsPerEvent != null && q.unitsPerEvent > 0 ? q.unitsPerEvent : 1;
   const midUnits = ((q.salesPerDayMid ?? 0) * horizonHours) / 24;
   const mu = Math.max(0, midUnits - q.newPerHour * horizonHours) / upe;
@@ -95,6 +114,14 @@ export function overnightQueue(q: SellQuote, horizonHours: number): Queue {
     at: (pos: number) => { if (pos <= 0) return 1; const j = Math.ceil(pos / upe - 1e-9); return j < tail.length ? tail[j]! : 0; },
     lastPos, meanEvents: mu, unitsPerEvent: upe,
   };
+}
+
+/** Standard normal cdf (Abramowitz and Stegun 7.1.26 on erf, error under 1.5e-7). */
+export function normalCdf(z: number): number {
+  const x = Math.abs(z) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * x);
+  const erf = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return z >= 0 ? (1 + erf) / 2 : (1 - erf) / 2;
 }
 
 export class SellBook {
@@ -166,6 +193,8 @@ export class SellBook {
       saleEvents: d?.saleEvents ?? null, unitsPerEvent: d?.unitsPerEvent ?? null,
       lowCoverHours: this.inputs.low3dHours?.get(h.id)?.get(itemId) ?? hoursWatched(d),
       floorChange1h: d?.floorChange1h ?? null, newLastHour: d?.newLastHour ?? null,
+      lowPending: low.pending ?? false,
+      hourlyMean: d?.hourlyMean ?? null, hourlySd: d?.hourlySd ?? null, hourlyHours: d?.hourlyHours ?? (d?.hourlyMean != null ? hoursWatched(d) : null),
       note: rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
     };
   }

@@ -31,7 +31,7 @@ describe('H1: learning, and the low estimate over sale events', () => {
     expect(r.flips.find(f => f.family === 'auction_vendor')).toBeDefined();
   });
   it('the ranking uses the event bound: 3 events of 94.67 units over 12 hours', () => {
-    const d = sells(568, 7550, { lowPerDay: undefined, saleEvents: 3, unitsPerEvent: 284 / 3, hours: 12, hoursWatched: 12 });
+    const d = sells(568, 7550, { lowPerDay: undefined, saleEvents: 3, unitsPerEvent: 284 / 3, hours: 12 });
     const q = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: d }))).quote(A, DYE)!;
     expect(q.salesPerDayLow).toBeCloseTo((poissonLowerBound(3) * (284 / 3) / 12) * 24, 9);
     expect(q.salesPerDayLow).toBeCloseTo(154.8, 1);

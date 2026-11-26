@@ -65,6 +65,10 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
         hold(`learning: ${round1(c.quote.hoursWatched)} of ${LEARNING_HOURS} hours of sales seen`, 'learning');
         continue;
       }
+      if (!toVendor && c.quote.lowPending) {
+        hold('learning: sale counting has no cautious sales estimate for it yet', 'learning');
+        continue;
+      }
       if (!toVendor && (c.quote.salesPerDayLow ?? 0) < FLIP_GATES.minSalesPerDay) {
         hold(`sells under ${FLIP_GATES.minSalesPerDay} a day (low estimate ${round1(c.quote.salesPerDayLow ?? 0)} a day)`, 'sells under 1 a day');
         continue;

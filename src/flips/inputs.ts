@@ -32,6 +32,10 @@ export type FlipDemand = Demand & {
   floorChange1h?: number | null;
   newLastHour?: number | null;
   soldLastHour?: number | null;
+  /** mean and standard deviation of units sold an hour over the hours watched, and how many hours (sale counting) */
+  hourlyMean?: number | null;
+  hourlySd?: number | null;
+  hourlyHours?: number | null;
 };
 
 export interface FlipItem {

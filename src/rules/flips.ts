@@ -72,7 +72,11 @@ export const LOW_ESTIMATE = { confidence: 0.95, minHours: 6 };
  * event. A unit sells when enough events reach it in the queue (round 1 finding H4). Units with under this chance are
  * not walked further.
  */
-export const SELL_CHANCE = { negligible: 0.001 };
+export const SELL_CHANCE = { negligible: 0.001,
+  /** the normal model of overnight sales (hourly mean and sd from sale counting) needs this many hours behind it */
+  normalMinHours: 6,
+  /** positions past mean + this many sd sell with a chance under 0.1 percent */
+  normalTailSd: 3.1 };
 
 /**
  * One typical undercut: the median gap between the cheapest distinct price levels on the ladder, never under 1c and

@@ -328,7 +328,7 @@ describe('the cautious sales inputs', () => {
     // 3 sale events in 6 hours that took 284 units (221, 48 and 15). The one sided 95% Poisson lower bound on 3 events is
     // 0.8177 (half the chi square 5% quantile with 6 degrees of freedom, 1.6354 / 2): 0.8177 x 284/3 units over 6 hours,
     // 12.9 units an hour at most cautious, 309.7 a day; the middle estimate (284 in 6 hours) is 1,136 a day.
-    const d = { unitsPerDay: 1136, hours: 6, snapshots: 6, saleEvents: 3, unitsPerEvent: 284 / 3, hoursWatched: 6 };
+    const d = { unitsPerDay: 1136, hours: 6, snapshots: 6, saleEvents: 3, unitsPerEvent: 284 / 3 };
     expect(lowPerDay(d).value).toBeCloseTo((0.81770 * (284 / 3) / 6) * 24, 0);
     expect(lowPerDay(d).derived).toBe(true);
     // Counted as units (284 events of 1), the same sales would claim a low near 1,000 a day: the event count is the honest one.

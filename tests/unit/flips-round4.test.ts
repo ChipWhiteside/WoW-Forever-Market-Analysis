@@ -4,7 +4,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { A, L, many, item, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, DYE, DYE_RECIPE } from './flips.fixture.ts';
-import { SellBook } from '../../src/flips/sellBook.ts';
+import { SellBook, overnightQueue, normalCdf } from '../../src/flips/sellBook.ts';
+import { runFlips } from '../../src/flips/run.ts';
 import { buildFlipInputs, parseProfessions } from '../../src/flips/inputs.ts';
 import { newPostsFromRaw, newPerDayAt } from '../../src/flips/newPosts.ts';
 import { cooldownCrafts } from '../../src/flips/market.ts';
@@ -186,5 +187,60 @@ describe('the best amount is the most expected profit whose risk is not high (ro
     // the list ranks on the best amount, not the most
     const f = run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!;
     expect(f.score).toBe(f.best.expectedProfit);
+  });
+});
+
+describe('independent sale counting test: the cautious estimate and the overnight queue', () => {
+  it('finding 1: with 4 publishes sale counting has no low estimate, so none is derived and the flip waits as learning', () => {
+    const d = openDb(tempDir(), ':memory:');
+    const ORE = 2770, BAR = 2840;
+    d.exec(`INSERT INTO houses (id, name, faction, cut, tracked, pinned) VALUES (111, 'Alliance Auction House', 'alliance', 0.05, 1, 0);
+      INSERT INTO items (id, name, quality, sell_price, status, fetched_at, data_source) VALUES (${ORE}, 'Copper Ore', 'COMMON', 5, 200, 0, 'forever'), (${BAR}, 'Copper Bar', 'COMMON', 10, 200, 0, 'forever');
+      INSERT INTO recipes (id, name, profession, crafted_item_id, qty_min, qty_max, learn_skill, spell_id) VALUES (2657, 'Smelt Copper', 'Mining', ${BAR}, 1, 1, 1, 2657);
+      INSERT INTO recipe_reagents VALUES (2657, ${ORE}, 1);`);
+    for (let h = 0; h < 4; h++) {
+      const t = h * HOUR;
+      for (const kind of ['auctions', 'commodities']) {
+        const id = Number(d.prepare('INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, diff_hours) VALUES (111, ?, ?, ?, ?, 0, 0, 0, ?)')
+          .run(kind, `${kind}${t}`, t, t, h ? 1 : null).lastInsertRowid);
+        // Copper Bar: 2,000 units gone an hour in 20 listings, near the floor, a sold price recorded
+        if (kind === 'commodities') d.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder,
+          gone_listings, gone_units, gone_units_expiring, gone_units_near_floor, new_units, gone_units_expiring_near_floor, sold_value) VALUES (?, 111, ${BAR}, ?, 100, 1, 1, 1, 1, '[]', ?, ?, 0, ?, 0, 0, ?)`)
+          .run(id, t, h ? 20 : null, h ? 2000 : null, h ? 2000 : null, h ? 200000 : null);
+      }
+    }
+    const inputs = buildFlipInputs(d, new Map([[111, [L(ORE, 10, 5000), ...many(BAR, 100, 10, 200)]]]), 3 * HOUR);
+    const dm = inputs.demand.get(111)!.get(BAR)!;
+    expect(dm.hoursWatched).toBe(3);
+    expect(dm.lowPerDay ?? null).toBeNull();
+    const q = new SellBook(inputs).quote(inputs.houses[0]!, BAR)!;
+    expect(q.salesPerDayLow).toBeNull();
+    const res = runFlips(inputs);
+    expect(res.flips.find(f => f.itemId === BAR && f.sellHouseId != null)).toBeUndefined();
+    expect(res.heldBack.find(h => h.itemId === BAR && h.family === 'craft_auction')).toMatchObject({ code: 'learning' });
+    // the same with 12 hours watched but no low estimate from sale counting: still learning, never derived here
+    const r2 = run(ceruleanAtBens({ dyeDemand: { lowPerDay: null, saleEvents: 40, unitsPerEvent: 1, hoursWatched: 12, hours: 12 } }));
+    expect(r2.heldBack.find(h => h.key === DYE_KEY)).toMatchObject({ code: 'learning', reason: 'learning: sale counting has no cautious sales estimate for it yet' });
+  });
+  it('finding 2: with an hourly mean and spread, overnight sales are normal, not one Poisson event an hour', () => {
+    // Copper Ore pattern: about 2,000 units an hour in one run, sd 600 an hour; 15,000 ahead; 10 hour night: mean 20,000
+    const base = new SellBook(inputsOf(ceruleanAtBens({ dyeDemand: { newPerDay: 0 } }))).quote(A, DYE)!;
+    const normal = overnightQueue({ ...base, newPerHour: 0, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10);
+    // sd over the night = sqrt(10) x 600 = 1,897; position 15,001: z = (15000.5 - 20000) / 1897 = -2.64, near certain
+    expect(normal.at(15001)).toBeCloseTo(1 - normalCdf((15000.5 - 20000) / (Math.sqrt(10) * 600)), 12);
+    expect(normal.at(15001)).toBeGreaterThan(0.99);
+    expect(normal.at(20000)).toBeCloseTo(0.5, 2);
+    expect(normal.lastPos).toBe(Math.floor(20000 + 3.1 * Math.sqrt(10) * 600 + 0.5));
+    // competing new posts come off the mean; never under 0
+    expect(overnightQueue({ ...base, newPerHour: 2500, hourlyMean: 2000, hourlySd: 600, hourlyHours: 12 }, 10).at(1)).toBe(0);
+    // the event model, with one event an hour of 2,000 units, reads the same queue as a coin toss
+    const events = overnightQueue({ ...base, newPerHour: 0, salesPerDayMid: 48000, unitsPerEvent: 2000, hourlyMean: null, hourlySd: null }, 10);
+    expect(events.at(15001)).toBeLessThan(0.9);
+    // under 6 hours of hourly figures the event model is used
+    const short = overnightQueue({ ...base, newPerHour: 0, salesPerDayMid: 48000, unitsPerEvent: 2000, hourlyMean: 2000, hourlySd: 600, hourlyHours: 4 }, 10);
+    expect(short.at(15001)).toBe(events.at(15001));
+    // normal cdf sanity
+    expect(normalCdf(0)).toBeCloseTo(0.5, 7);
+    expect(normalCdf(1.96)).toBeCloseTo(0.975, 4);
   });
 });

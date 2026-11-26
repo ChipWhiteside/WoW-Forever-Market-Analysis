@@ -89,6 +89,12 @@ export interface SellQuote {
   /** the floor's change since the previous publish as a share (-0.12 fell 12 percent), and new units posted that hour */
   floorChange1h?: number | null;
   newLastHour?: number | null;
+  /** true when sale counting ran but has no low estimate yet: the flip waits as learning */
+  lowPending?: boolean;
+  /** mean and standard deviation of units sold an hour, and the hours behind them (sale counting), for the normal queue */
+  hourlyMean?: number | null;
+  hourlySd?: number | null;
+  hourlyHours?: number | null;
   /** units counted in `ahead` that this flip buys itself (cheap listing): whatever it leaves stays ahead of Chip */
   ownAhead?: number;
 }
