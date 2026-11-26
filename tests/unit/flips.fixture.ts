@@ -33,7 +33,9 @@ export const recipe = (id: number, name: string, productId: number, reagents: Ar
 
 /** A market that sells, with every field stated: sold `units` a day seen over `hours`, cautious low and new posts given. */
 export const sells = (unitsPerDay: number, soldPrice: number, extra: Partial<FlipDemand> = {}): FlipDemand => ({
-  unitsPerDay, hours: 72, snapshots: 72, soldPrice, recentSoldPrice: soldPrice, recentSales: Math.round(unitsPerDay), floorCv: 0.05, ...extra,
+  unitsPerDay, hours: 72, snapshots: 72, soldPrice, recentSoldPrice: soldPrice, recentSales: Math.round(unitsPerDay), floorCv: 0.05,
+  // competition measured as none unless a test says otherwise (an unmeasured one is held back as learning, system review round 2)
+  newPerDay: 0, ...extra,
 });
 
 export interface Fixture {
@@ -103,7 +105,8 @@ export function ceruleanAtBens(over: { lichen?: Listing[]; dye?: Listing[]; dyeD
     },
     items: [item(LICHEN, 'Frilled Lichen', 30, { quality: 'UNCOMMON' }), item(VIAL, 'Empty Vial', 1, { vendorStack: 5 }), item(DYE, 'Cerulean Dye', 75, { quality: 'UNCOMMON' }), ...(over.extra?.items ?? [])],
     vendors: { [VIAL]: [vendor('Tharynn Bouden', 4, 5)], ...(over.extra?.vendors ?? {}) },
-    recipes: [recipe(DYE_RECIPE, 'Cerulean Dye', DYE, [[LICHEN, 2], [VIAL, 1]]), ...(over.extra?.recipes ?? [])],
+    // taught by a trainer: a recipe nobody knows how to learn ranks after every known one (system review round 2)
+    recipes: [recipe(DYE_RECIPE, 'Cerulean Dye', DYE, [[LICHEN, 2], [VIAL, 1]], { learnSource: 'trainer_alliance' }), ...(over.extra?.recipes ?? [])],
     demand: { 111: { [DYE]: sells(60, 7550, { soldPrice: 7600, recentSoldPrice: 7550, recentSales: 20, lowPerDay: 60, newPerDay: 12, low3d: 7000, ...over.dyeDemand }), ...(over.extra?.demand?.[111] ?? {}) },
       ...Object.fromEntries(Object.entries(over.extra?.demand ?? {}).filter(([k]) => k !== '111')) },
     houses: over.extra?.houses, settings: over.extra?.settings, typical: over.extra?.typical, recent: over.extra?.recent,

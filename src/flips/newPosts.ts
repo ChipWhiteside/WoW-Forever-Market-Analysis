@@ -18,11 +18,16 @@ export interface NewPosts {
   byItem: Map<number, Array<[price: number, units: number]>>;
 }
 
-/** New units per day at or under `post`; null when under NEW_POSTS.minHours were watched (not measured yet). */
+/**
+ * New units per day at or under 1.05 times `post` (NEW_POSTS.competeShare); null when under NEW_POSTS.minHours were
+ * watched (not measured yet). A seller who undercuts the floor of his own hour posts just above a price that has since
+ * fallen; counting only posts at or under today's price read such a war as 0 (whole system review round 2, defect A).
+ */
 export function newPerDayAt(np: NewPosts | undefined, itemId: number, post: number): number | null {
   if (!np || np.hours < NEW_POSTS.minHours) return null;
+  const top = post * NEW_POSTS.competeShare;
   let units = 0;
-  for (const [p, u] of np.byItem.get(itemId) ?? []) { if (p > post) break; units += u; }
+  for (const [p, u] of np.byItem.get(itemId) ?? []) { if (p > top) break; units += u; }
   return (units / np.hours) * 24;
 }
 
@@ -49,21 +54,26 @@ function newInPair(prev: Listing[], cur: Listing[]): Map<number, Map<number, num
 }
 
 /**
- * Read the new listings of one house over the last `windowHours` of differenced publishes at or before `now`.
+ * Read the new listings of one house over the last `windowHours` of differenced publishes at or before `now`: the same
+ * window (72 hours) and the same publishes as sale counting (src/analysis/history.ts demandByItem: differenced, with
+ * rows counted with a sold price), so competition and sales are measured over the same hours (round 2, defect B).
  * Null when the raw snapshots are not on disk (an in-memory database, or a data copy without raw/): the caller then
  * falls back to sale counting's newPerDay.
  */
 export function newPostsFromRaw(db: DB, houseId: number, now: number, windowHours = NEW_POSTS.windowHours): NewPosts | null {
   const dataDir = dataDirOf(db);
   if (!dataDir) return null;
-  const snaps = db.prepare(`SELECT kind, published_at t, diff_hours h FROM snapshots WHERE house_id = ? AND published_at <= ? AND published_at > ? ORDER BY kind, published_at`)
-    .all(houseId, now, now - (windowHours + 2) * 3600_000) as Array<{ kind: string; t: number; h: number | null }>;
+  const since = now - windowHours * 3600_000;
+  const snaps = db.prepare(`SELECT kind, published_at t, diff_hours h,
+      EXISTS (SELECT 1 FROM item_stats i WHERE i.snapshot_id = snapshots.id AND i.sold_value IS NOT NULL) counted
+    FROM snapshots WHERE house_id = ? AND published_at <= ? AND published_at > ? ORDER BY kind, published_at`)
+    .all(houseId, now, since - 2 * 3600_000) as Array<{ kind: string; t: number; h: number | null; counted: number }>;
   const agg = new Map<number, Map<number, number>>();
   const hoursByKind = new Map<string, number>();
   let read = 0;
   for (let i = 1; i < snaps.length; i++) {
     const prev = snaps[i - 1]!, cur = snaps[i]!;
-    if (prev.kind !== cur.kind || cur.h == null || cur.t <= now - windowHours * 3600_000) continue;
+    if (prev.kind !== cur.kind || cur.h == null || !cur.counted || cur.t < since) continue;
     const key = `${houseId}:${cur.kind}:${prev.t}:${cur.t}`;
     let pair = pairMemo.get(key);
     if (!pair) {

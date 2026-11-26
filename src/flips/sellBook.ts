@@ -164,7 +164,11 @@ export class SellBook {
   private build(h: HouseRef, itemId: number, ls: Listing[]): SellQuote {
     const judged = judgeSell(this.ctx, this.houseCtx(h), itemId, ls);
     const d = this.demand(h.id, itemId);
-    const claim = judged.price;
+    // A falling floor (FLOOR_DRIFT) lowers the claim by the drift over the horizon: by morning the floor Chip competes
+    // with is that much lower (whole system review round 2, defect A: a slow undercutter, Hot Spices).
+    const horizonH = this.inputs.settings.horizonHours;
+    const driftDrop = d?.floorSlope != null && d.floorSlope < 0 ? Math.min(judged.price - 1, Math.round(-d.floorSlope * horizonH)) : 0;
+    const claim = judged.price - Math.max(0, driftDrop);
     const undercut = typicalUndercut(ls, claim);
     const post = Math.max(1, claim - undercut);
     let ahead = 0;
@@ -187,7 +191,7 @@ export class SellBook {
     // A price that just jumped: the listings sit above the proven price, and buyers paid up to the new level in the
     // last hour. Ranked on the proven price; the higher one is only noted.
     const sweep = d?.sweepHigh ?? null;
-    const rising = sweep != null && floor > claim && sweep >= floor && !gates.length;
+    const rising = sweep != null && floor > judged.price && sweep >= floor && !gates.length;
     const basis: SellQuote['basis'] = judged.picture.used;
     return {
       houseId: h.id, claimPrice: claim, netEach: netPerUnit(h.faction, post), undercutPrice: post, listed: floor, basis, ahead,
@@ -200,8 +204,10 @@ export class SellBook {
       lowCoverHours: this.inputs.low3dHours?.get(h.id)?.get(itemId) ?? hoursWatched(d),
       floorChange1h: d?.floorChange1h ?? null, newLastHour: d?.newLastHour ?? null,
       lowPending: low.pending ?? false,
+      floorSlope: d?.floorSlope ?? null, floorFall: d?.floorFall ?? null, floorSpanHours: d?.floorSpanHours ?? null, driftDrop: Math.max(0, driftDrop),
       hourlyMean: d?.hourlyMean ?? null, hourlySd: d?.hourlySd ?? null, hourlyHours: d?.hourlyHours ?? (d?.hourlyMean != null ? hoursWatched(d) : null),
-      note: rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
+      note: [rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
+        driftDrop > 0 ? `the floor has been falling about ${money(Math.round(-d!.floorSlope!))} an hour, so the price used is ${money(driftDrop)} lower for the night` : null].filter(Boolean).join('; ') || null,
     };
   }
 

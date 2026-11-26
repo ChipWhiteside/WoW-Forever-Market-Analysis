@@ -139,12 +139,10 @@ describe('properties', () => {
     expect(f.best.risk.atStake).toBe(46720);
     expect(f.notes).toContain('capped by your gold on hand');
   });
-  it('with no new listing count, none are assumed and the card says so; the 25% fallback is gone (round 1 H2)', () => {
-    const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: undefined } })).flips.find(x => x.key === DYE_KEY)!;
-    expect(f.sellQuote.newOvernight).toBe(0);
-    expect(f.sellQuote.newDerived).toBe(true);
-    expect(f.notes).toContain('new listings under you are not measured yet for this item; none are assumed');
-    expect(f.notes.join(' ')).not.toMatch(/quarter/);
+  it('with no new listing count, none are assumed: the flip is held back as learning (round 1 H2, system review round 2 B)', () => {
+    const r = run(ceruleanAtBens({ dyeDemand: { newPerDay: undefined } }));
+    expect(r.flips.find(x => x.key === DYE_KEY)).toBeUndefined();
+    expect(r.heldBack.find(h => h.key === DYE_KEY)).toMatchObject({ reason: 'learning: competition not measured yet', code: 'learning' });
   });
   it('new listings overnight are the measured new units an hour times the horizon (round 1 H2)', () => {
     // 36 new units near the floor a day, 1.5 an hour, over the 10 hour night: 15 ahead of him, and 15 fewer sale events

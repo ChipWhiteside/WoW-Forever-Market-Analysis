@@ -121,11 +121,26 @@ export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fe
   priceJumpRise: 0.1 };
 
 /**
- * New listings that compete with Chip overnight (round 2 finding H2): only units other sellers posted at or under his
- * own post price, read from the raw publishes of the last 24 hours, and only once 6 hours of publishes were watched
- * (the same 6 hours as LEARNING_HOURS). Before that new posts are not measured: 0 is used and the card says so.
+ * New listings that compete with Chip overnight (round 2 finding H2): units other sellers posted at or under 1.05 times
+ * his own post price, read from the raw publishes over the same 72 hour window and the same differenced publishes as
+ * sale counting, and only once 6 hours of publishes were watched (the same 6 hours as LEARNING_HOURS). Before that an
+ * auction flip is held back as learning, never ranked as if nobody posts (whole system review round 2, defects A and B:
+ * a seller who undercuts the then floor every hour posts just above today's price; 24 hours held only 2 watched hours).
  */
-export const NEW_POSTS = { minHours: 6, windowHours: 24 };
+export const NEW_POSTS = { minHours: 6, windowHours: 72, competeShare: 1.05 };
+
+/**
+ * Floor drift (whole system review round 2, defect A): the least squares slope of the hourly floor over the 72 hour
+ * window, from at least 6 readings. A falling floor lowers the claim by the slope times the horizon, and a fitted fall
+ * of 10 percent or more across the window is a price war, even when no single hour fell 10 percent. First guesses.
+ */
+export const FLOOR_DRIFT = { windowHours: 72, minReadings: 6, warFall: 0.1 };
+
+/**
+ * Thin evidence (whole system review round 2): an auction flip needs at least 3 sale events in the sales window.
+ * Two listings that vanished together are not a market. First guess.
+ */
+export const MIN_SALE_EVENTS = 3;
 
 /** Bad case: only this share of the units expected to sell actually sell (coordinator decision, round 1 H3). */
 export const SALES_SHORTFALL = 0.5;

@@ -97,6 +97,12 @@ export interface SellQuote {
   hourlyHours?: number | null;
   /** units counted in `ahead` that this flip buys itself (cheap listing): whatever it leaves stays ahead of Chip */
   ownAhead?: number;
+  /** floor drift over the window (inputs.ts FlipDemand): copper an hour, fitted fall as a share, hours spanned */
+  floorSlope?: number | null;
+  floorFall?: number | null;
+  floorSpanHours?: number | null;
+  /** copper the claim was lowered by for a falling floor (the slope times the horizon); 0 or absent when not lowered */
+  driftDrop?: number;
 }
 
 export interface Risk {
