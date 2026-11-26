@@ -175,7 +175,9 @@ describe('setup for a craft', () => {
     const f = inputsOf({ listings: { 111: [] }, items: [] });
     f.trainers.push({ npcId: 1, npcName: 'Horde Guy', faction: 'horde', zone: 'Orgrimmar', x: null, y: null, mapId: null, spellId: null, name: 'Smelt Iron', skill: 'Mining', skillRank: 120, cost: 500 });
     expect(setupFor(recipe(3307, 'Smelt Iron', 3575, [[2772, 1]], { learnSkill: 125, profession: 'Mining', spellId: 3307 }), f))
-      .toMatchObject({ rank: 125, cost: 500, where: 'Horde trainers only' });
+      .toMatchObject({ rank: 125, cost: 500, where: 'no Alliance trainer on record' });
+    expect(setupFor(recipe(3307, 'Smelt Iron', 3575, [[2772, 1]], { learnSkill: 125, profession: 'Mining', spellId: 3307, learnSource: 'trainer_horde_only' }), f))
+      .toMatchObject({ where: 'Horde trainers only' });
     f.trainers.push({ npcId: 2, npcName: 'Geofram Bouldertoe', faction: 'alliance', zone: 'Ironforge', x: 1, y: 2, mapId: 1455, spellId: null, name: 'Smelt Iron', skill: 'Mining', skillRank: 120, cost: 500 });
     expect(setupFor(recipe(3307, 'Smelt Iron', 3575, [[2772, 1]], { learnSkill: 125, profession: 'Mining', spellId: 3307 }), f))
       .toMatchObject({ rank: 125, cost: 500, where: 'Geofram Bouldertoe, Ironforge' });

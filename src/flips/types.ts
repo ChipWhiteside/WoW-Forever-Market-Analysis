@@ -166,6 +166,15 @@ export interface Flip {
     teachItem?: { id: number; name: string } | null;
     auctionPrice?: number | null;
     auctionHouseId?: number | null;
+    /** true when nothing on record says how to learn it (no trainer, no teaching item, learn source unknown) */
+    unknown?: boolean;
+    /** every profession the craft tree uses at the best amount, with the highest skill it needs and the recipes */
+    needs?: Array<{ profession: string; rank: number | null; recipes: string[] }>;
+    /** the same in words: "needs Tailoring 310 and Alchemy 275 (Transmute: Arcanite)" */
+    needsText?: string;
+    /** tools the recipe needs, when known; a plain note when tools are not on record */
+    tools?: string[];
+    toolsNote?: string;
   } | null;
   /** keys of higher ranked flips that use the same reagent listings, buyers or gold */
   shares: string[];

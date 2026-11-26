@@ -1,6 +1,7 @@
-import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE } from '../rules/flips.ts';
+import type { TraceEntry } from './market.ts';
 import { money } from '../format/money.ts';
-import { AUCTION_HOUSES } from '../datasets/places.ts';
+import { AUCTION_HOUSES, type Place } from '../datasets/places.ts';
 import { Market, cooldownCrafts } from './market.ts';
 import { SellBook } from './sellBook.ts';
 import { generate } from './families.ts';
@@ -121,9 +122,17 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     if (q.lowDerived) notes.push(`the low sales estimate is worked out here from ${plural(Math.floor(q.saleEvents ?? 0), 'sale')} seen (sales counted as listings bought, not units); sale counting has not given one yet`);
     if (h!.faction === 'blackwater') notes.push('the Blackwater deposit is not verified yet (test T7)');
   }
+  let setup: Flip['setup'] = null;
   if (c.recipe) {
     const cap = c.recipe.cooldownMs ? cooldownCrafts(c.recipe, inputs.settings.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT) : null;
     if (cap != null) notes.push(`its cooldown allows ${plural(cap, 'craft')} in one crafting session`);
+    setup = { ...setupFor(c.recipe, inputs)!, ...professionsNeeded(c.recipe, e.walk.trace, step.traceEnd, recipes), ...toolsFor(c.recipe) };
+    if (setup.needs && setup.needs.length > 1) notes.push(`${setup.needsText}: ${setup.needs.length} professions (an alt may cover one)`);
+    if (setup.unknown) {
+      notes.push(UNKNOWN_LEARN);
+      for (const o of e.options) if (!o.risk.drivers.includes(UNKNOWN_LEARN)) o.risk.drivers.push(UNKNOWN_LEARN);
+    }
+    if (setup.toolsNote) notes.push(setup.toolsNote);
   }
   if (buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'))) notes.push('a limited stock vendor is assumed to hold one bundle');
   if (e.goldCapped) notes.push('capped by your gold on hand');
@@ -144,7 +153,7 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
     sellHouseId: h?.id ?? null, buy, sell, perItem, best: b, options: e.options, sellQuote: q, repeatable, opening,
     // earlier distinct hours plus this one, never more than the 72 hours it counts (round 1 finding L3)
     openHours72: Math.min(OPENING.trendHours, (inputs.history.openHours.get(c.key) ?? 0) + 1),
-    setup: c.recipe ? setupFor(c.recipe, inputs) : null,
+    setup,
     shares: [], afterShared: { units: b.units, expectedProfit: b.expectedProfit },
     notes, dataAt: Math.min(...inputs.houses.filter(x => x.id === h?.id || c.buyHouseIds.includes(x.id)).map(x => x.publishedAt || inputs.now), inputs.now),
     score: b.expectedProfit,
@@ -186,12 +195,53 @@ export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
     return { skill: r.profession, rank: r.learnSkill, cost: Number.isFinite(cost) ? cost : null, where: prices ? `${name}: ${prices}` : `${name} (no seller seen)`,
       places: vendor && (floor == null || vendor.unitPrice <= floor) ? vendor.places : [], ...extra };
   }
+  // Only Horde rows matched: say so plainly only when the catalog says Horde trainers alone teach it (round 2 M1).
   if (match.length || r.learnSource === 'trainer_horde_only') {
     const h = [...match].sort(byCost)[0];
-    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null, where: 'Horde trainers only', places: [] };
+    return { skill: r.profession, rank: r.learnSkill ?? h?.skillRank ?? null, cost: h?.cost ?? null,
+      where: r.learnSource === 'trainer_horde_only' ? 'Horde trainers only' : 'no Alliance trainer on record', places: [] };
   }
-  return { skill: r.profession, rank: r.learnSkill, cost: null, where: null, places: [] };
+  const base = { skill: r.profession, rank: r.learnSkill, cost: null, places: [] as Place[] };
+  if (r.learnSource === 'auto') return { ...base, where: 'known when the profession is learned' };
+  if (r.learnSource === 'conversion') return { ...base, where: 'no recipe to learn: using the item does it' };
+  if (r.learnSource === 'trainer_alliance') return { ...base, where: 'an Alliance trainer (which one is not on record)' };
+  if (r.learnSource === 'item') return { ...base, where: 'taught by an item (which one is not on record)' };
+  // Nothing on record (learn source missing or only the yellow skill fallback): never a reason to hide, always said (round 2 H4).
+  return { ...base, where: UNKNOWN_LEARN, unknown: true };
 }
+
+/**
+ * Every profession a craft tree uses at the best amount (round 2 finding H3): the top recipe and every sub craft in
+ * the trace, with the highest learn skill each profession needs. Shown, never a gate: Chip has alts.
+ */
+export function professionsNeeded(top: FlipRecipe, trace: TraceEntry[], end: number, recipes: Map<number, FlipRecipe>): { needs: NonNullable<Flip['setup']>['needs']; needsText: string } {
+  const by = new Map<string, { profession: string; rank: number | null; recipes: string[] }>();
+  const add = (r: FlipRecipe) => {
+    const p = by.get(r.profession) ?? { profession: r.profession, rank: null, recipes: [] };
+    if (r.learnSkill != null && (p.rank == null || r.learnSkill > p.rank)) p.rank = r.learnSkill;
+    if (!p.recipes.includes(r.name)) p.recipes.push(r.name);
+    by.set(r.profession, p);
+  };
+  add(top);
+  for (let i = 0; i < end; i++) { const t = trace[i]!; if (t.source === 'craft' && t.recipeId != null) { const r = recipes.get(t.recipeId); if (r) add(r); } }
+  const needs = [...by.values()];
+  const words = needs.map((n, i) => `${n.profession}${n.rank != null ? ` ${n.rank}` : ''}${i > 0 ? ` (${n.recipes.join(', ')})` : ''}`);
+  return { needs, needsText: `needs ${words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0]}` };
+}
+
+/**
+ * Tools a recipe needs (round 2 finding M4). The game tables this build reads carry no tool requirement (SpellTotems is
+ * not downloaded), so only the tools in KNOWN_TOOLS are named; a cooldown recipe without one gets a plain note.
+ */
+export function toolsFor(r: FlipRecipe): { tools?: string[]; toolsNote?: string } {
+  const known = Object.entries(KNOWN_TOOLS).filter(([name]) => recipeKey(r.name) === recipeKey(name)).map(([, tool]) => tool);
+  if (known.length) return { tools: known, toolsNote: `needs a ${known.join(' and a ')} to craft (Classic knowledge, unverified in Forever)` };
+  if (r.cooldownMs) return { toolsNote: 'any tool this recipe needs is not on record yet; check it in game before buying' };
+  return {};
+}
+
+/** The card line and risk driver for a recipe nobody knows how to learn yet (round 2 finding H4). */
+export const UNKNOWN_LEARN = 'how to learn it is not known yet';
 
 /**
  * The shared pass. Walk the ranked list top down; each flip takes the reagent listings, vendor stock, cooldowns, sale

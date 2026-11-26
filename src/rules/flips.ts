@@ -159,6 +159,12 @@ export const OPENING = { newWindowHours: 1.6, trendHours: 72 };
  */
 export const TRANSMUTE_FALLBACK = { pattern: /^Transmute:/i, cooldownMs: 24 * 3600_000, category: -1 };
 
+/**
+ * Tools a recipe needs to be crafted, by recipe name, when the game tables this build reads do not say (round 2 finding
+ * M4). Classic knowledge, unverified in Forever: Refined Deeprock Salt is made with a Salt Shaker.
+ */
+export const KNOWN_TOOLS: Record<string, string> = { 'Refined Deeprock Salt': 'Salt Shaker' };
+
 /** A limited stock vendor is assumed to hold one bundle until stock sizes are recorded (EG Link has no counts). */
 export const VENDOR_LIMITED_BUNDLES = 1;
 
