@@ -31,7 +31,7 @@ export function SettingsPage() {
   const pin = useMutation({ mutationFn: (b: { alliance?: number | null; blackwater?: number | null }) => post('/api/houses/pin', b), onSuccess: () => qc.invalidateQueries() });
   const save = useMutation({ mutationFn: (b: Record<string, string | number>) => put('/api/settings', b), onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }) });
   const [form, setForm] = useState<Record<string, string>>({});
-  useEffect(() => { if (settings) setForm({ min_profit_each_s: String(Number(settings.min_profit_each ?? 100) / 100), profit_bar_s: String(Number(settings.profit_bar ?? 2500) / 100), quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', ...settings }); }, [settings]);
+  useEffect(() => { if (settings) setForm({ min_profit_each_s: String(Number(settings.min_profit_each ?? 100) / 100), profit_bar_s: String(Number(settings.profit_bar ?? 2500) / 100), quiet_start: '23', quiet_end: '7', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, character: '', home_city: 'Stormwind', sell_share: '0.2', alert_good_gold: '10', alert_amazing_gold: '20', ...settings }); }, [settings]);
   const profs: Record<string, number> = (() => { try { return JSON.parse(form.professions ?? '{}'); } catch { return {}; } })();
   const setProf = (name: string, v: string) => { const next = { ...profs }; if (v.trim()) next[name] = Number(v); else delete next[name]; setForm({ ...form, professions: JSON.stringify(next) }); };
   const field = (k: string, label: string, hint?: string) => (
@@ -83,6 +83,11 @@ export function SettingsPage() {
           <input value={form.time_rate_s ?? (form.time_rate ? String(Number(form.time_rate) / 100) : '')} onChange={e => setForm({ ...form, time_rate_s: e.target.value, time_rate: e.target.value ? String(Math.round(Number(e.target.value) * 100)) : '' })} className="mt-1 w-32 rounded-lg border border-line bg-page px-3 py-2" /></label>
         <label className="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" checked={!!form.my_professions} onChange={e => setForm({ ...form, my_professions: e.target.checked ? (form.professions || '{}') : '' })} />
           <span><span className="font-semibold">Only craft sub steps in my professions</span><span className="ml-2 text-xs text-muted">when on, a step in a profession you lack is bought instead. Leave off if alts cover other professions</span></span></label>
+        {/* Flip alerts (November 26), added below everything already agreed. */}
+        {field('alert_good_gold', 'Good flip alert, in gold', 'a flip expected to make this much overnight pings Discord. Default 10')}
+        {field('alert_amazing_gold', 'Amazing flip alert, in gold', 'marked Amazing and sent first. Default 20')}
+        <label className="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" checked={form.play_alerts === '1'} onChange={e => setForm({ ...form, play_alerts: e.target.checked ? '1' : '0' })} />
+          <span><span className="font-semibold">Also send the old play alerts</span><span className="ml-2 text-xs text-muted">vendor dumps, cheap listings and the other plays. Off by default: Discord carries only the best flips</span></span></label>
         <button onClick={() => { const { min_profit_each_s, profit_bar_s, time_rate_s: _t, ...rest } = form; save.mutate({ ...rest, ...(min_profit_each_s ? { min_profit_each: String(Math.round(Number(min_profit_each_s) * 100)) } : {}), ...(profit_bar_s ? { profit_bar: String(Math.round(Number(profit_bar_s) * 100)) } : {}) }); }} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-page md:col-span-2">{save.isSuccess ? 'Saved' : 'Save'}</button>
       </Card>
       <p className="mt-8 text-xs text-muted">Vendor, loot and item name data from <a className="underline" href="https://efficient.games">Efficient Games</a>, licensed under CC BY 4.0, merged across builds. Recipe skill thresholds from the game's SkillLineAbility table via wago.tools. Auction and item data from the Blizzard API.</p>
