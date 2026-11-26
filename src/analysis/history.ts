@@ -35,12 +35,18 @@ export function rowPullRate(kind: 'commodities' | 'auctions', listings: number):
 }
 
 /**
- * Units judged sold in one row less the units expected to be pulls of the front: only the stack at the front of the
- * previous publish can be pulled and still read as bought, so the pull rate times that publish's units at the floor.
- * Can be below 0 for one hour (it is an expectation); sums are what count. Equipment rows are left as they are.
+ * Units judged sold in one row less the units expected to be pulls of the front read as sales (rate from the previous
+ * publish's row). Deep markets: rate * sold / (1 - rate). Many stacks share the floor there and only those ahead of
+ * the first survivor read as bought, so the units at the floor overstate what a pull can fake; scaling the units
+ * judged sold never takes off more than was counted (B43). Thin markets (5 listings or fewer): rate * the previous
+ * front's units, the expectation whether or not anything sold; tied to sold units it left a +19% bias in the
+ * simulator against +6% this way. A thin row can be below 0 (an expectation); sums are what count.
+ * Equipment rows are left as they are.
  */
 export function rowNet(kind: 'commodities' | 'auctions', prevListings: number, prevUnitsAtFloor: number, sold: number): number {
-  return sold - rowPullRate(kind, prevListings) * prevUnitsAtFloor;
+  const r = rowPullRate(kind, prevListings);
+  if (r === 0) return sold;
+  return sold - (prevListings <= 5 ? r * prevUnitsAtFloor : r * sold / (1 - r));
 }
 
 /** One sided Student t quantile (Cornish Fisher expansion around the normal; within 0.002 of tables from 5 degrees of freedom). */
@@ -183,7 +189,7 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
      WINDOW w AS (PARTITION BY item_stats.item_id ORDER BY item_stats.published_at)),
      r AS (SELECT a.*, ${SOLD} x, ${rate('COALESCE(prev_listings, listings)')} rate, ${events.replace(/s\.kind/g, 'kind')} ev FROM a
        WHERE gone_units IS NOT NULL AND sold_value IS NOT NULL),
-     q AS (SELECT r.*, x - rate * COALESCE(prev_front, units_at_floor) net1 FROM r)
+     q AS (SELECT r.*, x - (CASE WHEN rate = 0 THEN 0 WHEN COALESCE(prev_listings, listings) <= 5 THEN rate * COALESCE(prev_front, units_at_floor) ELSE rate * x / (1 - rate) END) net1 FROM r)
      SELECT item_id, SUM(x) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(ev) events,
      SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(kind) kind,
      SUM(rate) rate_sum, SUM(x * x) sold_sq, SUM(net1) net, SUM(net1 * net1) net_sq,
@@ -232,7 +238,7 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
       lowPerDay, lowNote, frontReplacedHourly,
       newPerDay: ((r.fresh ?? 0) / h) * 24, pulledPerDay: ((r.pulled ?? 0) / h) * 24,
       pullEvents, netPerDay: (Math.max(0, r.net ?? 0) / Math.max(h, 6)) * 24,
-      hourlyMean: r.sold / h, hourlySd,
+      hourlyMean: r.sold / h, hourlySd, hourlyHours: Math.round(h * 10) / 10,
       sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched: Math.round(h * 10) / 10 });
   }
   return out;

@@ -112,6 +112,10 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.hourlyMean).toBeCloseTo(284 / 6, 6);
     expect(d.hourlySd).toBeCloseTo(Math.sqrt((15 ** 2 + 48 ** 2 + 221 ** 2 - 6 * (284 / 6) ** 2) / 5), 6);
     expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
+    expect(d.hourlyHours).toBe(6);
+    // Deep market: the pulls taken off the middle scale with the units judged sold, rate * sold / (1 - rate), never
+    // the units sitting at the floor (on real deep markets that took more off than was sold, B43).
+    expect(d.netPerDay).toBeCloseTo(284 * (1 - PULL_RATE.deep / (1 - PULL_RATE.deep)) / 6 * 24, 6);
     const sweep = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12211)!;
     expect(sweep.soldUnits).toBe(284);
     expect(sweep.saleEvents).toBe(1);

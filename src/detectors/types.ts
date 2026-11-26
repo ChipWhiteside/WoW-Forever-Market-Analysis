@@ -50,6 +50,8 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   /** hourly sold units over every watched publish, zero hours included: mean per hour and standard deviation per publish */
   hourlyMean?: number;
   hourlySd?: number | null;
+  /** hours watched behind hourlyMean and hourlySd (the item's kind) */
+  hourlyHours?: number;
   /** the whole front at the floor was replaced in every watched hour (one seller pulling and posting again reads as
    * sales); lowPerDay is null then and lowNote says why */
   frontReplacedHourly?: boolean;
