@@ -88,6 +88,8 @@ describe('buildFlipInputs', () => {
     expect(res.flips).toEqual([]);
     // at 21.5 hours it is 1.5 hours old: fresh enough
     expect(runFlips(buildFlipInputs(d, market(), 21.5 * HOUR)).report.complete).toBe(true);
+    // just past the gate the age rounds up, never reading "2 hours old" for a run the gate stopped (round 2 L3)
+    expect(runFlips(buildFlipInputs(d, market(), 22.01 * HOUR)).report.incompleteReason).toMatch(/data is 2\.1 hours old/);
   });
   it('a house missing one listing kind, or a raw file the caller could not read, makes the run incomplete (round 1 L5)', () => {
     const d = db();
