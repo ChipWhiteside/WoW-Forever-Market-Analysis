@@ -174,7 +174,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
               </span>
             </li>
             {d.setup && <li className="flex gap-2"><Label>Setup</Label><span>Needs {d.setup.skill}{d.setup.rank != null ? ` ${d.setup.rank}` : ''}{d.setup.cost != null ? <>, learn for <Money c={d.setup.cost} size="sm" /></> : ''}{d.setup.where ? (d.setup.unknown ? `, ${d.setup.where}` : ` at ${d.setup.where}`) : ''}. One time cost.</span></li>}
-            {d.shares.length > 0 && <li className="flex gap-2"><Label>Shares</Label><span className="text-muted">Uses the same reagents or buyers as {d.shares.length} flip{d.shares.length > 1 ? 's' : ''} above{d.afterShared ? <>; doing both leaves <b>{units(d.afterShared.units)}</b> worth <Money c={d.afterShared.expectedProfit} size="sm" /></> : ''}.</span></li>}
+            {d.shares.length > 0 && <li className="flex gap-2"><Label>Shares</Label><span className="text-muted">Uses the same reagents or buyers as {d.shares.length} flip{d.shares.length > 1 ? 's' : ''} above{d.afterShared ? (d.afterShared.units > 0 ? <>; doing both leaves <b>{units(d.afterShared.units)}</b> worth <Money c={d.afterShared.expectedProfit} size="sm" /></> : <>; doing both leaves nothing for this one</>) : ''}.</span></li>}
           </ul>
 
           <div className="-ml-20 mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5 sm:ml-0">
@@ -199,7 +199,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             </table>
             </div>
           )}
-          {d.notes.length > 0 && <p className="-ml-20 mt-2 break-words text-xs text-muted sm:ml-0">{d.notes.join(' ')}</p>}
+          {d.notes.length > 0 && <p className="-ml-20 mt-2 break-words text-xs text-muted sm:ml-0">{d.notes.map(n => n.trim().replace(/[.;,\s]+$/, '')).filter(Boolean).join('. ')}.</p>}
         </div>
       </div>
     </Card>
