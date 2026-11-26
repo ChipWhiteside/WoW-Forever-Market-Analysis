@@ -108,7 +108,9 @@ export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
  * half of it, low otherwise. A price war: the floor fell more than 10 percent this hour, or more new units are posted
  * an hour than sell. Drivers are named in plain words past these first guess thresholds.
  */
-export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1 };
+export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1,
+  /** risk is at least medium when under half the units posted are expected to sell tonight, high under a quarter (round 2 H1) */
+  tonightMedium: 0.5, tonightHigh: 0.25 };
 
 /**
  * New listings that compete with Chip overnight (round 2 finding H2): only units other sellers posted at or under his
@@ -121,16 +123,14 @@ export const NEW_POSTS = { minHours: 6, windowHours: 24 };
 export const SALES_SHORTFALL = 0.5;
 
 /**
- * What an unsold unit is worth the next morning (coordinator decision, round 2). A product with proven demand (the low
- * estimate sells at least 1 a day) is not lost when it does not sell overnight: Chip relists it. Its carryover value is
- * the net at the price of the case being priced (the expected post price for expected profit, the bad case price for
- * the bad case) minus `relistDeposits` more deposits for posting it again, never below what a vendor pays. Without
- * proven demand an unsold unit is worth only the vendor price (0 when no vendor buys it). In both cases the deposit
- * paid tonight is lost on top. Carryover covers at most `days` days of the low estimate (units past what one more day
- * can sell are worth the vendor price), so a thin market never turns every unsold unit into a near sale and the best
- * amount stays tied to demand. A first rule, unverified until the backtest follows unsold units into the next day.
+ * Unsold units carry over (coordinator decisions, rounds 2 and 3). A product with proven demand (the low estimate
+ * sells at least 1 a day) is relisted the next morning for one more deposit, and its chance of selling tomorrow comes
+ * from the same queue as tonight's, run over the next 24 hours: the units still ahead, then tomorrow's competing new
+ * posts. Relisting is chosen only when it beats selling to a vendor. In the bad case tomorrow's sales are halved
+ * (badShare), on top of tonight's shortfall. Without proven demand an unsold unit is worth only the vendor price.
+ * Replaces the flat day of the low estimate, which let flips that sell nothing tonight look safe (round 2 H1).
  */
-export const CARRYOVER = { minLowPerDay: 1, relistDeposits: 1, days: 1 };
+export const CARRYOVER = { minLowPerDay: 1, tomorrowHours: 24, badShare: 0.5 };
 
 /**
  * Fresh data: a run whose newest snapshot of one of Chip's houses is older than 2 hours is incomplete, never a

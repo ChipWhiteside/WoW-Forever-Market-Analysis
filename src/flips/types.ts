@@ -117,6 +117,8 @@ export interface QuantityOption {
   units: number;
   cost: number;
   expectedSold: number;
+  /** units expected to sell tomorrow after being relisted (carryover, round 2 H1); 0 when nothing carries over */
+  soldTomorrow?: number;
   expectedProfit: number;
   minutes: number;
   goldPerHour: number | null;

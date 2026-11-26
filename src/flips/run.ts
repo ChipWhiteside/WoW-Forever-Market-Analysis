@@ -151,6 +151,8 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   if (q.note) notes.push(q.note);
   if (!toVendor) {
     notes.push(`${plural(q.ahead, 'unit')} listed at or under your price, about ${round1(q.salesPerDayLow ?? 0)} sell a day (low estimate); about ${round1(b.expectedSold)} of your ${b.units} expected to sell overnight`);
+    if ((b.soldTomorrow ?? 0) > 0) notes.push(`about ${round1(b.soldTomorrow!)} more expected to sell tomorrow once relisted`);
+    if ((b.soldTomorrow ?? 0) > b.expectedSold) notes.push(MOSTLY_TOMORROW);
     notes.push(q.newDerived ? 'new listings under you are not measured yet for this item; none are assumed'
       : `about ${Math.round(q.newOvernight ?? 0)} new listings usually appear under you overnight`);
     if (q.lowDerived) notes.push(`the low sales estimate is worked out here from ${plural(Math.floor(q.saleEvents ?? 0), 'sale')} seen (sales counted as listings bought, not units); sale counting has not given one yet`);
@@ -342,3 +344,6 @@ function suspects(inputs: FlipInputs, flips: Flip[], notes: string[]): string[] 
   if (!flips.length) out.push('no flips found this run');
   return out;
 }
+
+/** The card line when more of the best amount is expected to sell tomorrow than tonight (round 2 finding H1). */
+export const MOSTLY_TOMORROW = 'most of this sells tomorrow, not tonight';
