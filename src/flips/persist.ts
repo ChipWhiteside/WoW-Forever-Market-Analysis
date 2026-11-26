@@ -6,7 +6,8 @@ import type { FlipRunResult } from './run.ts';
  * Store one run. Every run gets a flip_runs row with its report. A complete run then updates the list: a key seen
  * for the first time (or back after it was gone) is new, a repeat is live, a repeat whose expected profit fell by a
  * quarter is fading, and a key that did not come back is gone (kept 24 hours, like plays). Each flip on the list gets
- * a flip_history row, which feeds "new this hour" and "open N of the last 72 hours". An incomplete run marks every listed flip gone.
+ * a flip_history row keyed by its data hour (the publish it read, not the run time: a rerun on the same publish updates
+ * the row), which feeds "new this hour" and "open N of the last 72 hours". An incomplete run marks every listed flip gone.
  */
 export function persistFlips(db: DB, result: FlipRunResult, now = Date.now()): { created: string[]; gone: string[] } {
   const created: string[] = [], gone: string[] = [];
@@ -37,7 +38,7 @@ export function persistFlips(db: DB, result: FlipRunResult, now = Date.now()): {
         if (prev.state === 'gone') created.push(f.key);
         upd.run(f.kind, f.family, f.sellHouseId, f.itemId, f.recipeId ?? null, state, f.rank ?? null, ep, f.best.risk.level, JSON.stringify(f), now, now, f.dataAt, f.key);
       }
-      hist.run(now, f.key, ep, f.perItem, f.best.units);
+      hist.run(f.dataAt, f.key, ep, f.perItem, f.best.units);
     }
     const seen = new Set(result.flips.map(f => f.key));
     const mark = db.prepare(`UPDATE flips SET state = 'gone', gone_at = ?, rank = NULL WHERE key = ?`);

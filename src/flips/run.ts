@@ -9,6 +9,20 @@ import { evaluate, legsOf, auctionUse, type Candidate, type Evaluation } from '.
 import { recipeKey, type FlipInputs, type FlipRecipe, type TrainerRow } from './inputs.ts';
 import { FAMILY_KIND, type Flip, type FlipLeg, type FlipRunReport, type HeldBack } from './types.ts';
 
+/**
+ * What flip_history says about a key before this flip's data hour: listed within the last publish gap (so not new), and
+ * the distinct earlier clock hours it was open, the 71 before this one. Read by data hour, never by run time, so a rerun
+ * on the same publish sees exactly what the first run saw (round 1 refresh finding B).
+ */
+export function priorHistory(inputs: FlipInputs, key: string, dataAt: number): { recent: boolean; openHours: number } {
+  const seen = inputs.history.seen;
+  if (!seen) return { recent: inputs.history.recent.has(key), openHours: inputs.history.openHours.get(key) ?? 0 };
+  const times = seen.get(key) ?? [];
+  const thisHour = Math.floor(dataAt / 3600_000);
+  const hours = new Set(times.filter(t => t < dataAt).map(t => Math.floor(t / 3600_000)).filter(hr => hr < thisHour && hr >= thisHour - (OPENING.trendHours - 1)));
+  return { recent: times.some(t => t < dataAt && t >= dataAt - OPENING.newWindowHours * 3600_000), openHours: hours.size };
+}
+
 export interface FlipRunResult { flips: Flip[]; heldBack: HeldBack[]; report: FlipRunReport }
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -234,16 +248,18 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   });
   const vendorFed = buy.some(l => l.kind === 'vendor') && auction.length === 0 && !buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'));
   const repeatable = c.family === 'cheap_listing' || c.family === 'auction_vendor' ? false : vendorFed || (auction.length > 0 && deep);
-  const opening: Flip['opening'] = q.rising && !((q.driftDrop ?? 0) > 0) ? 'rising' : inputs.history.recent.has(c.key) ? null : 'new';
+  const dataAt = Math.min(...inputs.houses.filter(x => x.id === h?.id || c.buyHouseIds.includes(x.id)).map(x => x.publishedAt || inputs.now), inputs.now);
+  const past = priorHistory(inputs, c.key, dataAt);
+  const opening: Flip['opening'] = q.rising && !((q.driftDrop ?? 0) > 0) ? 'rising' : past.recent ? null : 'new';
   return {
     key: c.key, kind: FAMILY_KIND[c.family], family: c.family, itemId: c.itemId, name: c.name,
     recipeId: c.recipe?.id, recipeName: c.recipe?.name, profession: c.recipe?.profession,
     sellHouseId: h?.id ?? null, buy, sell, perItem, best: b, options: e.options, sellQuote: q, repeatable, opening,
     // earlier distinct hours plus this one, never more than the 72 hours it counts (round 1 finding L3)
-    openHours72: Math.min(OPENING.trendHours, (inputs.history.openHours.get(c.key) ?? 0) + 1),
+    openHours72: Math.min(OPENING.trendHours, past.openHours + 1),
     setup,
     shares: [], afterShared: { units: b.units, expectedProfit: b.expectedProfit },
-    notes, dataAt: Math.min(...inputs.houses.filter(x => x.id === h?.id || c.buyHouseIds.includes(x.id)).map(x => x.publishedAt || inputs.now), inputs.now),
+    notes, dataAt,
     score: b.expectedProfit,
   };
 }

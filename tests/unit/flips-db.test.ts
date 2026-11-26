@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb, type DB } from '../../src/store/db.ts';
 import { chipHouses } from '../../src/flips/houses.ts';
 import { buildFlipInputs, recipeKey, TEACH_PREFIX } from '../../src/flips/inputs.ts';
-import { runFlips, setupFor } from '../../src/flips/run.ts';
+import { runFlips, setupFor, priorHistory } from '../../src/flips/run.ts';
 import { persistFlips } from '../../src/flips/persist.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
 import { tempDir } from '../helpers.ts';
@@ -190,6 +190,26 @@ describe('setup for a craft', () => {
   });
 });
 
+describe('a rerun on the same publish (refresh round 1 finding B)', () => {
+  it('keeps "new this hour" and the hours open, and updates the one history row for that data hour', () => {
+    const d = db();
+    const key = 'auction_vendor:vendor:2589';
+    const t1 = 10 * HOUR + 5 * 60_000;
+    const r1 = runFlips(buildFlipInputs(d, market(), t1));
+    persistFlips(d, r1, t1);
+    // a 304 refresh minutes later: no new publish, the same data hour
+    for (const t of [t1 + 10 * 60_000, t1 + 20 * 60_000]) {
+      const r = runFlips(buildFlipInputs(d, market(), t));
+      expect(r.flips.find(f => f.key === key)).toMatchObject({ opening: 'new', openHours72: 1, dataAt: 10 * HOUR });
+      persistFlips(d, r, t);
+    }
+    expect(d.prepare('SELECT at FROM flip_history WHERE key = ?').all(key)).toEqual([{ at: 10 * HOUR }]);
+    // the next publish: no longer new, open two hours
+    const r2 = runFlips(buildFlipInputs(d, market(), 11 * HOUR + 60_000));
+    expect(r2.flips.find(f => f.key === key)).toMatchObject({ opening: null, openHours72: 2 });
+  });
+});
+
 describe('open N of the last 72 hours', () => {
   it('never double counts two runs in one hour and never passes 72 (round 1 L3)', () => {
     const d = db();
@@ -198,7 +218,7 @@ describe('open N of the last 72 hours', () => {
     // a flip open every hour for 100 hours, two runs in each hour
     for (let h = 0; h < 100; h++) for (const m of [0, 30]) d.prepare('INSERT INTO flip_history (at, key, expected_profit, per_item, units) VALUES (?, ?, 1, 1, 1)').run(h * HOUR + m * 60_000, key);
     const inputs = buildFlipInputs(d, market(), 100.5 * HOUR);
-    expect(inputs.history.openHours.get(key)).toBe(71);
+    expect(priorHistory(inputs, key, 100 * HOUR).openHours).toBe(71);
     expect(runFlips(inputs).flips.find(f => f.key === key)!.openHours72).toBe(72);
   });
 });

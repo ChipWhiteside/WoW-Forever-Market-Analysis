@@ -108,8 +108,12 @@ export interface FlipInputs {
   recipeItems: Map<string, number>;
   /** teaching items with a loot record (a creature or object drops them); absent in fixtures means none */
   lootItems?: Set<number>;
-  /** recent: keys seen within the last publish gap; openHours: distinct earlier hours open in the last 72, this hour not counted */
-  history: { recent: Set<string>; openHours: Map<string, number> };
+  /**
+   * seen: the data hours (publish time, flip_history.at) each key was on the list, the last 72 hours and a gap; run.ts
+   * reads it against each flip's own data hour, so a rerun on the same publish never changes "new this hour".
+   * recent and openHours are the fixture form (no seen): keys seen within the last publish gap, distinct earlier hours open.
+   */
+  history: { recent: Set<string>; openHours: Map<string, number>; seen?: Map<string, number[]> };
   settings: FlipSettings;
 }
 
@@ -255,12 +259,12 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const teach = new Set<number>([...recipeItems.values(), ...recipes.map(r => r.teachItemId).filter((x): x is number => x != null)]);
   const lootItems = new Set((db.prepare('SELECT DISTINCT item_id FROM loot').all() as Array<{ item_id: number }>).map(r => r.item_id).filter(id => teach.has(id)));
 
-  const recent = new Set((db.prepare('SELECT DISTINCT key FROM flip_history WHERE at >= ? AND at < ?').all(now - OPENING.newWindowHours * 3600_000, now) as Array<{ key: string }>).map(r => r.key));
-  // Distinct earlier clock hours only, the 71 before this one: two runs in one hour count once, and this hour is added
-  // by the run itself, so "open N of the last 72 hours" never double counts and never passes 72 (round 1 finding L3).
-  const thisHour = Math.floor(now / 3600_000);
-  const openHours = new Map((db.prepare('SELECT key, COUNT(DISTINCT CAST(at / 3600000 AS INTEGER)) n FROM flip_history WHERE CAST(at / 3600000 AS INTEGER) >= ? AND CAST(at / 3600000 AS INTEGER) < ? AND at < ? GROUP BY key')
-    .all(thisHour - (OPENING.trendHours - 1), thisHour, now) as Array<{ key: string; n: number }>).map(r => [r.key, r.n]));
+  // flip_history is keyed by data hour (the publish the run read, round 1 refresh finding B): a rerun on the same publish
+  // updates that row, so pressing Refresh never erases "new this hour" or adds an hour to "open N of the last 72".
+  const seen = new Map<string, number[]>();
+  for (const r of db.prepare('SELECT key, at FROM flip_history WHERE at >= ? AND at <= ? ORDER BY at').all(now - (OPENING.trendHours + OPENING.newWindowHours) * 3600_000, now) as Array<{ key: string; at: number }>) {
+    const a = seen.get(r.key); if (a) a.push(r.at); else seen.set(r.key, [r.at]);
+  }
 
   const setting = (k: string) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value;
   const rate = num(setting(TIME_RATE_SETTING));
@@ -268,7 +272,7 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
   const session = num(setting(CRAFT_SESSION_SETTING));
   return {
     now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, newPosts, drivers: demandDrivers(db), trainers, recipeItems, lootItems,
-    history: { recent, openHours },
+    history: { recent: new Set(), openHours: new Map(), seen },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
       craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT, myProfessions: parseProfessions(setting(MY_PROFESSIONS_SETTING), notes) },
   };
