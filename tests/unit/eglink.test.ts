@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { vendorFaction, steamwheedleTown, vendorUnitPrice, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
+import { vendorFaction, steamwheedleTown, vendorUnitPrice, UNUSABLE_GATE, vendorBasePrice, vendorGate, mergeVendors, mergeTrainers, mergeLoot, parseLootKey, npcNames, isHangul, applyGameToEgLink, STANDING_DISCOUNT,
   type EgVendor, type EgNpc, type EgCreature, type EgTrainer } from '../../src/datasets/eglink.ts';
 import { loadGameDataFromDir } from '../../src/datasets/gamedata.ts';
 import { openDb } from '../../src/store/db.ts';
@@ -100,17 +100,21 @@ describe('round 2 fixes on real EG Link records', () => {
   it('fix 4: the gate is the item\'s own reputation need, not the lowest standing someone recorded', () => {
     expect(vendorGate(game.items.get(2324))).toBe('4');          // Bleach: no faction
     expect(vendorGate(game.items.get(20072))).toBe('5');         // Defiler's Talisman: MinReputation 4, Friendly
+    // Round 3 D4: The Defilers are closed to Alliance in the real Faction rows, so the talisman is never usable.
+    expect(vendorGate(game.items.get(20072), game.factions)).toBe(UNUSABLE_GATE);
+    expect([510, 2798, 2787, 76].map(f => game.factions.get(f)?.closedToAlliance)).toEqual([true, true, true, true]);
+    expect([21, 369, 470, 577, 2827, 72, 69].map(f => game.factions.get(f)?.closedToAlliance)).toEqual([false, false, false, false, false, false, false]);
     expect(vendorGate(game.items.get(20068))).toBe('8');         // Deathguard's Cloak: MinReputation 7, Exalted
     expect(vendorGate(undefined)).toBeNull();
     const db = openDb(tempDir(), ':memory:');
     const ins = db.prepare(`INSERT INTO vendor_items (npc_id, npc_name, faction, item_id, price, price_by_standing, units_per_purchase, limited, standing_required) VALUES (?, 'x', 'alliance', ?, 1, ?, 1, 0, ?)`);
     ins.run(66, 2324, '{"6":23}', '6');      // only an Honored player recorded it: the item needs nothing
-    ins.run(1, 20072, '{"4":100}', '4');     // recorded at Neutral, but the item needs Friendly
+    ins.run(1, 20072, '{"4":100}', '4');     // recorded at Neutral, but the item needs Friendly with a Horde only faction
     ins.run(2, 999999, '{"6":90}', '4');     // not in the game table: the recorded standing stays
     const f = applyGameToEgLink(db, game);
     expect(db.prepare('SELECT item_id, standing_required FROM vendor_items ORDER BY npc_id').all()).toEqual([
-      { item_id: 20072, standing_required: '5' }, { item_id: 999999, standing_required: '6' }, { item_id: 2324, standing_required: '4' }]);
-    expect(f).toMatchObject({ vendorGated: 1, vendorGateChanged: 2, vendorNoItem: 1 });
+      { item_id: 20072, standing_required: '9' }, { item_id: 999999, standing_required: '6' }, { item_id: 2324, standing_required: '4' }]);
+    expect(f).toMatchObject({ vendorGated: 1, vendorGateChanged: 2, vendorNoItem: 1, vendorHordeOnly: 1 });
   });
 });
 

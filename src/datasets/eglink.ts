@@ -275,12 +275,17 @@ export function vendorUnitPrice(costs: Record<string, number>, stack: number, st
 /**
  * The standing a vendor item needs, as EG Link writes standings (4 Neutral .. 8 Exalted), from the item's own
  * ItemSparse.MinFactionID and MinReputation (MinReputation counts from 0 Hated, so EG Link's standing is one more).
- * An item with no faction requirement needs nothing: '4'. Null when the game table lacks the item.
+ * An item with no faction requirement needs nothing: '4'. A Horde only faction (closed to Alliance in the Faction
+ * table) makes it unusable at any standing: UNUSABLE_GATE. Null when the game table lacks the item.
  */
-export function vendorGate(item: { minFactionId: number; minReputation: number } | undefined): string | null {
+export function vendorGate(item: { minFactionId: number; minReputation: number } | undefined, factions?: Map<number, { closedToAlliance: boolean }>): string | null {
   if (!item) return null;
+  if (item.minFactionId > 0 && factions?.get(item.minFactionId)?.closedToAlliance) return UNUSABLE_GATE;
   return item.minFactionId > 0 ? String(item.minReputation + 1) : '4';
 }
+
+/** The gate of an item that needs a Horde only reputation (Defilers, Darkspear Raiders): above Exalted, never usable. */
+export const UNUSABLE_GATE = '9';
 
 export interface MergedLoot {
   kind: string; sourceId: number; spell: number | null; itemId: number;
@@ -374,6 +379,8 @@ export interface GameFixes {
   vendorGated: number; vendorGateChanged: number;
   /** vendor rows whose item the game table lacks, so they keep the recorded standing */
   vendorNoItem: number;
+  /** vendor rows whose item needs a Horde only reputation, so never usable */
+  vendorHordeOnly: number;
 }
 
 /**
@@ -381,8 +388,8 @@ export interface GameFixes {
  * rows a Korean client recorded (by spell id, through SpellName and SkillLineAbility), and each vendor item's real
  * standing gate from ItemSparse.MinFactionID and MinReputation. Idempotent; run after every EG Link or game refresh.
  */
-export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 'sla' | 'skillLines' | 'items'>): GameFixes {
-  const out: GameFixes = { trainerNames: 0, trainerSkills: 0, trainerKorean: 0, vendorGated: 0, vendorGateChanged: 0, vendorNoItem: 0 };
+export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 'sla' | 'skillLines' | 'items'> & Partial<Pick<GameData, 'factions'>>): GameFixes {
+  const out: GameFixes = { trainerNames: 0, trainerSkills: 0, trainerKorean: 0, vendorGated: 0, vendorGateChanged: 0, vendorNoItem: 0, vendorHordeOnly: 0 };
   const lineBySpell = new Map<number, string>();
   for (const s of game.sla.values()) { const n = game.skillLines.get(s.skillLine)?.name; if (n && !isHangul(n)) lineBySpell.set(s.spellId, n); }
   tx(db, () => {
@@ -395,7 +402,7 @@ export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 's
     }
     const setGate = db.prepare('UPDATE vendor_items SET standing_required = ? WHERE npc_id = ? AND item_id = ?');
     for (const r of db.prepare('SELECT npc_id, item_id, standing_required, price_by_standing FROM vendor_items').all() as Array<{ npc_id: number; item_id: number; standing_required: string | null; price_by_standing: string | null }>) {
-      const gate = vendorGate(game.items.get(r.item_id));
+      const gate = vendorGate(game.items.get(r.item_id), game.factions);
       if (gate == null) {
         // Not in the game table: keep the recorded standing, the only evidence there is.
         out.vendorNoItem++;
@@ -404,6 +411,7 @@ export function applyGameToEgLink(db: DB, game: Pick<GameData, 'spellNames' | 's
         continue;
       }
       if (gate !== '4') out.vendorGated++;
+      if (gate === UNUSABLE_GATE) out.vendorHordeOnly++;
       if (gate !== r.standing_required) { setGate.run(gate, r.npc_id, r.item_id); out.vendorGateChanged++; }
     }
   });
