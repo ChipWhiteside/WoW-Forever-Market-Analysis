@@ -5,7 +5,7 @@ import type { Place } from '../datasets/places.ts';
 import { demandByItem, typicalFloors, type Typical } from '../analysis/history.ts';
 import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, MY_PROFESSIONS_SETTING, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
 import type { HouseRef } from './types.ts';
 
@@ -58,6 +58,11 @@ export interface FlipSettings {
   timeRate: number; goldOnHand: number | null; horizonHours: number;
   /** minutes of casting one crafting session allows; the best quantity of a craft stays inside it */
   craftSessionMinutes?: number;
+  /**
+   * The professions Chip has, with his skill when he gave one (settings key my_professions, JSON: ["Tailoring"] or
+   * {"Tailoring": 300}). Unset (null): every sub craft is allowed and only listed.
+   */
+  myProfessions?: Map<string, number | null> | null;
 }
 
 export interface FlipInputs {
@@ -239,8 +244,20 @@ export function buildFlipInputs(db: DB, listingsByHouse: Map<number, Listing[]>,
     now, houses, problems, notes, listings, items, vendors, recipes, demand, typical, low3d, low3dHours, drivers: demandDrivers(db), trainers, recipeItems,
     history: { recent, openHours },
     settings: { timeRate: rate != null && rate >= 0 ? rate : TIME_RATE_DEFAULT, goldOnHand: gold != null && gold > 0 ? Math.round(gold * 10000) : null, horizonHours: HORIZON_HOURS,
-      craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT },
+      craftSessionMinutes: session != null && session > 0 ? session : CRAFT_SESSION_MINUTES_DEFAULT, myProfessions: parseProfessions(setting(MY_PROFESSIONS_SETTING), notes) },
   };
+}
+
+/** my_professions: a JSON list of names or an object of name to skill. Anything else is ignored and noted. */
+export function parseProfessions(raw: string | undefined, notes: string[] = []): Map<string, number | null> | null {
+  if (raw == null || raw.trim() === '') return null;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (Array.isArray(v)) return new Map(v.filter(x => typeof x === 'string').map(x => [x as string, null]));
+    if (v && typeof v === 'object') return new Map(Object.entries(v as Record<string, unknown>).map(([k, n]) => [k, typeof n === 'number' && Number.isFinite(n) ? n : null]));
+  } catch { /* noted below */ }
+  notes.push(`setting ${MY_PROFESSIONS_SETTING} is not a JSON list or object, ignored`);
+  return null;
 }
 
 /**

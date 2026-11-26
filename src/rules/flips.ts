@@ -29,6 +29,13 @@ export const GOLD_SETTING = 'gold_on_hand';
 export const CRAFT_SESSION_MINUTES_DEFAULT = 30;
 export const CRAFT_SESSION_SETTING = 'craft_session_minutes';
 
+/**
+ * The professions Chip has (round 2 finding H3), optional JSON: ["Tailoring", "Alchemy"] or {"Tailoring": 300}. When set,
+ * a sub craft in a profession he lacks (or above his skill) is bought instead when anything sells it; the recipe on the
+ * card is never blocked, it can be trained. Unset: every sub craft is used and listed on the card.
+ */
+export const MY_PROFESSIONS_SETTING = 'my_professions';
+
 /** Plan section 6, quantity table: "for example 10, the best amount, and the most the market can take". */
 export const SMALL_QUANTITY = 10;
 

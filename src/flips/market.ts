@@ -123,6 +123,14 @@ export class Market {
     return best ?? this.vendorFor(itemId);
   }
 
+  /** Whether Chip can make this sub craft himself (settings.myProfessions; unset allows every craft). */
+  canCraft(r: FlipRecipe): boolean {
+    const mine = this.inputs.settings.myProfessions;
+    if (!mine) return true;
+    if (!mine.has(r.profession)) return false;
+    const skill = mine.get(r.profession);
+    return skill == null || r.learnSkill == null || r.learnSkill <= skill;
+  }
   yieldOf(r: FlipRecipe): number { return Math.max(1, r.qtyMin || 1); }
   cooldownKey(r: FlipRecipe): string | null {
     if (!r.cooldownMs || r.cooldownMs <= 0) return null;
@@ -213,6 +221,8 @@ export class Market {
     if (mode.craft && depth < MAX_CRAFT_DEPTH && !stack.has(itemId)) {
       for (const r of this.byProduct.get(itemId) ?? []) {
         if (this.cooldownLeft(r) <= 0) continue;
+        // A sub craft in a profession Chip lacks is used only when nothing else supplies the reagent.
+        if (pick && !this.canCraft(r)) continue;
         if (r.reagents.some(g => stack.has(g.itemId))) continue;
         if (this.lowerBoundCraft(r) >= bestCost) continue;
         const m = this.mark();
