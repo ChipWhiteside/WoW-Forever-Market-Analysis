@@ -11,7 +11,7 @@ Written November 26 at Chip's request, from how the build actually spent tokens.
 
 ## What changes now (depth and the 3 check rounds stay)
 1. **Fresh agents, short lives.** One agent does one fix round, then ends. The next round starts a fresh agent from files, not by resuming. No agent is resumed past about 150k tokens of transcript.
-2. **Findings and briefs live in files.** A tester writes `docs/handoff/findings-<piece>-r<N>.md` and a fixer reads it. The coordinator passes a path, not the content. Each brief is a file too.
+2. **Findings and briefs live in files.** A tester writes `scratchpad/findings-<piece>-r<N>.txt` (agents cannot write .md files) and a fixer reads it. The coordinator passes a path, not the content. Each brief is a file too.
 3. **Reports capped at about 300 words.** Verdict, the commit, the counts that matter and open decisions. Tables and traces go in a file named in the report.
 4. **Testers get a focused start.** The diff range, the findings file from the previous round, and the scripts the previous tester left in the scratchpad to reuse.
 5. **Model by job.** Design, adversarial review and the final round of each piece stay on the strongest model. Mechanical work runs on a faster model: rerunning a recompute script, applying a reviewed patch, writing the tutorial.
