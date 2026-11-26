@@ -3,6 +3,7 @@ import { openDb, type DB } from '../../src/store/db.ts';
 import { flipAlertCycle, flushHeldFlipAlerts, formatFlipAlerts, judgeFlip, flipAlertSettings } from '../../src/flips/alerts.ts';
 import { persistFlips } from '../../src/flips/persist.ts';
 import type { Flip, FlipRunReport } from '../../src/flips/types.ts';
+import { reviewAlerts } from '../../src/flips/alertReview.ts';
 import { tempDir } from '../helpers.ts';
 
 /** Best of the best Discord alerts (brief-refresh-alerts.md, Chip November 26). Never a real Discord call: fetch is mocked. */
@@ -135,5 +136,25 @@ describe('flip alert message size', () => {
     const fetchFn = (async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
     expect((await flipAlertCycle(d, 'h', [flip(25)], report(), { now: noon, fetchFn })).skipped).toBe('discord failed');
     expect(d.prepare('SELECT COUNT(*) n FROM flip_alerts').get()).toEqual({ n: 0 });
+  });
+});
+
+describe('alert review (scripts/alert-review.ts)', () => {
+  it('says whether an alerted flip stayed live at the next runs and sold near the claim', async () => {
+    const d = db(); const { fetchFn } = mockDiscord();
+    const f = flip(25, { key: 'r' }); // claims 1000 each on house 111, 20 units
+    await flipAlertCycle(d, 'h', [f], report(), { now: noon, fetchFn });
+    const hour = 3600_000;
+    const runAt = (t: number, keys: string[]) => {
+      d.prepare('INSERT INTO flip_runs (at, data_at, ms, complete, report) VALUES (?, ?, 1, 1, ?)').run(t, t, '{}');
+      for (const k of keys) d.prepare('INSERT INTO flip_history (at, key, expected_profit, per_item, units) VALUES (?, ?, 1, 1, 1)').run(t, k);
+    };
+    runAt(noon + hour, ['r']); runAt(noon + 2 * hour, ['r']); runAt(noon + 3 * hour, []);
+    const stat = d.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder, sold_units)
+      VALUES (?, 111, 2589, ?, ?, 1, 1, 1, 1, '[]', ?)`);
+    stat.run(1, noon + hour, 980, 12); stat.run(2, noon + 2 * hour, 950, 9); stat.run(3, noon + 3 * hour, 700, 30);
+    const [r] = reviewAlerts(d, { now: noon + 5 * hour, since: noon - hour });
+    expect(r).toMatchObject({ key: 'r', tier: 'amazing', liveNext: 2, runsAfter: 3, soldNearClaim: 21, soldAll: 51, floorMin: 700, floorMax: 980, snapshots: 3 });
+    expect(r!.verdict).toBe('live at 2 of the next 3 runs; sold 21 near the claim, covers the 20');
   });
 });

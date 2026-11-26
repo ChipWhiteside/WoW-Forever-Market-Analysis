@@ -112,7 +112,7 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   }
   if (!webhookUrl) return none('no webhook set');
   let sent = 0, posts = 0;
-  const log = db.prepare('INSERT OR REPLACE INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const log = db.prepare('INSERT OR REPLACE INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at, item_id, house_id, claim_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const byKey = new Map(chosen.map(c => [c.flip.key, c]));
   for (const p of formatFlipAlerts(chosen, opts.appUrl ?? null)) {
     const ok = await sendDiscord(webhookUrl, p.body, opts.fetchFn);
@@ -121,7 +121,7 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
     posts++;
     for (const k of p.keys) {
       const c = byKey.get(k)!;
-      log.run(k, now, c.tier, c.profit, c.flip.perItem, c.flip.best.units, c.flip.dataAt);
+      log.run(k, now, c.tier, c.profit, c.flip.perItem, c.flip.best.units, c.flip.dataAt, c.flip.itemId, c.flip.sellHouseId, c.flip.sellQuote.claimPrice);
       sent++;
     }
   }
