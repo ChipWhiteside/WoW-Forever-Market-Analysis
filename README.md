@@ -4,6 +4,8 @@ Finds gold making plays on your WoW Forever auction houses within minutes of eve
 
 It reads every listing on the Alliance and Blackwater houses, checks each item against what vendors pay and charge, recipes, drop data and its own price history, then ranks the plays: vendor dumps, vendor supply, underpriced listings, cross house flips, crafting margins, sell now and world drops. You decide what to do with them in game.
 
+**Start here:** `docs/flips-tutorial.md` shows how to run it and read the Flips page, the ranked list of every crafting and flipping opportunity on your two houses. The flip engine plan is `docs/flip-plan.md`.
+
 Plan: `docs/build-plan.md`. What is proven: `docs/verification.md`. What changed: `docs/CHANGELOG.md`.
 
 ## Install on your PC, about ten minutes
