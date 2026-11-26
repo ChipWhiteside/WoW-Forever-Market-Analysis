@@ -4,8 +4,8 @@
  * demand estimates built on the counter (src/analysis/history.ts): the middle less expected pulls (`net`) and the
  * cautious low estimate, which should sit under the true rate about 95 percent of the time.
  */
-import { aggregate, nextSeen, type Seen, type Diagnostics } from '../../src/analysis/aggregate.ts';
-import { rowNet, rowPullRate, lowEstimate, expectedPullEvents } from '../../src/analysis/history.ts';
+import { aggregate, nextSeen, type Seen, type Diagnostics, type ItemStat } from '../../src/analysis/aggregate.ts';
+import { rowNet, rowPullRate, lowEstimate, expectedPullEvents, repostedAcross } from '../../src/analysis/history.ts';
 import { aggregate as oldAggregate } from './old-aggregate.ts';
 import { simulate, MEASURED_CANCELS, type MarketType, type SimOpts } from './market.ts';
 
@@ -60,8 +60,17 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
   for (const seed of seeds) {
     const run = simulate({ type, seed, ...extra });
     const kind = run.commodity ? 'commodities' : 'auctions';
+    // Every publish's rows first: a pull before one publish and a post again after it is judged from the next row
+    // (repostedAcross, as demandByItem does).
+    const statsAt: Array<Map<number, ItemStat> | null> = [];
     let seen: Map<number, Seen> | null = null;
-    let prevStats: Map<number, { listings: number; unitsAtFloor: number }> | null = null;
+    for (let k = 0; k < run.snapshots.length; k++) {
+      const cur = run.snapshots[k]!, prev = k > 0 ? run.snapshots[k - 1]! : null;
+      const before = seen;
+      seen = nextSeen(before, cur.listings, cur.at, prev, !!prev);
+      statsAt.push(prev ? new Map(aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag }).map(s => [s.itemId, s])) : null);
+    }
+    let prevStats: Map<number, ItemStat> | null = null;
     const day = new Map<string, { t: number; o: number; n: number; x: number }>();
     type Win = { t: number; sold: number; ev: number; rate: number; net: number; netSq: number };
     const win = new Map<string, Win>();
@@ -70,13 +79,11 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
     for (let k = 0; k < run.snapshots.length; k++) {
       const cur = run.snapshots[k]!;
       const prev = k > 0 ? run.snapshots[k - 1]! : null;
-      const before = seen;
-      seen = nextSeen(before, cur.listings, cur.at, prev, !!prev);
       if (!prev) continue;
       hours++;
-      const n = aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag });
       const o = oldAggregate(cur.listings, prev.listings, { commodity: run.commodity });
-      const nm = new Map(n.map(s => [s.itemId, s]));
+      const nm = statsAt[k]!;
+      const nextM = statsAt[k + 1] ?? null;
       if (!prevStats) prevStats = new Map(aggregate(prev.listings, null, { commodity: run.commodity }).map(s => [s.itemId, s]));
       const ps = prevStats;
       const om = new Map(o.map(s => [s.itemId, Math.max(0, (s.goneUnitsNearFloor ?? 0) - (s.goneUnitsExpiringNearFloor ?? 0))]));
@@ -84,14 +91,18 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
       for (const item of items) {
         const t = run.visible[k]!.get(item) ?? 0, ov = om.get(item) ?? 0;
         const s = nm.get(item);
-        const nv = s?.soldUnits ?? 0;
         const before = ps.get(item) ?? s;
+        const nx = nextM?.get(item);
+        const across = !!s && repostedAcross(before?.listings ?? 0, before?.floor ?? null, s.soldUnits ?? 0, s.listings,
+          nx ? { newNearFloor: nx.newNearFloor, floor: nx.floor, gapMs: run.snapshots[k + 1]!.at - cur.at, differenced: true } : null);
+        const nv = across ? 0 : s?.soldUnits ?? 0;
+        const ev = across ? 0 : s?.soldEvents ?? 0;
         const xv = s ? rowNet(kind, before?.listings ?? 0, before?.unitsAtFloor ?? 0, nv) : 0;
         const rate = s ? rowPullRate(kind, before?.listings ?? 0) : 0;
         truth += t; oldSum += ov; newSum += nv; netSum += xv;
         sTruth += t; sOld += ov; sNew += nv; sNet += xv;
         oldHour += Math.abs(ov - t); newHour += Math.abs(nv - t);
-        events += s?.soldEvents ?? 0;
+        events += ev;
         buyers += run.buyers[k]!.get(item) ?? 0;
         const key = `${item}:${Math.floor((k - 1) / 24)}`;
         const d = day.get(key) ?? { t: 0, o: 0, n: 0, x: 0 };
@@ -100,7 +111,7 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
         for (const W of WINDOWS) {
           const wk = `${W}:${item}:${Math.floor((k - 1) / W)}`;
           const w = win.get(wk) ?? { t: 0, sold: 0, ev: 0, rate: 0, net: 0, netSq: 0 };
-          w.t += t; w.sold += nv; w.ev += s?.soldEvents ?? 0; w.rate += rate; w.net += xv; w.netSq += xv * xv;
+          w.t += t; w.sold += nv; w.ev += ev; w.rate += rate; w.net += xv; w.netSq += xv * xv;
           win.set(wk, w);
         }
       }
