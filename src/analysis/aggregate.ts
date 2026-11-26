@@ -344,7 +344,9 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
           let best: Listing | null = null;
           for (const n of fresh) {
             if (used.has(n.id) || n.quantity !== e.l.quantity || Math.abs(n.unitPrice! - old) > old * 0.25) continue;
-            if (!best || Math.abs(n.unitPrice! - old) < Math.abs(best.unitPrice! - old) || (n.unitPrice === best.unitPrice && n.id > best.id)) best = n;
+            const dn = Math.abs(n.unitPrice! - old), db = best ? Math.abs(best.unitPrice! - old) : Infinity;
+            // Closest price first; then the cheaper post; then the newest. Same answer whatever order the posts came in.
+            if (!best || dn < db || (dn === db && (n.unitPrice! < best.unitPrice! || (n.unitPrice === best.unitPrice && n.id > best.id)))) best = n;
           }
           if (best) { used.add(best.id); e.verdict = 'undercut'; }
         }

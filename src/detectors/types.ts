@@ -45,8 +45,15 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
   sweepHigh?: number | null;
   /** lowest hourly floor in the last 3 days */
   low3d?: number | null;
-  /** sale events expected to be pulls of the front listing read as sales (P15), already taken off lowPerDay */
+  /** sale events expected to be pulls of the front listing read as sales (P15, commodities), taken off the event bound */
   pullEvents?: number;
+  /** hourly sold units over every watched publish, zero hours included: mean per hour and standard deviation per publish */
+  hourlyMean?: number;
+  hourlySd?: number | null;
+  /** the whole front at the floor was replaced in every watched hour (one seller pulling and posting again reads as
+   * sales); lowPerDay is null then and lowNote says why */
+  frontReplacedHourly?: boolean;
+  lowNote?: string;
   /** unitsPerDay less the units those expected pulls add: the middle estimate with the known leak taken out */
   netPerDay?: number;
   /** units judged sold in the window, the sale events behind them (buyers: a run of stacks is one), and units per event */

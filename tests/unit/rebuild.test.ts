@@ -104,20 +104,23 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.hoursWatched).toBe(6);
     expect(d.unitsPerDay).toBeCloseTo(284 / 6 * 24, 6);
     // 95% lower bound of 3 events is 0.818, less the pulls of the front stack expected to read as sales: 6 hours of a
-    // deep market (more than 5 listings) at 2.2% an hour is 0.132. (0.818 - 0.132) * 94.7 / 6 * 24 = 260 a day,
-    // against 1,136 in the middle.
-    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep, 6);
-    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 6 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
+    // deep market (more than 5 listings) at 2.2% an hour, times the chance an hour had no real sale (3 of 6 had none),
+    // is 0.066. (0.818 - 0.066) * 94.7 / 6 * 24 = 285 a day, against 1,136 in the middle. The hourly bound is 0 here:
+    // three busy hours and three empty ones are too uneven to prove much.
+    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep * 0.5, 6);
+    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 3 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
+    expect(d.hourlyMean).toBeCloseTo(284 / 6, 6);
+    expect(d.hourlySd).toBeCloseTo(Math.sqrt((15 ** 2 + 48 ** 2 + 221 ** 2 - 6 * (284 / 6) ** 2) / 5), 6);
     expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
     const sweep = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12211)!;
     expect(sweep.soldUnits).toBe(284);
     expect(sweep.saleEvents).toBe(1);
-    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.132), so the
-    // cautious estimate is 0. One sale could have been a seller pulling the front stack.
+    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.11), and one busy
+    // hour in six proves nothing hourly, so the cautious estimate is 0. One sale could have been a pull of the front.
     expect(sweep.lowPerDay).toBe(0);
   });
 
-  it('equipment pulls in SQL match rowPulls, hours watched are per kind, and the low estimate waits for 6 publishes', () => {
+  it('equipment takes no pull allowance, hours watched are per kind, the low estimate waits for 6 publishes and tracks steady sales', () => {
     const dir = tempDir();
     const db = openDb(dir, ':memory:');
     const t0 = Date.parse('2026-11-19T08:25:00Z');
@@ -137,9 +140,13 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.saleEvents).toBe(6);
     expect(d.hoursWatched).toBe(6); // 5.99 rounded
     expect(d.lowPerDay).not.toBeNull(); // 6 publishes, though under 6 hours
-    // In band after each hour: the 1000s left plus 1100 and 1200 (1200 <= 1.25 * 1000): (7 + 6 + 5 + 4 + 3 + 2) + 12 copies.
-    expect(d.pullEvents).toBeCloseTo(PULL_RATE.equipment * (27 + 12), 6);
-    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6); // equipment: the middle is left as it is
+    // Equipment: the counter's missed buys offset the pulls (B42), so no allowance and the middle is left as it is.
+    expect(d.pullEvents).toBe(0);
+    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6);
+    // One sale every hour, no spread: the hourly bound proves the full rate, capped at the middle (24 a day). The event
+    // bound alone would give poissonLower(6) / 5.99 * 24 = 10.5.
+    expect(d.hourlySd).toBe(0);
+    expect(d.lowPerDay).toBeCloseTo(d.unitsPerDay, 6);
     // 5 publishes: no low estimate yet.
     expect(demandByItem(db, 111, { now: t0 + 5 * gap + 1 }).get(7001)!.lowPerDay).toBeNull();
   });
