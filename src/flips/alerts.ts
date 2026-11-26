@@ -80,8 +80,14 @@ export function formatFlipAlerts(chosen: Chosen[], appUrl: string | null): Array
 }
 
 const PENDING = 'flip_alerts_pending';
-/** A claim not marked sent or failed within this long belongs to a run that died while sending. */
-const PENDING_STALE_MS = 10 * 60_000;
+/**
+ * Claims this process is sending right now ("key@at"). A pending row not in this set was left by a process that died
+ * mid send: the next run resends it at once (at-least-once) and marks it, so after a crash at most the post in flight
+ * can double and nothing waits for a stale window. Per database, so two runs in one process never resend each other.
+ */
+const inFlight = new WeakMap<DB, Set<string>>();
+const flying = (db: DB) => { let s = inFlight.get(db); if (!s) { s = new Set(); inFlight.set(db, s); } return s; };
+const claimId = (key: string, at: number) => `${key}@${at}`;
 
 export interface FlipAlertResult { sent: number; posts: number; skipped: string | null; held: number }
 
@@ -97,9 +103,10 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   if (now - report.dataAt > FLIP_ALERTS.freshMinutes * 60_000) return none('data not fresh');
   const s = flipAlertSettings(db);
   const quiet = isQuiet(now, alertSettings(db));
-  // A failed post never counts as sent: only sent rows, and pending rows a run is still sending, block a repeat.
-  // A pending row older than PENDING_STALE_MS was left by a run that died mid send and is retried.
-  const last = db.prepare(`SELECT at, expected_profit FROM flip_alerts WHERE key = ? AND (status = 'sent' OR (status = 'pending' AND at >= ?)) ORDER BY at DESC LIMIT 1`);
+  // A failed post never counts as sent. Only sent rows and claims this process is sending right now block a repeat;
+  // a pending row from a dead process blocks nothing, so its flip is sent again by this run.
+  const fly = flying(db);
+  const last = db.prepare(`SELECT at, expected_profit, status, key FROM flip_alerts WHERE key = ? AND status IN ('sent', 'pending') ORDER BY at DESC`);
   const claim = db.prepare(`INSERT OR REPLACE INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at, item_id, house_id, claim_price, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`);
   const pick = (): Chosen[] => {
@@ -108,7 +115,8 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
       const j = judgeFlip(f, s, opts.held);
       if (!j.tier) continue;
       const profit = alertProfit(f);
-      const prev = last.get(f.key, now - PENDING_STALE_MS) as { at: number; expected_profit: number } | undefined;
+      const prev = (last.all(f.key) as Array<{ at: number; expected_profit: number; status: string; key: string }>)
+        .find(r => r.status === 'sent' || fly.has(claimId(r.key, r.at)));
       if (prev && now - prev.at < FLIP_ALERTS.repeatHours * 3600_000 && profit < prev.expected_profit * (1 + FLIP_ALERTS.regrowth)) continue;
       chosen.push({ flip: f, tier: j.tier, profit });
     }
@@ -117,7 +125,12 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   // The repeat check and the claim are one transaction with no await inside, so no other run can slip between them.
   const chosen = quiet || !webhookUrl ? pick() : tx(db, () => {
     const c = pick();
-    for (const x of c) claim.run(x.flip.key, now, x.tier, x.profit, x.flip.perItem, x.flip.best.units, x.flip.dataAt, x.flip.itemId, x.flip.sellHouseId, x.flip.sellQuote.claimPrice);
+    for (const x of c) { claim.run(x.flip.key, now, x.tier, x.profit, x.flip.perItem, x.flip.best.units, x.flip.dataAt, x.flip.itemId, x.flip.sellHouseId, x.flip.sellQuote.claimPrice); fly.add(claimId(x.flip.key, now)); }
+    // Orphans: pending rows from a dead process. Those whose flip is chosen again were just resent by the new claim
+    // above; the rest no longer qualify. Either way the old row is closed as failed, never left pending.
+    const orphans = (db.prepare(`SELECT key, at FROM flip_alerts WHERE status = 'pending'`).all() as Array<{ key: string; at: number }>)
+      .filter(r => !fly.has(claimId(r.key, r.at)));
+    for (const r of orphans) db.prepare(`UPDATE flip_alerts SET status = 'failed' WHERE key = ? AND at = ?`).run(r.key, r.at);
     return c;
   });
   if (!chosen.length) { if (!quiet) setKv(db, PENDING, '[]'); return none('nothing new'); }
@@ -131,13 +144,19 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   let sent = 0, posts = 0;
   const mark = db.prepare('UPDATE flip_alerts SET status = ? WHERE key = ? AND at = ?');
   const failed: string[] = [];
-  for (const p of formatFlipAlerts(chosen, opts.appUrl ?? null)) {
-    const ok = await sendDiscord(webhookUrl, p.body, opts.fetchFn);
-    db.prepare('INSERT INTO alerts_sent (at, channel, plays, body, ok) VALUES (?, ?, ?, ?, ?)').run(now, 'discord_flips', p.keys.length, p.body, ok ? 1 : 0);
-    for (const k of p.keys) mark.run(ok ? 'sent' : 'failed', k, now);
-    if (!ok) { failed.push(...p.keys); continue; }
-    posts++;
-    sent += p.keys.length;
+  const unsent = new Set(chosen.map(c => c.flip.key));
+  try {
+    for (const p of formatFlipAlerts(chosen, opts.appUrl ?? null)) {
+      const ok = await sendDiscord(webhookUrl, p.body, opts.fetchFn);
+      // Mark this post's rows right now, before the next post goes out: a crash later never re-sends a delivered post.
+      for (const k of p.keys) { mark.run(ok ? 'sent' : 'failed', k, now); fly.delete(claimId(k, now)); unsent.delete(k); }
+      db.prepare('INSERT INTO alerts_sent (at, channel, plays, body, ok) VALUES (?, ?, ?, ?, ?)').run(now, 'discord_flips', p.keys.length, p.body, ok ? 1 : 0);
+      if (!ok) { failed.push(...p.keys); continue; }
+      posts++;
+      sent += p.keys.length;
+    }
+  } finally {
+    for (const k of unsent) fly.delete(claimId(k, now));
   }
   // Held alerts whose post failed stay held, so the flush after quiet hours retries them instead of dropping them.
   setKv(db, PENDING, JSON.stringify(failed));

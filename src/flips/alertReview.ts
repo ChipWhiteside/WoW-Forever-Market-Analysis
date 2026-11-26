@@ -18,16 +18,18 @@ export interface AlertReview {
   /** all units judged sold on the sell house within the horizon, and the floor range seen */
   soldAll: number | null; floorMin: number | null; floorMax: number | null; snapshots: number;
   verdict: string;
+  /** sent reached Discord; pending was never confirmed (a crash mid send); failed was refused or superseded */
+  status: string;
 }
 
 export function reviewAlerts(db: DB, opts: { since?: number; now?: number; runs?: number; horizonHours?: number; near?: number } = {}): AlertReview[] {
   const now = opts.now ?? Date.now();
   const since = opts.since ?? now - 7 * 24 * 3600_000;
   const runs = opts.runs ?? 3, horizon = (opts.horizonHours ?? 10) * 3600_000, near = opts.near ?? 0.9;
-  // Only alerts that reached Discord: a failed or still pending claim was never seen by Chip.
-  const alerts = db.prepare(`SELECT a.key, a.at, a.tier, a.expected_profit, a.per_item, a.units, a.data_at, a.item_id, a.house_id, a.claim_price, i.name
-      FROM flip_alerts a LEFT JOIN items i ON i.id = a.item_id WHERE a.at >= ? AND a.status = 'sent' ORDER BY a.at DESC`)
-    .all(since) as Array<{ key: string; at: number; tier: string; expected_profit: number; per_item: number; units: number; data_at: number; item_id: number | null; house_id: number | null; claim_price: number | null; name: string | null }>;
+  // Every claim is shown with its status. Only sent ones count as seen by Chip; pending and failed are listed, not judged.
+  const alerts = db.prepare(`SELECT a.key, a.at, a.tier, a.expected_profit, a.per_item, a.units, a.data_at, a.item_id, a.house_id, a.claim_price, a.status, i.name
+      FROM flip_alerts a LEFT JOIN items i ON i.id = a.item_id WHERE a.at >= ? AND a.status IN ('sent', 'pending', 'failed') ORDER BY a.at DESC`)
+    .all(since) as Array<{ key: string; at: number; tier: string; expected_profit: number; per_item: number; units: number; data_at: number; item_id: number | null; house_id: number | null; claim_price: number | null; status: string; name: string | null }>;
   // Distinct publishes, not runs: every rerun on one publish shares its data_at.
   const nextData = db.prepare('SELECT DISTINCT data_at FROM flip_runs WHERE data_at > ? AND complete = 1 ORDER BY data_at LIMIT ?');
   // flip_history is keyed by data hour; a flip is live at a publish when it has a row from that publish up to the next.
@@ -47,6 +49,7 @@ export function reviewAlerts(db: DB, opts: { since?: number; now?: number; runs?
       if (a.claim_price != null) soldNearClaim = rows.filter(r => r.floor != null && r.floor >= a.claim_price! * near).reduce((s, r) => s + (r.sold_units ?? 0), 0);
     }
     const parts: string[] = [];
+    if (a.status !== 'sent') parts.push(a.status === 'pending' ? 'PENDING, delivery never confirmed' : 'FAILED, not delivered');
     const pub = (n: number) => `${n} publish${n === 1 ? '' : 'es'}`;
     const tooSoon = after.length < runs;
     parts.push(!after.length ? 'no new publish since, too soon to judge'
@@ -56,6 +59,6 @@ export function reviewAlerts(db: DB, opts: { since?: number; now?: number; runs?
     else if (!snapshots) parts.push('no publish since');
     else if (soldNearClaim != null) parts.push(soldNearClaim >= a.units ? `sold ${soldNearClaim} near the claim, covers the ${a.units}` : `sold ${soldNearClaim} near the claim, short of the ${a.units}`);
     return { key: a.key, name: a.name ?? a.key, at: a.at, tier: a.tier, expectedProfit: a.expected_profit, perItem: a.per_item, units: a.units, liveNext, publishesAfter: after.length, tooSoon,
-      soldNearClaim, soldAll, floorMin, floorMax, snapshots, verdict: parts.join('; ') };
+      soldNearClaim, soldAll, floorMin, floorMax, snapshots, verdict: parts.join('; '), status: a.status };
   });
 }

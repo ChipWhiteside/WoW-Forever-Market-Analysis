@@ -53,12 +53,11 @@ describe('finding A: an alert is claimed before it is sent', () => {
     expect(sent.join('\n').match(/\*\*(AMAZING|Good)\*\*/g)).toHaveLength(15);
     expect(d.prepare('SELECT status, COUNT(*) n FROM flip_alerts GROUP BY status').all()).toEqual([{ status: 'sent', n: 15 }]);
   });
-  it('a run that sees a fresh pending claim waits; a stale claim from a run that died is retried', async () => {
+  it('a pending claim from a dead process is resent at once, not after a stale window (see alert-crash.test.ts)', async () => {
     const d = db();
     d.prepare(`INSERT INTO flip_alerts (key, at, tier, expected_profit, per_item, units, data_at, status) VALUES ('k', ?, 'amazing', ?, 1, 1, 1, 'pending')`).run(noon, 25 * G);
     const { sent, fetchFn } = slowDiscord(1);
-    expect((await flipAlertCycle(d, 'h', [flip(25, 'k')], report, { now: noon + 60_000, fetchFn })).skipped).toBe('nothing new');
-    expect((await flipAlertCycle(d, 'h', [flip(25, 'k')], report, { now: noon + 11 * 60_000, fetchFn })).sent).toBe(1);
+    expect((await flipAlertCycle(d, 'h', [flip(25, 'k')], report, { now: noon + 60_000, fetchFn })).sent).toBe(1);
     expect(sent).toHaveLength(1);
   });
   it('alerts held in quiet hours stay held when the post after quiet hours fails', async () => {
@@ -171,11 +170,11 @@ describe('finding C: alert review counts publishes, not reruns', () => {
     run(noon + HOUR, noon + HOUR - 10 * 60_000, ['r']);
     run(noon + HOUR + 60_000, noon + HOUR - 10 * 60_000, ['r']);
     const rows = reviewAlerts(d, { now: noon + 2 * HOUR, since: noon - HOUR });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ key: 'r', name: 'Bolt of Linen Cloth', liveNext: 1, publishesAfter: 1, tooSoon: true });
-    expect(rows[0]!.verdict).toMatch(/^live at 1 of 1 publish so far; only 1 publish since, too few to judge yet \(needs 3\)/);
+    expect(rows).toHaveLength(2); // the failed claim is listed too, with its status
+    expect(rows.find(r => r.status === "sent")).toMatchObject({ key: 'r', name: 'Bolt of Linen Cloth', liveNext: 1, publishesAfter: 1, tooSoon: true });
+    expect(rows.find(r => r.status === 'sent')!.verdict).toMatch(/^live at 1 of 1 publish so far; only 1 publish since, too few to judge yet \(needs 3\)/);
     run(noon + 2 * HOUR, noon + 2 * HOUR - 10 * 60_000, []);
     run(noon + 3 * HOUR, noon + 3 * HOUR - 10 * 60_000, ['r']);
-    expect(reviewAlerts(d, { now: noon + 4 * HOUR, since: noon - HOUR })[0]).toMatchObject({ liveNext: 2, publishesAfter: 3, tooSoon: false });
+    expect(reviewAlerts(d, { now: noon + 4 * HOUR, since: noon - HOUR }).find(r => r.status === 'sent')).toMatchObject({ liveNext: 2, publishesAfter: 3, tooSoon: false });
   });
 });
