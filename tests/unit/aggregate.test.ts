@@ -167,7 +167,16 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     const cur = [L(4, 2770, 5, 130), L(5, 2770, 20, 160)];
     const a = aggregate(cur, prev, { commodity: true })[0]!;
     expect(a.soldUnits).toBe(75);
-    expect(a.soldEvents).toBe(4); // three stacks bought whole, one in part
+    expect(a.soldEvents).toBe(1); // three stacks bought whole and one in part: one run from the front, one buyer
+    // A stack left unbought inside the run (it most likely ran out first) does not split it: it was gone when the
+    // buyer came. Still one event.
+    const b = aggregate([L(4, 2770, 5, 130), L(5, 2770, 20, 160)], prev.map(l => l.id === 2 ? { ...l, timeLeft: 'SHORT' as const } : l), { commodity: true })[0]!;
+    expect(b.soldUnits).toBe(55);
+    expect(b.soldEvents).toBe(1);
+    // A stack still up whole between bought ones (never seen on Forever, B34) does split it: two events.
+    const c = aggregate([L(2, 2770, 20, 104), L(3, 2770, 5, 115)], [L(1, 2770, 20, 100), L(2, 2770, 20, 104), L(3, 2770, 20, 115)], { commodity: true })[0]!;
+    expect(c.soldUnits).toBe(35);
+    expect(c.soldEvents).toBe(2);
     expect(a.sweepHigh).toBe(130);
     expect(a.soldValue).toBe(20 * 100 + 20 * 104 + 20 * 115 + 15 * 130);
     expect(a.goneUnitsNearFloor! - a.goneUnitsExpiringNearFloor!).toBe(40); // the old near floor count, kept
@@ -211,7 +220,7 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(r.newNearFloor).toBe(50);
   });
 
-  it('sanity bound: units judged sold never exceed previous plus new minus current units; a breach is logged and capped', () => {
+  it('stack growth check: units judged sold beyond previous plus new minus current units (only when a stack grows) are logged and capped', () => {
     // A stack that grew (impossible in game) makes the totals disagree with the per listing count.
     const diag = { ageConflicts: 0, breaches: [] as string[] };
     const a = aggregate([L(2, 7, 15, 100)], [L(1, 7, 10, 90), L(2, 7, 5, 100)], { commodity: true, diag })[0]!;
@@ -230,5 +239,33 @@ describe('listing age, buy order and sweeps (flip plan holes 11 and 12)', () => 
     expect(s2.get(2)).toBe(s.get(2));
     // After a gap the age of a new listing is unknown.
     expect(nextSeen(null, [L(3, 7, 1, 1, 'LONG')], t0, prev, false).get(3)!.postedAfter).toBeNull();
+  });
+});
+
+describe('speed on a huge market', () => {
+  it('a 200,000 listing snapshot of two equipment items with heavy churn counts in seconds (the plain scan took minutes)', () => {
+    const prev: Listing[] = [], cur: Listing[] = [];
+    let id = 1;
+    for (const item of [1, 2]) for (let i = 0; i < 100_000; i++) {
+      const l = { id: id++, itemId: item, quantity: 1, unitPrice: 1000 + (i % 500), timeLeft: 'LONG' as const };
+      prev.push(l);
+      if (i % 3) cur.push(l); // a third vanish
+    }
+    for (const item of [1, 2]) for (let i = 0; i < 30_000; i++) cur.push({ id: id++, itemId: item, quantity: 1, unitPrice: 900 + (i % 600), timeLeft: 'LONG' });
+    const t = Date.now();
+    const out = aggregate(cur, prev);
+    expect(Date.now() - t).toBeLessThan(5000);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.goneListings).toBe(33_334);
+  });
+
+  it('deep equipment undercut: the closest repost at or under the price is taken, each repost once, ties by newest', () => {
+    const others = [10, 11, 12, 13, 14].map(id => L(id, 4251, 1, 800, 'LONG'));
+    const prev = [L(1, 4251, 1, 1000, 'LONG'), L(2, 4251, 1, 1000, 'LONG'), ...others];
+    // One repost at 990 for two vanished copies at 1000: one is an undercut, the other a sale (newest id matched first).
+    const verdicts = new Map<number, string>();
+    aggregate([L(20, 4251, 1, 990, 'LONG'), ...others], prev, { diag: { ageConflicts: 0, breaches: [], verdicts } });
+    expect(verdicts.get(2)).toBe('undercut');
+    expect(verdicts.get(1)).toBe('sold');
   });
 });

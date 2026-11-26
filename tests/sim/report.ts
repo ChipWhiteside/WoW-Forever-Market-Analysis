@@ -1,24 +1,30 @@
 /**
- * Prints the simulator table: npx tsx tests/sim/report.ts [number of seeds, default 5]
+ * Prints the simulator table: npx tsx tests/sim/report.ts [number of seeds, default 12] [first seed, default 201]
  * Old rules: the counter as of commit 39a8dda (tests/sim/old-aggregate.ts). New rules: src/analysis/aggregate.ts.
+ * Net: the new count less the pulls of the front listing expected to read as sales (src/analysis/history.ts).
  */
-import { score, table, MEASURED_CANCELS } from './evaluate.ts';
+import { score, table, spread, type Score } from './evaluate.ts';
 
-const n = Number(process.argv[2] ?? 5);
-const seeds = Array.from({ length: n }, (_, i) => 101 + i);
+const n = Number(process.argv[2] ?? 12);
+const first = Number(process.argv[3] ?? 201);
+const seeds = Array.from({ length: n }, (_, i) => first + i);
+const few = seeds.slice(0, Math.min(5, n));
 const types = ['deep', 'thin', 'equipment'] as const;
-console.log(`Sale counter against simulated truth: ${n} seeds, 6 items each, 7 days, hourly snapshots.`);
-console.log('"true sold" counts units bought from listings that were up at the previous snapshot; "unseen" were posted and bought inside one hour, invisible by design.\n');
-console.log(table(types.map(t => score(t, seeds))));
-for (const h of [11, 15]) {
-  console.log(`\nLONG ends at ${h} hours instead of 12 (the measured span is 11 to 15, B33):`);
-  console.log(table(types.map(t => score(t, seeds, { longEndsAt: h * 60 }))));
+const show = (title: string, ss: Score[]) => { console.log(`\n${title}`); console.log(table(ss)); };
+console.log(`Sale counter against simulated truth: ${n} seeds from ${first}, 6 items each, 7 days, hourly snapshots.`);
+console.log('"true sold" counts units bought from listings that were up at the previous snapshot; "unseen" were posted and bought inside one hour, invisible by design.');
+console.log('Sellers pull every listing, the cheapest included, at the rates measured behind the cheapest on the real snapshots (B38).');
+const main = types.map(t => score(t, seeds));
+show('Headline, measured pull rates:', main);
+console.log('\nSpread over seeds (mean and standard deviation of each seed\'s figure):');
+for (const s of main) {
+  const f = (k: 'oldDayError' | 'newDayError' | 'netDayError' | 'newBias' | 'netBias') => { const x = spread(s, p => p[k]); return `${(x.mean * 100).toFixed(1)} ± ${(x.sd * 100).toFixed(1)}%`; };
+  console.log(`  ${s.type.padEnd(9)} daily error old ${f('oldDayError')}, new ${f('newDayError')}, net ${f('netDayError')}; bias new ${f('newBias')}, net ${f('netBias')}; age conflicts ${s.ageConflicts}`);
 }
-console.log('\nNo undercutting at all:');
-console.log(table(types.map(t => score(t, seeds, { undercutsPerHour: 0 }))));
+for (const h of [11, 15]) show(`LONG ends at ${h} hours instead of 12 (${few.length} seeds; the measured span is 11 to 15, B33):`, types.map(t => score(t, few, { longEndsAt: h * 60 })));
+show(`No undercutting at all (${few.length} seeds):`, types.map(t => score(t, few, { undercutsPerHour: 0 })));
 const twice = { deep: 2, thin: 0.16, equipment: 0.3 };
-console.log('\nTwice as much undercutting:');
-console.log(table(types.map(t => score(t, seeds, { undercutsPerHour: twice[t] }))));
-console.log(`\nSellers pull every listing, the cheapest included, as often as the real snapshots show for listings no buyer could reach`);
-console.log(`(${types.map(t => `${t} ${(MEASURED_CANCELS[t] * 100).toFixed(1)}%`).join(', ')} of listings an hour, B38). A cautious case: the cheapest listing is rarely pulled by a cancel scan.`);
-console.log(table(types.map(t => score(t, seeds, { cancelPerListingHour: MEASURED_CANCELS[t] }))));
+show(`Twice as much undercutting (${few.length} seeds):`, types.map(t => score(t, few, { undercutsPerHour: twice[t] })));
+show(`No clock or bucket edge jitter (${few.length} seeds):`, types.map(t => score(t, few, { exactClock: true })));
+const low = { deep: 0.003, thin: 0.004, equipment: 0.004 };
+show(`Sellers pull almost nothing (the first simulator's 0.3 to 0.4% an hour, ${few.length} seeds):`, types.map(t => score(t, few, { cancelPerListingHour: low[t] })));

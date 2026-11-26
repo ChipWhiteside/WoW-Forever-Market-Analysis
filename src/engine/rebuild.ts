@@ -67,13 +67,13 @@ export function rebuildHistory(db: DB, log: (m: string) => void = () => {}): { s
     if (!next || `${next.house_id}:${next.kind}` !== key) finishChain(s);
   }
   log(`history rebuilt with current sale rules: ${rebuilt} snapshots re-counted, ${skipped} without raw data`);
-  if (breaches.length) log(`suspected bug: units judged sold exceeded what left the house ${breaches.length} times (${breaches.slice(0, 3).join('; ')})`);
+  if (breaches.length) log(`suspected bug: a stack grew, so units judged sold exceeded what left the house, ${breaches.length} times (${breaches.slice(0, 3).join('; ')})`);
   if (diag.ageConflicts) log(`suspected bug: ${diag.ageConflicts} vanished listings had a time left that contradicts their age`);
   return { snapshots: snaps.length, rebuilt, skipped, breaches, ageConflicts: diag.ageConflicts };
 }
 
 /** Rebuild once per version of the sale rules. Bump the version whenever aggregate's sale logic changes. */
-export const SALE_RULES_VERSION = '2026-11-25';
+export const SALE_RULES_VERSION = '2026-11-26';
 export function rebuildIfRulesChanged(db: DB, log: (m: string) => void): void {
   // Once a migration adds item_stats.sold_events (P14), the history is re-counted once more to fill it.
   const version = SALE_RULES_VERSION + (hasSoldEvents(db) ? '+events' : '');

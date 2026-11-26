@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/store/db.ts';
 import { rawPath, writeRaw } from '../../src/engine/rawstore.ts';
 import { rebuildHistory, rebuildIfRulesChanged } from '../../src/engine/rebuild.ts';
-import { demandByItem, poissonLower } from '../../src/analysis/history.ts';
+import { demandByItem, poissonLower, PULL_RATE } from '../../src/analysis/history.ts';
 import { loadSeen } from '../../src/engine/collector.ts';
 import type { Listing } from '../../src/analysis/aggregate.ts';
 import { tempDir } from '../helpers.ts';
@@ -35,12 +35,12 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.get(3857)?.unitsPerDay).toBeCloseTo(80 / 6 * 24, 0); // 80 sold, projected from at least 6 hours
     expect(d.get(3857)?.soldPrice).toBe(810); // 40 at 800, 40 at 820
     expect(d.get(5956)?.unitsPerDay ?? 0).toBe(0); // the expiring hammer relists are not sales
-    // The cautious estimate is not projected from 2 hours of watching. With sold_events (migration 13) each bought
-    // listing is one sale: stacks 1, 2, 3 and 4 of 20 units.
+    // The cautious estimate is not projected from 2 hours of watching. With sold_events each run of stacks taken
+    // from the front in one hour is one sale (one buyer): stacks 1 and 2, then 3 and 4, so 2 sales of 40.
     const coal = d.get(3857)!;
     expect(coal.soldUnits).toBe(80);
-    expect(coal.saleEvents).toBe(4);
-    expect(coal.unitsPerEvent).toBe(20);
+    expect(coal.saleEvents).toBe(2);
+    expect(coal.unitsPerEvent).toBe(40);
     expect(coal.hoursWatched).toBe(2);
     expect(coal.lowPerDay).toBeNull();
     expect(coal.sweepHigh).toBe(820);
@@ -78,13 +78,17 @@ describe('rebuilding history from raw snapshots', () => {
     const row = db.prepare(`SELECT sold_units, sweep_high, gone_units_expiring FROM item_stats WHERE published_at = ?`).get(t0 + 2 * 3600_000);
     expect(row).toEqual({ sold_units: 10, sweep_high: 28, gone_units_expiring: 0 });
   });
-  it('the low estimate counts sale events, not units: three stacks of 221, 48 and 15 are 3 sales (Clam Linguine)', () => {
+  it('the low estimate counts sale events, not units: stacks of 15, 48 and 221 bought in three hours are 3 sales, one sweep is 1', () => {
     const dir = tempDir();
     const db = openDb(dir, ':memory:');
     const t0 = Date.parse('2026-11-19T08:25:00Z');
-    // Seven publishes, six differenced hours. Hour 1 the three cheapest stacks sell; nothing else sells.
+    // Seven publishes, six differenced hours. Hours 1 to 3 one stack sells each; nothing else sells. Item 12211: the
+    // same three stacks all go in hour 1, one run from the front of the buy order: one buyer, one sale.
     const deep = [10, 11, 12, 13, 14, 15].map(id => L(id, 12210, 20, 900, 'VERY_LONG'));
-    const hours = [[L(1, 12210, 221, 500, 'VERY_LONG'), L(2, 12210, 48, 510, 'VERY_LONG'), L(3, 12210, 15, 520, 'VERY_LONG'), ...deep], ...Array.from({ length: 6 }, () => deep)];
+    const deep2 = [20, 21, 22, 23, 24, 25].map(id => L(id, 12211, 20, 900, 'VERY_LONG'));
+    const s1 = L(1, 12210, 15, 500, 'VERY_LONG'), s2 = L(2, 12210, 48, 510, 'VERY_LONG'), s3 = L(3, 12210, 221, 520, 'VERY_LONG');
+    const w = [L(4, 12211, 15, 500, 'VERY_LONG'), L(5, 12211, 48, 510, 'VERY_LONG'), L(6, 12211, 221, 520, 'VERY_LONG')];
+    const hours = [[s1, s2, s3, ...deep, ...w, ...deep2], [s2, s3, ...deep, ...deep2], [s3, ...deep, ...deep2], ...Array.from({ length: 4 }, () => [...deep, ...deep2])];
     hours.forEach((ls, i) => {
       const at = t0 + i * 3600_000;
       const path = rawPath(dir, 111, 'commodities', at);
@@ -99,9 +103,45 @@ describe('rebuilding history from raw snapshots', () => {
     expect(d.unitsPerEvent).toBeCloseTo(284 / 3, 6);
     expect(d.hoursWatched).toBe(6);
     expect(d.unitsPerDay).toBeCloseTo(284 / 6 * 24, 6);
-    // 95% lower bound of 3 events is 0.818: 0.818 * 94.7 / 6 * 24 = 310 a day, against 1,136 in the middle.
-    expect(d.lowPerDay).toBeCloseTo(poissonLower(3) * (284 / 3) / 6 * 24, 6);
+    // 95% lower bound of 3 events is 0.818, less the pulls of the front stack expected to read as sales: 6 hours of a
+    // deep market (more than 5 listings) at 2.2% an hour is 0.132. (0.818 - 0.132) * 94.7 / 6 * 24 = 260 a day,
+    // against 1,136 in the middle.
+    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep, 6);
+    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 6 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
     expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
+    const sweep = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12211)!;
+    expect(sweep.soldUnits).toBe(284);
+    expect(sweep.saleEvents).toBe(1);
+    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.132), so the
+    // cautious estimate is 0. One sale could have been a seller pulling the front stack.
+    expect(sweep.lowPerDay).toBe(0);
+  });
+
+  it('equipment pulls in SQL match rowPulls, hours watched are per kind, and the low estimate waits for 6 publishes', () => {
+    const dir = tempDir();
+    const db = openDb(dir, ':memory:');
+    const t0 = Date.parse('2026-11-19T08:25:00Z');
+    // Equipment: copies at 1000, 1100, 1200 (in band) and 2000 (out); one copy at 1000 sells each hour. Publishes
+    // 59.9 minutes apart, so 6 differenced publishes sum to 5.99 hours.
+    const gap = 3_594_000;
+    const stock = (h: number) => [...Array.from({ length: 8 - h }, (_, i) => L(100 + h + i, 7001, 1, 1000)), L(1, 7001, 1, 1100), L(2, 7001, 1, 1200), L(3, 7001, 1, 2000)];
+    for (let h = 0; h <= 6; h++) {
+      const at = t0 + h * gap;
+      const path = rawPath(dir, 111, 'auctions', at);
+      writeRaw(path, stock(h));
+      db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path) VALUES (111, 'auctions', ?, ?, ?, 1, 1, 1, ?)`)
+        .run(new Date(at).toUTCString(), at, at, path);
+    }
+    rebuildHistory(db);
+    const d = demandByItem(db, 111, { now: t0 + 6 * gap + 1 })!.get(7001)!;
+    expect(d.saleEvents).toBe(6);
+    expect(d.hoursWatched).toBe(6); // 5.99 rounded
+    expect(d.lowPerDay).not.toBeNull(); // 6 publishes, though under 6 hours
+    // In band after each hour: the 1000s left plus 1100 and 1200 (1200 <= 1.25 * 1000): (7 + 6 + 5 + 4 + 3 + 2) + 12 copies.
+    expect(d.pullEvents).toBeCloseTo(PULL_RATE.equipment * (27 + 12), 6);
+    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6); // equipment: the middle is left as it is
+    // 5 publishes: no low estimate yet.
+    expect(demandByItem(db, 111, { now: t0 + 5 * gap + 1 }).get(7001)!.lowPerDay).toBeNull();
   });
 
   it('runs once per version of the sale rules', () => {

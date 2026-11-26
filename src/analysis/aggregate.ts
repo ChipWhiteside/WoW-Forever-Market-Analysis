@@ -14,7 +14,10 @@
  *    expire before the next publish, so if it vanished it was bought or cancelled, never expired.
  *  - Commodities fill cheapest first, and at one price newest first (B34). A stack that vanished while one ahead
  *    of it in that order survived was cancelled or expired. A stack ahead of a point buyers provably reached (a
- *    partly bought stack, or a vanished stack that could not have expired) was bought, even if it could have expired.
+ *    partly bought stack, or a vanished stack that could not have expired) was bought, unless it more likely ran out
+ *    of time before a buyer at a random moment of the hour got to it.
+ *  - One buyer is one sale event. On commodities a run of stacks taken from the front of the buy order in one hour
+ *    counts as one event (cautious: it may have been several buyers). Equipment: each copy bought is one event.
  *  - A seller who cancels and posts the same quantity a little cheaper is undercutting, not selling. Matched on thin
  *    markets and on deep equipment markets (stricter terms there). Not on deep commodity markets, where the match
  *    is pure coincidence with restocking (B35) and buy order already catches cancels behind a survivor.
@@ -53,16 +56,17 @@ export interface ItemStat {
   newUnits: number | null;
   /** units judged sold since the last publish, current rules, sweeps past the floor included */
   soldUnits: number | null;
-  /** sale events behind soldUnits: listings judged bought, whole (vanished) or in part (a stack that shrank). One
-   * buyer taking several stacks counts once per stack, so this is an upper count of buyers. */
+  /** sale events behind soldUnits. Commodities: each unbroken run of stacks judged bought, in buy order, is one event
+   * (one buyer sweeping 116 stacks is one sale, so this is a cautious count of buyers). Equipment: each copy bought. */
   soldEvents: number | null;
   /** highest unit price judged bought since the last publish, null when nothing was bought */
   sweepHigh: number | null;
   /** new units other sellers posted at or under 1.1 times the floor: the higher of the previous and the current floor, so
    * posts at a floor a sweep just raised count, and one cheap new post cannot shrink the line */
   newNearFloor: number | null;
-  /** units judged sold beyond the hourly bound (previous units + new units - current units). Always 0 unless a
-   * bug: the collector logs any breach as a suspected bug and soldUnits is capped at the bound. */
+  /** stack growth check: units judged sold beyond previous units + new units - current units. That total equals the
+   * units that left the house whenever no stack grows, so this is not an independent bound on sales; it is non zero
+   * only if a listing's quantity went up (never seen: 0 of 3,373 changed stacks grew, B34). Logged as a suspected bug. */
   boundBreach: number | null;
 }
 
@@ -131,7 +135,7 @@ export interface AggregateOpts {
   /** first sight of the previous snapshot's listings. Missing entries are listings of unknown age. */
   seen?: Map<number, Seen>;
   own?: OwnTrades;
-  /** filled in when given: bucket readings that disagree with a listing's age, and sanity bound breaches */
+  /** filled in when given: bucket readings that disagree with a listing's age, and stack growth check failures */
   diag?: Diagnostics;
 }
 
@@ -170,7 +174,9 @@ export function listingHours(s: Seen | undefined): number | null {
  * in the bucket mapping); the time left at `prevAt` alone is used then.
  */
 export function expiryChance(l: Listing, seen: Seen | undefined, prevAt: number, curAt: number): { chance: number; conflict: boolean; beforeBuy: number } {
-  const slack = 0.05 * H; // publish times wobble by seconds; bucket edges are not exact to the second
+  // Publish stamps can lag the data by minutes (Last-Modified is when the file was written, not when the house was
+  // read), and a bucket edge read near the boundary can be off by a few minutes. Nine minutes covers both.
+  const slack = 0.15 * H;
   const b = BUCKET_HOURS[l.timeLeft];
   const own: [number, number] = [prevAt + b[0] * H - slack, prevAt + b[1] * H + slack];
   let [lo, hi] = own;
@@ -223,6 +229,17 @@ export function nextSeen(seen: Map<number, Seen> | null, current: Listing[], cur
 type Verdict = 'sold' | 'expired' | 'cancelled' | 'undercut' | 'above' | 'own';
 
 interface Lost { l: Listing; lost: number; vanished: boolean; verdict: Verdict; expiring: boolean; beforeBuy: number }
+
+/** Fresh posts of one quantity and length, cheapest first. `next[i]` points at the nearest unused post at or before i. */
+interface Pool { ls: Listing[]; next: number[] }
+
+/** Index of the dearest unused post priced at or under `price`, or -1. Union find with path halving over used posts. */
+function takeAtOrBelow(pool: Pool, price: number): number {
+  let lo = 0, hi = pool.ls.length - 1, i = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (pool.ls[mid]!.unitPrice! <= price) { i = mid; lo = mid + 1; } else hi = mid - 1; }
+  while (i >= 0 && pool.next[i] !== i) { const j = pool.next[i]!; pool.next[i] = j < 0 ? j : pool.next[j]!; i = j; }
+  return i;
+}
 
 /**
  * `commodity`: stackables are bought through a window that always fills from the cheapest listing first.
@@ -317,28 +334,55 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
     const thin = prevL.length <= THIN_LISTINGS;
     const matchable = thin || !commodity;
     const candidates = lostList.filter(e => matchable && e.vanished && e.verdict === 'sold' && (!commodity || !reached || buysFirst(reached, e.l)))
-      .sort((a, b) => b.l.unitPrice! - a.l.unitPrice!);
-    const used = new Set<number>();
-    for (const e of candidates) {
-      const old = e.l.unitPrice!;
-      const dOld = listingHours(opts.seen?.get(e.l.id));
-      let best: Listing | null = null;
-      for (const n of fresh) {
-        if (used.has(n.id) || n.quantity !== e.l.quantity) continue;
-        const p = n.unitPrice!;
-        if (thin) {
-          if (Math.abs(p - old) > old * 0.25) continue;
-        } else {
-          // Deep equipment market: an undercut (same or lower, at most 20 percent lower), the same listing length when
-          // known, and what provoked it: a cheaper copy that was already up last hour.
-          if (p > old || p < old * 0.8) continue;
-          const dNew = FRESH_HOURS[n.timeLeft] ?? null;
-          if (dOld != null && dNew != null && dOld !== dNew) continue;
-          if (!curL.some(o => o.id !== n.id && o.unitPrice != null && o.unitPrice < old && prevById!.has(o.id))) continue;
+      .sort((a, b) => b.l.unitPrice! - a.l.unitPrice! || b.l.id - a.l.id);
+    if (candidates.length && fresh.length) {
+      if (thin) {
+        // Thin market: a handful of listings, so a plain scan. Same quantity, within 25 percent either way.
+        const used = new Set<number>();
+        for (const e of candidates) {
+          const old = e.l.unitPrice!;
+          let best: Listing | null = null;
+          for (const n of fresh) {
+            if (used.has(n.id) || n.quantity !== e.l.quantity || Math.abs(n.unitPrice! - old) > old * 0.25) continue;
+            if (!best || Math.abs(n.unitPrice! - old) < Math.abs(best.unitPrice! - old) || (n.unitPrice === best.unitPrice && n.id > best.id)) best = n;
+          }
+          if (best) { used.add(best.id); e.verdict = 'undercut'; }
         }
-        if (!best || Math.abs(p - old) < Math.abs(best.unitPrice! - old)) best = n;
+      } else {
+        // Deep equipment market: an undercut (same or lower, at most 20 percent lower), the same listing length when
+        // known, and what provoked it: a cheaper copy that was already up last hour. Fresh posts are bucketed by
+        // quantity and length and sorted by price, so each candidate finds the closest post at or under its price
+        // in log time (a plain scan took minutes on a 200,000 listing snapshot).
+        let cheapestSurvivor = Infinity;
+        for (const o of curL) if (o.unitPrice != null && prevById!.has(o.id) && o.unitPrice < cheapestSurvivor) cheapestSurvivor = o.unitPrice;
+        const pools = new Map<string, Pool>();
+        for (const n of fresh) {
+          const key = `${n.quantity}:${FRESH_HOURS[n.timeLeft] ?? '?'}`;
+          let pool = pools.get(key);
+          if (!pool) pools.set(key, (pool = { ls: [], next: [] }));
+          pool.ls.push(n);
+        }
+        for (const pool of pools.values()) {
+          pool.ls.sort((a, b) => a.unitPrice! - b.unitPrice! || a.id - b.id);
+          pool.next = pool.ls.map((_, i) => i);
+        }
+        for (const e of candidates) {
+          const old = e.l.unitPrice!;
+          if (!(cheapestSurvivor < old)) continue;
+          const dOld = listingHours(opts.seen?.get(e.l.id));
+          let best: { pool: Pool; i: number } | null = null;
+          for (const [key, pool] of pools) {
+            const [q, d] = key.split(':');
+            if (Number(q) !== e.l.quantity) continue;
+            if (dOld != null && d !== '?' && Number(d) !== dOld) continue;
+            const i = takeAtOrBelow(pool, old);
+            if (i < 0 || pool.ls[i]!.unitPrice! < old * 0.8) continue;
+            const p = pool.ls[i]!.unitPrice!;
+            if (!best || p > best.pool.ls[best.i]!.unitPrice! || (p === best.pool.ls[best.i]!.unitPrice! && pool.ls[i]!.id > best.pool.ls[best.i]!.id)) best = { pool, i };
+          }
+          if (best) { best.pool.next[best.i] = best.i - 1; e.verdict = 'undercut'; }
+        }
       }
-      if (best) { used.add(best.id); e.verdict = 'undercut'; }
     }
 
     if (commodity) {
@@ -356,6 +400,18 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
     if (opts.diag?.verdicts) for (const e of lostList) opts.diag.verdicts.set(e.l.id, e.verdict);
     let goneListings = 0, goneUnits = 0, expiring = 0, nearFloor = 0, notSoldNear = 0, soldUnits = 0, soldValue = 0, soldEvents = 0;
     let sweepHigh: number | null = null;
+    if (commodity) {
+      // One event per unbroken run of bought stacks in buy order. Only a stack still up whole ends a run: a stack that
+      // left unbought (ran out, pulled) was simply gone when the buyer came, so one buyer can have taken both sides.
+      const verdict = new Map(lostList.map(e => [e.l.id, e.verdict]));
+      const order = prevL.filter(l => l.unitPrice != null).sort((a, b) => buysFirst(a, b) ? -1 : buysFirst(b, a) ? 1 : 0);
+      let inRun = false;
+      for (const l of order) {
+        const v = verdict.get(l.id);
+        if (v === 'sold') { if (!inRun) soldEvents++; inRun = true; }
+        else if (v == null) inRun = false;
+      }
+    }
     for (const e of lostList) {
       if (e.vanished) goneListings++;
       goneUnits += e.lost;
@@ -365,7 +421,7 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
       if (near) { nearFloor += e.lost; if (!sold) notSoldNear += e.lost; }
       if (sold) {
         soldUnits += e.lost;
-        soldEvents++;
+        if (!commodity) soldEvents++;
         soldValue += e.lost * e.l.unitPrice!;
         if (sweepHigh == null || e.l.unitPrice! > sweepHigh) sweepHigh = e.l.unitPrice!;
       }
@@ -379,13 +435,14 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts: 
       newUnits += l.quantity;
       if (!own?.has(l.id) && ref != null && l.unitPrice != null && l.unitPrice <= ref * 1.1) newNearFloor += l.quantity;
     }
-    // Hourly sanity bound, computed from totals only: nothing can be sold that did not leave the house.
+    // Stack growth check: from totals, units that left the house. This equals the units lost per listing unless a
+    // stack grew, so a breach means a listing's quantity went up (a suspected bug or a game change), nothing more.
     const prevUnits = prevL.reduce((s, l) => s + l.quantity, 0);
     const bound = Math.max(0, prevUnits + newUnits - curUnits);
     let boundBreach = 0;
     if (soldUnits > bound) {
       boundBreach = soldUnits - bound;
-      opts.diag?.breaches.push(`item ${itemId}: ${soldUnits} judged sold, only ${bound} left the house`);
+      opts.diag?.breaches.push(`item ${itemId}: ${soldUnits} judged sold, only ${bound} left the house (a stack grew)`);
       soldValue = Math.round(soldValue * (bound / soldUnits));
       soldUnits = bound;
       soldEvents = Math.min(soldEvents, bound);
