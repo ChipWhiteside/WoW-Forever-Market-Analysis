@@ -96,6 +96,31 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
     }
   }
 
+  // A product that sells better on the auction house (round 2 finding M4): the vendor card names the auction price, and
+  // a cooldown recipe's vendor path is held back when its auction path is expected to make more (the cooldown is spent
+  // either way, so only the better use of it is shown).
+  const auctionBest = new Map<string, Flip>();
+  for (const f of flips) if (f.sellHouseId != null) {
+    const k = `${f.recipeId ?? ''}:${f.itemId}`;
+    if (!auctionBest.has(k) || auctionBest.get(k)!.best.expectedProfit < f.best.expectedProfit) auctionBest.set(k, f);
+  }
+  for (let i = flips.length - 1; i >= 0; i--) {
+    const f = flips[i]!;
+    if (f.sellHouseId != null) continue;
+    for (const h of inputs.houses) {
+      const q = book.quote(h, f.itemId);
+      if (!q || q.gates.length || q.hoursWatched < LEARNING_HOURS || !(q.netEach > f.sellQuote.netEach)) continue;
+      f.notes.push(`sells for ${money(q.claimPrice)} on the ${h.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house`);
+    }
+    const better = auctionBest.get(`${f.recipeId ?? ''}:${f.itemId}`);
+    if (f.recipeId != null && recipes.get(f.recipeId)?.cooldownMs && better && better.best.expectedProfit > f.best.expectedProfit) {
+      heldBack.push({ key: f.key, family: f.family, itemId: f.itemId, name: f.name, perItem: f.perItem, sellHouseId: null, recipeId: f.recipeId,
+        reason: `its cooldown is worth more on the auction house: about ${money(better.best.expectedProfit)} there`, code: 'auction pays more' });
+      evals.delete(f.key);
+      flips.splice(i, 1);
+    }
+  }
+
   // Rank: expected profit at the best quantity, after the time rate (0 by default, so crafting is never buried by its minutes).
   flips.sort((a, b) => b.score! - a.score! || a.key.localeCompare(b.key));
   flips.forEach((f, i) => { f.rank = i + 1; });
