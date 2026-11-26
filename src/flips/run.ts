@@ -1,4 +1,4 @@
-import { COOLDOWN_AUCTION, CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
+import { COOLDOWN_AUCTION, CRAFT_SESSION_MINUTES_DEFAULT, FLIP_GATES, KNOWN_TOOLS, LEARNING_HOURS, MAX_UNITS, MIN_SALE_EVENTS, OPENING, REPEATABLE, WOBBLE, vendorMargin } from '../rules/flips.ts';
 import type { TraceEntry } from './market.ts';
 import { money } from '../format/money.ts';
 import { AUCTION_HOUSES, type Place } from '../datasets/places.ts';
@@ -75,6 +75,17 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
         hold('learning: sale counting has no cautious sales estimate for it yet', 'learning');
         continue;
       }
+      // Competition not measured: never ranked as if nobody posts overnight (whole system review round 2, defect B).
+      if (!toVendor && c.quote.newDerived) {
+        hold(COMPETITION_LEARNING, 'learning');
+        continue;
+      }
+      // Thin evidence: at least 3 sale events in the window (round 2: 2 listings that vanished together are not a market).
+      // Sale counting always reports its event count; without one the low estimate is not derived and the gate below holds it.
+      if (!toVendor && c.quote.saleEvents != null && c.quote.saleEvents < MIN_SALE_EVENTS) {
+        hold(`learning: ${plural(Math.floor(c.quote.saleEvents ?? 0), 'sale')} seen, at least ${MIN_SALE_EVENTS} needed`, 'few sales seen');
+        continue;
+      }
       if (!toVendor && (c.quote.salesPerDayLow ?? 0) < FLIP_GATES.minSalesPerDay) {
         hold(`sells under ${FLIP_GATES.minSalesPerDay} a day (low estimate ${round1(c.quote.salesPerDayLow ?? 0)} a day)`, 'sells under 1 a day');
         continue;
@@ -148,8 +159,12 @@ export function runFlips(inputs: FlipInputs): FlipRunResult {
     }
   }
 
-  // Rank: expected profit at the best quantity, after the time rate (0 by default, so crafting is never buried by its minutes).
-  flips.sort((a, b) => b.score! - a.score! || a.key.localeCompare(b.key));
+  // Rank: flips whose learning is known first, then expected profit at the best quantity, after the time rate (0 by
+  // default, so crafting is never buried by its minutes). Only a recipe nobody knows how to learn ranks lower; anything
+  // Chip can train never lowers a flip (whole system review round 2, defect C).
+  const unknown = (f: Flip) => (f.setup?.unknown ? 1 : 0);
+  for (const f of flips) if (unknown(f)) f.notes.push(RANKED_LOWER);
+  flips.sort((a, b) => unknown(a) - unknown(b) || b.score! - a.score! || a.key.localeCompare(b.key));
   flips.forEach((f, i) => { f.rank = i + 1; });
   sharedPass(flips, evals, market, inputs, recipes);
 
@@ -323,7 +338,11 @@ export const UNKNOWN_LEARN = 'how to learn it is not known yet';
 /** The setup line when only Horde trainers teach a recipe on record (learn_source trainer_horde_only). */
 export const HORDE_ONLY = 'Horde trainers only';
 /** Its risk driver (system review round 1, J1): said plainly, the level stays as it is. */
-export const HORDE_ONLY_DRIVER = 'no Alliance trainer on record; trainer lists usually match across factions (B21), check in game';
+export const HORDE_ONLY_DRIVER = 'no Alliance trainer on record; trainer lists usually match across factions, check in game';
+/** The card note on a flip ranked after every flip whose learning is known (whole system review round 2, defect C). */
+export const RANKED_LOWER = 'ranked lower: how to learn it is not known yet';
+/** Held back while new posts by other sellers are not measured over 6 hours (whole system review round 2, defect B). */
+export const COMPETITION_LEARNING = 'learning: competition not measured yet';
 /** A cooldown vendor path held back while the auction path learns (round 6 finding 3). */
 export const COOLDOWN_LEARNING = 'the auction house likely pays more; waiting for sales data';
 /** Why, when the only lead is a teaching item nothing sells or drops (round 6 finding 2). */

@@ -5,7 +5,7 @@ import type { Place } from '../datasets/places.ts';
 import { demandByItem, typicalFloors, type Typical } from '../analysis/history.ts';
 import { demandDrivers } from '../engine/context.ts';
 import { UNDERPRICED } from '../rules/thresholds.ts';
-import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, MY_PROFESSIONS_SETTING, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
+import { CRAFT_SESSION_MINUTES_DEFAULT, CRAFT_SESSION_SETTING, FLOOR_DRIFT, FRESH_HOURS, GOLD_SETTING, HORIZON_HOURS, MY_PROFESSIONS_SETTING, OPENING, RISK, TIME_RATE_DEFAULT, TIME_RATE_SETTING, TRANSMUTE_FALLBACK, VENDOR_MAX_STANDING } from '../rules/flips.ts';
 import { chipHousesWithNotes } from './houses.ts';
 import { newPostsFromRaw, type NewPosts } from './newPosts.ts';
 import type { HouseRef } from './types.ts';
@@ -36,6 +36,14 @@ export type FlipDemand = Demand & {
   hourlyMean?: number | null;
   hourlySd?: number | null;
   hourlyHours?: number | null;
+  /**
+   * Floor drift over the 72 hour window (FLOOR_DRIFT): the least squares slope of the hourly floor in copper an hour,
+   * the fitted fall across the window as a share of the fitted start (0.12 fell 12 percent; negative rose), and the
+   * hours the readings span. Null under 6 readings.
+   */
+  floorSlope?: number | null;
+  floorFall?: number | null;
+  floorSpanHours?: number | null;
 };
 
 export interface FlipItem {
@@ -305,6 +313,22 @@ export function enrichDemand(db: DB, houseId: number, now: number, demand: Map<n
     if (d.hoursWatched == null) d.hoursWatched = hours;
     if (d.newPerDay == null && hours > 0) d.newPerDay = (r.fresh / hours) * 24;
     if (d.pulledPerDay == null && hours > 0) d.pulledPerDay = (r.pulled / hours) * 24;
+  }
+  // Floor drift: least squares over the hourly floors of the window, time in hours before now (FLOOR_DRIFT).
+  const driftSince = now - FLOOR_DRIFT.windowHours * 3600_000;
+  for (const r of db.prepare(`SELECT item_id, COUNT(*) n, SUM(t) st, SUM(f) sf, SUM(t * t) stt, SUM(t * f) stf, MIN(t) t0, MAX(t) t1 FROM
+      (SELECT item_id, (published_at - ?) / 3600000.0 t, floor * 1.0 f FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND floor IS NOT NULL)
+      GROUP BY item_id HAVING COUNT(*) >= ?`).all(now, houseId, driftSince, now, FLOOR_DRIFT.minReadings) as Array<{ item_id: number; n: number; st: number; sf: number; stt: number; stf: number; t0: number; t1: number }>) {
+    const d = demand.get(r.item_id);
+    if (!d || d.floorSlope !== undefined) continue;
+    const den = r.n * r.stt - r.st * r.st;
+    if (!(den > 0)) continue;
+    const slope = (r.n * r.stf - r.st * r.sf) / den;
+    const start = (r.sf - slope * r.st) / r.n + slope * r.t0;
+    const span = r.t1 - r.t0;
+    d.floorSlope = slope;
+    d.floorFall = start > 0 ? (-slope * span) / start : null;
+    d.floorSpanHours = span;
   }
   // The last hour: the newest differenced publish of each kind, against the one before it.
   const last = db.prepare(`SELECT s.id, s.kind, s.published_at t FROM snapshots s WHERE s.house_id = ? AND s.published_at <= ? AND s.diff_hours IS NOT NULL

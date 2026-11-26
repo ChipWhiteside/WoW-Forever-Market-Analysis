@@ -36,4 +36,6 @@ Run status (data time, items and recipes checked, complete or incomplete), filte
 
 Buy lists only what is bought (auction or vendor); craft steps go on Make ("Make first ..."); the product is never its own input (clarified November 26, nothing removed).
 
+Make first steps sit before the Make line. When a card has more than 3 Buy lines or more than 3 Make first lines, the first 3 show and a "show N more" toggle opens the rest; nothing is removed (system review round 2, November 26). On phones the card lines use the full card width.
+
 Flip card, in this order: rank, Crafting (green) or Flipping (blue) badge, item, family and opening line (new or rising, hours open of the last 72, repeatable or one opening), expected profit overnight (big) with units and profit per item, Buy, Make (crafts only), Sell, Price, Volume, Risk, Setup (crafts that need training), Shares, strength chip, gold per hour, amounts table (small, best, most with units, cost, sells overnight, expected profit, per hour, risk, bad case).

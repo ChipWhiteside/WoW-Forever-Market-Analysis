@@ -2,7 +2,7 @@ import type { Listing } from '../analysis/aggregate.ts';
 import { judgeSell, type DetectorContext, type HouseCtx, type ItemCtx, type VendorOffer } from '../detectors/types.ts';
 import { netPerUnit } from '../rules/fees.ts';
 import { FLIP_GATES, LOW_ESTIMATE, NEW_POSTS, SELL_CHANCE, UNDERCUT } from '../rules/flips.ts';
-import { newPerDayAt } from './newPosts.ts';
+import { newPerDayAt, undercutPerDay } from './newPosts.ts';
 import { poissonLowerBound, poissonTail, poissonUpper } from './poisson.ts';
 import { money } from '../format/money.ts';
 import type { FlipDemand, FlipInputs } from './inputs.ts';
@@ -164,7 +164,11 @@ export class SellBook {
   private build(h: HouseRef, itemId: number, ls: Listing[]): SellQuote {
     const judged = judgeSell(this.ctx, this.houseCtx(h), itemId, ls);
     const d = this.demand(h.id, itemId);
-    const claim = judged.price;
+    // A falling floor (FLOOR_DRIFT) lowers the claim by the drift over the horizon: by morning the floor Chip competes
+    // with is that much lower (whole system review round 2, defect A: a slow undercutter, Hot Spices).
+    const horizonH = this.inputs.settings.horizonHours;
+    const driftDrop = d?.floorSlope != null && d.floorSlope < 0 ? Math.min(judged.price - 1, Math.round(-d.floorSlope * horizonH)) : 0;
+    const claim = judged.price - Math.max(0, driftDrop);
     const undercut = typicalUndercut(ls, claim);
     const post = Math.max(1, claim - undercut);
     let ahead = 0;
@@ -172,8 +176,15 @@ export class SellBook {
     // New posts at or under Chip's post price from the raw publishes when they are on disk (round 2 H2), else sale
     // counting's near the floor count.
     const np = this.inputs.newPosts?.get(h.id);
-    const atPost = np ? newPerDayAt(np, itemId, post) : null;
-    const low = lowPerDay(d), fresh = np ? { value: atPost ?? 0, measured: atPost != null } : newPerDay(d);
+    // Measured at the post price before any drift: lowering the price for a falling floor must not hide the very
+    // undercutters that make it fall (they keep posting under whatever the floor is).
+    const postBefore = driftDrop > 0 ? Math.max(post, judged.price - typicalUndercut(ls, judged.price)) : post;
+    const atPostOnly = np ? newPerDayAt(np, itemId, postBefore) : null;
+    // While the floor falls, every post under the floor of its hour ends up under Chip: the larger count is used.
+    const atPost = atPostOnly != null && driftDrop > 0 ? Math.max(atPostOnly, undercutPerDay(np, itemId) ?? 0) : atPostOnly;
+    // Raw publishes under 6 hours (a pair whose raw file is gone): sale counting's near the floor count over its own
+    // 6 hours or more is still a measurement; only when neither is there is competition unmeasured (and held back).
+    const low = lowPerDay(d), fresh = atPost != null ? { value: atPost, measured: true } : newPerDay(d);
     const horizon = this.inputs.settings.horizonHours;
     const gates: string[] = [];
     // The same "sold near" rule judgeSell uses: at least one sale seen and a price it happened at.
@@ -187,7 +198,7 @@ export class SellBook {
     // A price that just jumped: the listings sit above the proven price, and buyers paid up to the new level in the
     // last hour. Ranked on the proven price; the higher one is only noted.
     const sweep = d?.sweepHigh ?? null;
-    const rising = sweep != null && floor > claim && sweep >= floor && !gates.length;
+    const rising = sweep != null && floor > judged.price && sweep >= floor && !gates.length;
     const basis: SellQuote['basis'] = judged.picture.used;
     return {
       houseId: h.id, claimPrice: claim, netEach: netPerUnit(h.faction, post), undercutPrice: post, listed: floor, basis, ahead,
@@ -200,8 +211,10 @@ export class SellBook {
       lowCoverHours: this.inputs.low3dHours?.get(h.id)?.get(itemId) ?? hoursWatched(d),
       floorChange1h: d?.floorChange1h ?? null, newLastHour: d?.newLastHour ?? null,
       lowPending: low.pending ?? false,
+      floorSlope: d?.floorSlope ?? null, floorFall: d?.floorFall ?? null, floorSpanHours: d?.floorSpanHours ?? null, driftDrop: Math.max(0, driftDrop),
       hourlyMean: d?.hourlyMean ?? null, hourlySd: d?.hourlySd ?? null, hourlyHours: d?.hourlyHours ?? (d?.hourlyMean != null ? hoursWatched(d) : null),
-      note: rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
+      note: [rising ? `buyers paid up to ${money(Math.min(sweep!, floor))} in the last hour; ranked at the proven ${money(claim)}` : judged.picture.note || null,
+        driftDrop > 0 ? `the floor has been falling about ${money(Math.round(-d!.floorSlope!))} an hour, so the price used is ${money(driftDrop)} lower for the night` : null].filter(Boolean).join('; ') || null,
     };
   }
 

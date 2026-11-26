@@ -31,8 +31,11 @@ describe('H2: new posts at or under Chip\'s post price, after 6 hours', () => {
       const ls = [keep, ...(h > 0 ? [{ id: id++, itemId: ITEM, quantity: 5, unitPrice: 90, timeLeft: 'LONG' as const }, { id: id++, itemId: ITEM, quantity: 7, unitPrice: 120, timeLeft: 'LONG' as const }] : [])];
       for (const kind of ['auctions', 'commodities']) {
         writeRaw(rawPath(dir, 111, kind, t), kind === 'commodities' ? ls : []);
-        d.prepare('INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, diff_hours) VALUES (111, ?, ?, ?, ?, 0, 0, 0, ?)')
-          .run(kind, `${kind}${t}`, t, t, h > 0 ? 1 : null);
+        const sid = d.prepare('INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, diff_hours) VALUES (111, ?, ?, ?, ?, 0, 0, 0, ?)')
+          .run(kind, `${kind}${t}`, t, t, h > 0 ? 1 : null).lastInsertRowid;
+        // sale counting's publishes are the differenced ones with rows counted at a sold price: new posts read the same ones
+        if (h > 0) d.prepare(`INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder, gone_units, sold_value)
+          VALUES (?, 111, 1, ?, NULL, 0, 0, 0, 0, '[]', 0, 0)`).run(sid, t);
       }
     };
     for (let h = 0; h <= 8; h++) publish(h);
@@ -44,6 +47,9 @@ describe('H2: new posts at or under Chip\'s post price, after 6 hours', () => {
     expect(newPerDayAt(np, ITEM, 95)).toBe(120);
     expect(newPerDayAt(np, ITEM, 120)).toBe((8 * 12 / 8) * 24);
     expect(newPerDayAt(np, ITEM, 85)).toBe(0);
+    // posts up to 1.05 times the post price compete (a slow undercutter posts just above a price that has since fallen)
+    expect(newPerDayAt(np, ITEM, 115)).toBe((8 * 12 / 8) * 24);
+    expect(newPerDayAt(np, ITEM, 114)).toBe(120);
     // the flip inputs carry it, and the sell book uses it at the item's own post price
     const inputs = buildFlipInputs(d, new Map([[111, [L(ITEM, 100, 10), L(ITEM, 100, 10)]]]), 8 * HOUR);
     expect(inputs.newPosts!.get(111)!.hours).toBe(8);
@@ -113,7 +119,9 @@ describe('H3: every profession a craft tree uses', () => {
 
 describe('H4: a recipe nobody knows how to learn yet', () => {
   it('the card says so and it is a risk driver', () => {
-    const f = run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!;
+    const u = ceruleanAtBens();
+    u.recipes = u.recipes!.map(r => ({ ...r, learnSource: null }));
+    const f = run(u).flips.find(x => x.key === DYE_KEY)!;
     expect(f.setup).toMatchObject({ where: UNKNOWN_LEARN, unknown: true });
     expect(f.notes).toContain(UNKNOWN_LEARN);
     expect(f.best.risk.drivers).toContain(UNKNOWN_LEARN);

@@ -1,6 +1,6 @@
 import { money } from '../format/money.ts';
 import { deposit, netPerUnit } from '../rules/fees.ts';
-import { vendorMargin, CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
+import { vendorMargin, CARRYOVER, FLOOR_DRIFT, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
 import type { Market, TraceEntry } from './market.ts';
 import { overnightQueue, type Queue } from './sellBook.ts';
@@ -373,17 +373,20 @@ export function settle(n: number, tonight: number, tomorrowSold: (left: number) 
 }
 
 /**
- * A price war, named as a risk, never read as demand: the floor fell more than 10 percent since the last publish, or
+ * A price war, named as a risk, never read as demand: the floor fell more than 10 percent since the last publish, the
+ * fitted floor fell 10 percent or more across the window (FLOOR_DRIFT: a slow grind never trips the hourly check), or
  * more new units are posted an hour than sell an hour (middle estimate).
  */
 export function priceWar(q: SellQuote): string | null {
   if (q.houseId == null) return null;
   const fell = q.floorChange1h != null && q.floorChange1h <= -RISK.priceWarDrop;
+  const slid = q.floorFall != null && q.floorFall >= FLOOR_DRIFT.warFall;
   const soldPerHour = (q.salesPerDayMid ?? 0) / 24;
   const flood = q.newPerHour > soldPerHour && q.newPerHour > 0;
-  if (!fell && !flood) return null;
+  if (!fell && !slid && !flood) return null;
   const perHour = Math.round(fell && q.newLastHour != null ? q.newLastHour : q.newPerHour);
   if (fell) return `price war: floor fell ${Math.round(-q.floorChange1h! * 100)}% this hour, ${perHour} new listings an hour`;
+  if (slid) return `price war: floor fell ${Math.round(q.floorFall! * 100)}% over the last ${Math.round(q.floorSpanHours ?? 0)} hours, ${perHour} new listings an hour`;
   return `price war: ${perHour} new listings an hour, more than the ${Math.round(soldPerHour * 10) / 10} that sell`;
 }
 

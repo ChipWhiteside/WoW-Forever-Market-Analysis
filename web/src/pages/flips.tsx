@@ -71,7 +71,9 @@ export function FlipsPage() {
       </div>
 
       {isLoading ? <p className="text-muted">Loading.</p> : rows.length === 0 ? (
-        <Empty title="No flips right now">{run ? 'Nothing cleared the checks this hour. The held back list below says why.' : 'Waiting for the first run.'}</Empty>
+        <Empty title="No flips right now">{!run ? 'Waiting for the first run.' : run.complete ? 'Nothing cleared the checks this hour. The held back list below says why.'
+          : /\bold\b/.test(run.report.incompleteReason ?? '') ? `The data is old (${run.report.incompleteReason}). No list is built from old prices; it comes back with the next fresh publish.`
+          : `This run is incomplete (${run.report.incompleteReason ?? 'see Health'}). No list is built from partial data.`}</Empty>
       ) : (
         <div className="space-y-3">{rows.map((f, i) => <FlipCard key={f.key} f={f} place={sort === 'rank' && kind === 'all' && risk === 'all' ? (f.rank ?? i + 1) : i + 1} onOpenItem={openItem} />)}</div>
       )}
@@ -101,6 +103,8 @@ function Toggle({ on, onClick, children, cls = '' }: { on: boolean; onClick: () 
 }
 
 const units = (n: number) => `${n.toLocaleString()} unit${n === 1 ? '' : 's'}`;
+/** Buy and Make first lines shown before the "show N more" toggle (system review round 2: one card was 3,700 px tall on a phone). */
+const LINES_SHOWN = 3;
 const minutes = (m: number) => m < 1 ? 'under a minute' : m < 90 ? `${Math.round(m)} min` : `${(m / 60).toFixed(1)} hours`;
 
 export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOpenItem: (id: number) => void }) {
@@ -108,20 +112,22 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
   const craft = f.kind === 'craft';
   const q = d.sellQuote;
   const [open, setOpen] = useState(false);
+  const [allBuy, setAllBuy] = useState(false);
+  const [allSteps, setAllSteps] = useState(false);
   // Buy lines show only what is bought; craft steps go under Make, and the product is never its own input.
   const bought = d.buy.filter(l => l.kind !== 'craft');
   const steps = d.buy.filter(l => l.kind === 'craft' && l.itemId !== d.itemId);
   return (
-    <Card className={`border-l-4 p-4 ${craft ? 'border-l-craft' : 'border-l-flip'} ${f.state === 'gone' ? 'opacity-50' : ''}`}>
-      <div className="flex items-start gap-3">
-        <span className="num w-6 shrink-0 pt-1 text-right text-sm font-bold text-muted">{place}</span>
+    <Card className={`border-l-4 px-3 py-3 sm:p-4 ${craft ? 'border-l-craft' : 'border-l-flip'} ${f.state === 'gone' ? 'opacity-50' : ''}`}>
+      <div className="flex items-start gap-2 sm:gap-3">
+        <span className="num w-5 shrink-0 pt-1 text-right text-sm font-bold text-muted sm:w-6">{place}</span>
         <button onClick={() => onOpenItem(f.item_id)}><ItemIcon url={f.icon_url} quality={f.quality} size={44} /></button>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+            <div className="min-w-[9rem] flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white ${craft ? 'bg-craft' : 'bg-flip'}`}>{craft ? 'Crafting' : 'Flipping'}</span>
-                <button onClick={() => onOpenItem(f.item_id)} className="min-w-0 break-words text-left text-base hover:underline"><ItemName name={d.name} id={f.item_id} quality={f.quality} /></button>
+                <button onClick={() => onOpenItem(f.item_id)} className="break-words text-left text-base hover:underline"><ItemName name={d.name} id={f.item_id} quality={f.quality} /></button>
               </div>
               <p className="mt-0.5 text-xs text-muted">
                 {FAMILY_LABEL[d.family] ?? d.family}
@@ -130,18 +136,21 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
                 {d.repeatable ? ', repeatable' : ', one opening'}
               </p>
             </div>
-            <div className="shrink-0 text-right">
+            <div className="ml-auto shrink-0 text-right">
               <div className={d.best.expectedProfit >= 0 ? 'text-good' : 'text-bad'}>{d.best.expectedProfit >= 0 && <span className="text-lg font-bold">+</span>}<Money c={d.best.expectedProfit} size="xl" /></div>
               <p className="text-[11px] text-muted">expected overnight, {units(d.best.units)}</p>
               <p className="text-xs"><Money c={d.perItem} size="sm" /> <span className="text-muted">per item</span></p>
             </div>
           </div>
 
-          <ul className="mt-3 space-y-1.5 text-sm">
-            {bought.map((l, i) => <LegLine key={i} label={i ? '' : 'Buy'} leg={l} />)}
+          {/* On phones the lines below use the full card width, under the rank and icon too (system review round 2). */}
+          <ul className="-ml-20 mt-3 space-y-1.5 break-words text-sm sm:ml-0">
+            {(allBuy ? bought : bought.slice(0, LINES_SHOWN)).map((l, i) => <LegLine key={i} label={i ? '' : 'Buy'} leg={l} />)}
+            {bought.length > LINES_SHOWN && <MoreLine all={allBuy} hidden={bought.length - LINES_SHOWN} onClick={() => setAllBuy(!allBuy)} />}
             {bought.length === 0 && <li className="flex gap-2"><Label>Buy</Label><span className="text-muted">Nothing to buy: every input is made.</span></li>}
-            {craft && <li className="flex gap-2"><Label>Make</Label><span>{d.recipeName ?? 'craft'}{d.profession ? ` (${d.profession})` : ''}: <b>{d.best.units}</b> made, about {minutes(d.best.minutes)} of work.</span></li>}
-            {steps.map((l, i) => <LegLine key={`m${i}`} label="" leg={l} first="Make first" />)}
+            {(allSteps ? steps : steps.slice(0, LINES_SHOWN)).map((l, i) => <LegLine key={`m${i}`} label="" leg={l} first="Make first" />)}
+            {steps.length > LINES_SHOWN && <MoreLine all={allSteps} hidden={steps.length - LINES_SHOWN} onClick={() => setAllSteps(!allSteps)} />}
+            {craft && <li className="flex gap-2"><Label>Make</Label><span className="min-w-0 break-words">{d.recipeName ?? 'craft'}{d.profession ? ` (${d.profession})` : ''}: <b>{d.best.units}</b> made, about {minutes(d.best.minutes)} of work.</span></li>}
             <LegLine label="Sell" leg={d.sell} />
             <li className="flex gap-2"><Label>Price</Label>
               <span>
@@ -165,10 +174,10 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
               </span>
             </li>
             {d.setup && <li className="flex gap-2"><Label>Setup</Label><span>Needs {d.setup.skill}{d.setup.rank != null ? ` ${d.setup.rank}` : ''}{d.setup.cost != null ? <>, learn for <Money c={d.setup.cost} size="sm" /></> : ''}{d.setup.where ? (d.setup.unknown ? `, ${d.setup.where}` : ` at ${d.setup.where}`) : ''}. One time cost.</span></li>}
-            {d.shares.length > 0 && <li className="flex gap-2"><Label>Shares</Label><span className="text-muted">Uses the same reagents or buyers as {d.shares.length} flip{d.shares.length > 1 ? 's' : ''} above{d.afterShared ? <>; doing both leaves <b>{d.afterShared.units}</b> units worth <Money c={d.afterShared.expectedProfit} size="sm" /></> : ''}.</span></li>}
+            {d.shares.length > 0 && <li className="flex gap-2"><Label>Shares</Label><span className="text-muted">Uses the same reagents or buyers as {d.shares.length} flip{d.shares.length > 1 ? 's' : ''} above{d.afterShared ? <>; doing both leaves <b>{units(d.afterShared.units)}</b> worth <Money c={d.afterShared.expectedProfit} size="sm" /></> : ''}.</span></li>}
           </ul>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5">
+          <div className="-ml-20 mt-3 flex flex-wrap items-center gap-2 border-t border-line/70 pt-2.5 sm:ml-0">
             <span className="text-xs text-muted">data {ago(f.data_at)}{f.house_name ? `, ${f.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} house` : ''}</span>
             <span title={q.strengthParts.map(x => `${x.label}: ${x.points} of ${x.max}`).join('\n')} className="cursor-help"><Chip tone={q.strength >= 75 ? 'good' : q.strength >= 60 ? 'gold' : 'warn'}>strength {q.strength}/100</Chip></span>
             {d.best.goldPerHour != null && <Chip>{<Money c={d.best.goldPerHour} size="sm" />} an hour of work</Chip>}
@@ -176,7 +185,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
           </div>
 
           {open && (
-            <div className="mt-2 overflow-x-auto">
+            <div className="-ml-20 mt-2 overflow-x-auto sm:ml-0">
             <table className="w-full whitespace-nowrap text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-muted"><th className="py-1">Amount</th><th>Units</th><th>Cost</th><th>Sells overnight</th><th>Expected profit</th><th>Per hour</th><th>Risk</th><th>Bad case</th></tr></thead>
               <tbody>{d.options.map(o => (
@@ -190,7 +199,7 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             </table>
             </div>
           )}
-          {d.notes.length > 0 && <p className="mt-2 text-xs text-muted">{d.notes.join(' ')}</p>}
+          {d.notes.length > 0 && <p className="-ml-20 mt-2 break-words text-xs text-muted sm:ml-0">{d.notes.join(' ')}</p>}
         </div>
       </div>
     </Card>
@@ -201,13 +210,18 @@ function Label({ children }: { children?: React.ReactNode }) {
   return <span className="w-14 shrink-0 text-xs font-bold uppercase tracking-wide text-muted">{children}</span>;
 }
 
+/** The toggle under the first Buy or Make first lines: every line stays on the card, folded only on request. */
+function MoreLine({ all, hidden, onClick }: { all: boolean; hidden: number; onClick: () => void }) {
+  return <li className="flex gap-2"><Label /><button className="text-xs text-muted underline" onClick={onClick}>{all ? 'show fewer' : `show ${hidden} more`}</button></li>;
+}
+
 function LegLine({ label, leg, first }: { label: string; leg: Leg; first?: string }) {
   const pl = leg.places[0];
   const href = pl ? mapHref(pl) : null;
   return (
     <li className="flex gap-2">
       <Label>{label}</Label>
-      <span className="flex flex-wrap items-baseline gap-x-2">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 break-words">
         {first && <span className="text-muted">{first}</span>}
         <span><b>{leg.units.toLocaleString()}</b> {leg.name}</span>
         <span className="text-muted">at</span><Money c={leg.unitPrice} size="sm" /><span className="text-muted">{label === 'Sell' ? 'each after the cut' : 'each'}</span>

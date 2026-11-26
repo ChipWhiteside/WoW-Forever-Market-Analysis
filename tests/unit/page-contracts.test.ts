@@ -46,4 +46,11 @@ describe('page contracts', () => {
     expect(card).toContain("craft ? 'bg-craft' : 'bg-flip'");
     inOrder(card, ["'Crafting' : 'Flipping'", 'open ${d.openHours72} of the last 72 hours', 'expected overnight', 'per item', "'Buy'", '<Label>Make</Label>', 'label="Sell"', '<Label>Price</Label>', '<Label>Volume</Label>', '<Label>Risk</Label>', '<Label>Setup</Label>', '<Label>Shares</Label>', 'strength {q.strength}', 'an hour of work', '>Amount<', '>Units<', '>Cost<', '>Sells overnight<', '>Expected profit<', '>Per hour<', '>Risk<', '>Bad case<']);
   });
+  it('flip card: Make first steps come before Make, and long Buy or Make first lists fold behind "show N more", never cut', () => {
+    const card = section(src('pages/flips.tsx'), 'export function FlipCard', '\nfunction ');
+    inOrder(card, ["'Buy'", '<MoreLine', 'first="Make first"', '<MoreLine', '<Label>Make</Label>']);
+    expect(src('pages/flips.tsx')).toContain('`show ${hidden} more`');
+    expect(card).toContain('allBuy ? bought : bought.slice(0, LINES_SHOWN)');
+    expect(card).toContain('allSteps ? steps : steps.slice(0, LINES_SHOWN)');
+  });
 });
