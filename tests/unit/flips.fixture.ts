@@ -121,7 +121,7 @@ export function refTail(mu: number, j: number): number {
 /** Expected profit of n units at queue positions ahead + 1 .. ahead + n, `upe` units per sale event (plan section 6). */
 export function refExpected(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; cost: number; n: number; upe?: number;
   /** carryover: the mean sale events over tonight and the next 24 hours together; unsold units are relisted when that pays */
-  mu2?: number; shortTonight?: number; shortTomorrow?: number }): number {
+  mu24?: number; shortTonight?: number; shortTomorrow?: number }): number {
   return refRevenue(o) - o.cost;
 }
 
@@ -134,25 +134,51 @@ export function refSold(mu: number, ahead: number, n: number, upe = 1): number {
 
 /**
  * What n posted units bring in, written out independently of src/flips/evaluate.ts settle: tonight's sales at the net,
- * then (with mu2) the unsold relisted for one more deposit and sold tomorrow through the same queue, when that beats
- * selling them to a vendor.
+ * then (with mu24, tomorrow's mean sale events) the unsold relisted for one more deposit at the front of tomorrow's
+ * queue (nothing else is left ahead in these fixtures), when that beats selling them to a vendor.
  */
-export function refRevenue(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; n: number; upe?: number; mu2?: number; shortTonight?: number; shortTomorrow?: number }): number {
+export function refRevenue(o: { mu: number; ahead: number; net: number; salvage: number; deposit: number; n: number; upe?: number; mu24?: number; shortTonight?: number; shortTomorrow?: number }): number {
   const t1 = refSold(o.mu, o.ahead, o.n, o.upe);
   const s1 = t1 * (o.shortTonight ?? 1), left = o.n - s1;
   const keep = s1 * o.net + left * (o.salvage - o.deposit);
-  if (o.mu2 == null) return keep;
-  const s2 = Math.min(left, Math.max(0, refSold(o.mu2, o.ahead, o.n, o.upe) - t1) * (o.shortTomorrow ?? 1));
+  if (o.mu24 == null) return keep;
+  const whole = Math.floor(left), frac = left - whole;
+  const tomorrow = refSold(o.mu24, 0, whole, o.upe) + frac * (refSold(o.mu24, 0, whole + 1, o.upe) - refSold(o.mu24, 0, whole, o.upe));
+  const s2 = Math.min(left, tomorrow * (o.shortTomorrow ?? 1));
   const end = left - s2;
   return Math.max(keep, (s1 + s2) * o.net - left * o.deposit - end * (o.deposit - o.salvage));
 }
 
 /** The quantity with the most expected profit, by the independent recompute, for a flat unit cost (ties to fewer). */
-export function refBest(o: { mu: number; mu2?: number; ahead: number; net: number; salvage: number; deposit: number; unitCost: number; maxN: number }): { n: number; e: number } {
+export function refBest(o: { mu: number; mu24?: number; ahead: number; net: number; salvage: number; deposit: number; unitCost: number; maxN: number }): { n: number; e: number } {
   let best = { n: 1, e: -Infinity };
   for (let n = 1; n <= o.maxN; n++) {
     const e = refExpected({ ...o, cost: o.unitCost * n, n });
     if (e > best.e + 1e-9) best = { n, e };
   }
   return best;
+}
+
+/**
+ * The best amount by the independent recompute (round 5 rule): the most expected profit among quantities whose risk is
+ * not high, that is the bad case (half tonight and half tomorrow, at `badNet`) loses at most the expected profit and
+ * at least a quarter of the units sell tonight. `costAt(n)` is the cost of n units. Ties go to fewer units.
+ */
+export function refBestSafe(o: { mu: number; mu24?: number; ahead: number; net: number; badNet: number; salvage: number; deposit: number; costAt: (n: number) => number; maxN: number }): { n: number; e: number; bad: number } {
+  let best = { n: 0, e: -Infinity, bad: 0 };
+  for (let n = 1; n <= o.maxN; n++) {
+    const cost = o.costAt(n);
+    const e = refRevenue({ ...o, n }) - cost;
+    const bad = Math.max(0, cost - refRevenue({ ...o, net: o.badNet, n, shortTonight: 0.5, shortTomorrow: 0.5 }));
+    const high = Math.round(bad) > Math.round(e) || refSold(o.mu, o.ahead, n) < n / 4;
+    if (!high && e > best.e + 1e-9) best = { n, e, bad };
+  }
+  return best;
+}
+
+/** The cost of n Cerulean Dyes at Ben's prices: two lichen each up the ladder, vials in bundles of 5 at 20c. */
+export function dyeCost(n: number): number {
+  const lichen: number[] = [];
+  for (const [p, q] of [[2500, 2], [2700, 4], [2800, 10], [2900, 20], [3000, 40]] as const) for (let i = 0; i < q; i++) lichen.push(p);
+  return lichen.slice(0, 2 * n).reduce((a, b) => a + b, 0) + Math.ceil(n / 5) * 20;
 }

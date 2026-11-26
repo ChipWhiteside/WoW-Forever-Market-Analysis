@@ -105,12 +105,12 @@ describe('properties', () => {
     // Bad case (round 1 H3, carryover round 4): the 3 day low of 50s nets floor(5000 x 0.95) = 4750; half of tonight's
     //   expected sales and half of tomorrow's happen (events over tonight 20, over both days 68); unsold units are relisted
     //   for one more 360c deposit when that beats the 75c vendor price. Recomputed independently (refRevenue).
-    const bad = (n: number, cost: number, mu: number, mu2?: number) =>
-      Math.max(0, Math.round(cost - refRevenue({ mu, mu2, ahead: 0, net: 4750, salvage: 75, deposit: 360, n, shortTonight: 0.5, shortTomorrow: 0.5 })));
-    expect(Math.abs(e.at(20).risk.badCaseLoss - bad(20, 113880, 20, 68))).toBeLessThanOrEqual(1);
-    expect(Math.abs(e.at(1).risk.badCaseLoss - bad(1, 5020, 20, 68))).toBeLessThanOrEqual(1);
+    const bad = (n: number, cost: number, mu: number, mu24?: number) =>
+      Math.max(0, Math.round(cost - refRevenue({ mu, mu24, ahead: 0, net: 4750, salvage: 75, deposit: 360, n, shortTonight: 0.5, shortTomorrow: 0.5 })));
+    expect(Math.abs(e.at(20).risk.badCaseLoss - bad(20, 113880, 20, 48))).toBeLessThanOrEqual(1);
+    expect(Math.abs(e.at(1).risk.badCaseLoss - bad(1, 5020, 20, 48))).toBeLessThanOrEqual(1);
     // the same with half the sales at the claimed price, the "at half sales" number on the card
-    expect(Math.abs(e.at(1).risk.halfSalesProfit! - (refRevenue({ mu: 20, mu2: 68, ahead: 0, net: 7077, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 }) - 5020))).toBeLessThanOrEqual(1);
+    expect(Math.abs(e.at(1).risk.halfSalesProfit! - (refRevenue({ mu: 20, mu24: 48, ahead: 0, net: 7077, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 }) - 5020))).toBeLessThanOrEqual(1);
     // No proven demand (low estimate 0.8 a day, 12 a day middle, none new: 5 sale events overnight): nothing carries over,
     //   unsold units are worth only their 75c vendor price, each unit past the queue adds its cost and lost deposit.
     const thin = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 0.8, newPerDay: 0 } })), DYE_KEY).e;
@@ -123,7 +123,7 @@ describe('properties', () => {
     // The same thin market with proven demand (1.2 a day low): unsold units relist and sell tomorrow (events over both
     //   days 12 x 34/24 = 17), so the loss is smaller
     const proven = evalKey(inputsOf(ceruleanAtBens({ dyeDemand: { low3d: 5000, unitsPerDay: 12, lowPerDay: 1.2, newPerDay: 0 } })), DYE_KEY).e;
-    expect(Math.abs(proven.at(10).risk.badCaseLoss - bad(10, 55440, 5, 17))).toBeLessThanOrEqual(1);
+    expect(Math.abs(proven.at(10).risk.badCaseLoss - bad(10, 55440, 5, 12))).toBeLessThanOrEqual(1);
     expect(proven.at(10).risk.badCaseLoss).toBeLessThan(thin.at(10).risk.badCaseLoss);
   });
   it('gold on hand caps every quantity by the full cost to do it, crafts included', () => {

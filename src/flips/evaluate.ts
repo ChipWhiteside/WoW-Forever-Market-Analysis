@@ -160,9 +160,11 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   // vendor margin.
   const probe = soldCurve(q, queue, o.capUsed, MAX_UNITS);
   const carries = carryover(q);
-  const queue2 = carries ? overnightQueue(q, o.horizonHours + CARRYOVER.tomorrowHours) : queue;
-  const probe2 = carries ? soldCurve(q, queue2, o.capUsed, MAX_UNITS) : probe;
-  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe2.lastUseful));
+  // Tomorrow's queue: the next 24 hours of sale events, after whatever was ahead of Chip tonight and is not cleared by
+  // tonight's events. His relisted units take the next places in it.
+  const queue24 = carries ? overnightQueue(q, CARRYOVER.tomorrowHours) : null;
+  const aheadTomorrow = carries ? Math.max(0, q.ahead + o.capUsed - queue.meanEvents * queue.unitsPerEvent) : 0;
+  const limit = toVendor ? MAX_UNITS : Math.min(MAX_UNITS, Math.max(SMALL_QUANTITY, probe.lastUseful + (queue24 ? queue24.lastPos : 0)));
   // A vendor sale only takes units that clear the vendor margin (VENDOR_MARGIN): the walk stops at the first that does not.
   const margin = toVendor ? vendorMargin(net) : 0;
   const w = walk(c, m, inputs, recipes, limit, (unit, cum) => toVendor && cum >= SMALL_QUANTITY && net - unit < margin);
@@ -185,9 +187,9 @@ export function evaluate(c: Candidate, m: Market, inputs: FlipInputs, recipes: M
   const salvage = toVendor ? 0 : Math.max(0, sellItem?.sellPrice ?? 0);
   // What n units bring in, tonight and (carryover) tomorrow, at a price and with shortfalls (settle, below).
   const tonight = (n: number) => sold.soldAt(n);
-  const byTomorrow = (n: number) => (carries ? Math.max(tonight(n), probe2.soldAt(n)) : tonight(n));
+  const tomorrowSold = queue24 ? tomorrowCurve(queue24, aheadTomorrow, limit) : () => 0;
   const revenue = (n: number, netAt: number, shortTonight = 1, shortTomorrow = 1) =>
-    settle(n, tonight(n), byTomorrow(n), netAt, salvage, depositEach, shortTonight, shortTomorrow, carries);
+    settle(n, tonight(n), tomorrowSold, netAt, salvage, depositEach, shortTonight, shortTomorrow, carries);
   const expectedAt = (n: number, cost: number, s: Step) => revenue(n, net).value - cost - (minutesAt(n, s) / 60) * o.timeRate;
   const session = c.recipe ? o.craftSessionMinutes ?? CRAFT_SESSION_MINUTES_DEFAULT : Infinity;
   const option = (label: QuantityOption['label'], n: number): QuantityOption => {
@@ -304,20 +306,38 @@ export function badCaseNet(c: Candidate, q: SellQuote): number {
 export const carryover = (q: SellQuote) => q.houseId != null && (q.salesPerDayLow ?? 0) >= CARRYOVER.minLowPerDay;
 
 /**
- * What n posted units bring in (before their cost), round 2 finding H1. `tonight` units are expected to sell tonight
- * and `byTomorrow` by the end of tomorrow, both through the same queue (the units ahead, then tomorrow's new posts).
- * With carryover the unsold units are relisted (one more deposit each) when that beats selling them to a vendor:
- *   sold tonight x net + sold tomorrow x net - relisted x deposit lost tonight - still unsold x (deposit lost tomorrow - salvage)
- * else: sold tonight x net + unsold x (salvage - deposit). `shortTonight` and `shortTomorrow` scale the two days'
- * sales (1 expected; the bad case halves both). Returns the value and the units sold tomorrow.
+ * Units expected to sell tomorrow when `left` are relisted: the chances of the queue positions right after the units
+ * still ahead, over the next 24 hours (fractional units take their share of the next position).
  */
-export function settle(n: number, tonight: number, byTomorrow: number, netAt: number, salvage: number, deposit: number,
+export function tomorrowCurve(queue24: Queue, aheadTomorrow: number, maxUnits: number): (left: number) => number {
+  const base = Math.floor(aheadTomorrow);
+  const top = Math.max(0, Math.min(maxUnits, queue24.lastPos - base) + 1);
+  const pre = new Float64Array(top + 1);
+  for (let k = 1; k <= top; k++) pre[k] = pre[k - 1]! + queue24.at(base + k);
+  return (left: number) => {
+    if (left <= 0) return 0;
+    const whole = Math.floor(left), frac = left - whole;
+    const at = (k: number) => pre[Math.min(k, top)]!;
+    return at(whole) + frac * (at(whole + 1) - at(whole));
+  };
+}
+
+/**
+ * What n posted units bring in (before their cost), round 2 finding H1 and the round 5 fix. `tonight` units are
+ * expected to sell tonight; the rest are relisted (one more deposit each) and sell tomorrow through tomorrow's queue
+ * (`tomorrowSold` of however many are left), when that beats selling them to a vendor:
+ *   sold tonight x net + sold tomorrow x net - relisted x deposit lost tonight - still unsold x (deposit lost tomorrow - salvage)
+ * else: sold tonight x net + unsold x (salvage - deposit). `shortTonight` scales tonight's sales and `shortTomorrow`
+ * tomorrow's (1 expected; the bad case halves both, and the units tonight's shortfall leaves go to tomorrow's queue).
+ * Returns the value and the units sold tomorrow.
+ */
+export function settle(n: number, tonight: number, tomorrowSold: (left: number) => number, netAt: number, salvage: number, deposit: number,
   shortTonight: number, shortTomorrow: number, carries: boolean): { value: number; tomorrow: number } {
   const s1 = Math.min(n, tonight * shortTonight);
   const left = n - s1;
   const keep = s1 * netAt + left * (salvage - deposit);
   if (!carries || left <= 0) return { value: keep, tomorrow: 0 };
-  const s2 = Math.min(left, Math.max(0, byTomorrow - tonight) * shortTomorrow);
+  const s2 = Math.min(left, tomorrowSold(left) * shortTomorrow);
   const end = left - s2;
   const relist = s1 * netAt + s2 * netAt - left * deposit - end * deposit + end * salvage;
   return relist > keep ? { value: relist, tomorrow: s2 } : { value: keep, tomorrow: 0 };

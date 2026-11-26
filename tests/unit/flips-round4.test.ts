@@ -170,3 +170,21 @@ describe('L1: unknown stack size', () => {
     expect(unknown).toBeCloseTo(one + 0.9, 6);
   });
 });
+
+describe('the best amount is the most expected profit whose risk is not high (round 5)', () => {
+  it('every larger profit on the table is high risk, and the most row shows it', () => {
+    const { e } = evalKey(inputsOf(ceruleanAtBens()), DYE_KEY);
+    const best = e.best!;
+    expect(best.risk.level).not.toBe('high');
+    for (let n = 1; n <= e.maxN; n++) {
+      const o = e.at(n);
+      if (o.expectedProfit > best.expectedProfit) expect(o.risk.level).toBe('high');
+    }
+    const most = e.options.find(o => o.label === 'most')!;
+    expect(most.units).toBeGreaterThan(best.units);
+    expect(most.note).toBe('most profit, higher risk');
+    // the list ranks on the best amount, not the most
+    const f = run(ceruleanAtBens()).flips.find(x => x.key === DYE_KEY)!;
+    expect(f.score).toBe(f.best.expectedProfit);
+  });
+});

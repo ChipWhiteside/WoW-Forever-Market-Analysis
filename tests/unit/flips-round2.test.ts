@@ -3,7 +3,7 @@
  * finding, each with its numbers stated (docs/flip-plan.md section 6, "Refinements from the first independent test").
  */
 import { describe, it, expect } from 'vitest';
-import { A, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, refExpected, refRevenue, refTail, DYE, DYE_RECIPE } from './flips.fixture.ts';
+import { A, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, LICHEN, refExpected, refRevenue, refTail, DYE, DYE_RECIPE } from './flips.fixture.ts';
 import { Market } from '../../src/flips/market.ts';
 import { SellBook, overnightQueue, lowPerDay, newPerDay } from '../../src/flips/sellBook.ts';
 import { soldCurve, priceWar, settle } from '../../src/flips/evaluate.ts';
@@ -47,7 +47,7 @@ describe('H3: risk', () => {
     // the dye has proven demand, so the unsold half carries over at the bad price less one more deposit (round 3)
     const S1 = refTail(20, 1);
     void S1;
-    const badAt = (netBad: number) => Math.max(0, Math.round(5020 - refRevenue({ mu: 20, mu2: 68, ahead: 0, net: netBad, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 })));
+    const badAt = (netBad: number) => Math.max(0, Math.round(5020 - refRevenue({ mu: 20, mu24: 48, ahead: 0, net: netBad, salvage: 75, deposit: 360, n: 1, shortTonight: 0.5, shortTomorrow: 0.5 })));
     expect(e.at(1).risk.badCaseLoss).toBe(badAt(5343));
     expect(e.at(1).risk.drivers).toContain('under 3 days of prices seen, a 25% drop assumed for the bad case');
     // a low seen under the 25% drop is used: 40s nets 3800
@@ -88,9 +88,11 @@ describe('H3: risk', () => {
       demand: { 111: { [BAR]: sells(480, 14000, { lowPerDay: 0.8, newPerDay: 0 }) } } }), `craft_auction:111:${BAR}:10098`).e;
     const f = { best: ev.best! };
     const most = ev.options.find(o => o.label === 'most')!;
-    // 200 sale events expected overnight; the best stops where a unit's chance no longer covers its 24s deposit risk
-    expect(f.best.units).toBeLessThan(most.units);
-    expect(f.best.expectedProfit).toBeGreaterThan(most.expectedProfit);
+    // 200 sale events expected overnight; even the most profit (risk aside) stops before the queue's capacity, where a
+    //   unit's chance no longer covers its 24s deposit risk; the best (risk not high) is at or under it
+    expect(most.units).toBeLessThan(Math.ceil(ev.cap));
+    expect(f.best.units).toBeLessThanOrEqual(most.units);
+    expect(f.best.expectedProfit).toBeLessThanOrEqual(most.expectedProfit);
     expect(f.best.risk.deposits).toBe(f.best.units * 2400);
     expect(f.best.risk.atStake).toBe(f.best.cost + f.best.units * 2400);
     expect(most.risk.halfSalesProfit!).toBeLessThan(0);
@@ -119,7 +121,7 @@ describe('H4: the chance each unit sells falls smoothly', () => {
     // no cliff: the 20th unit (the old flat capacity) still sells more often than not, the 25th sometimes
     expect(curve.soldAt(20) - curve.soldAt(19)).toBeGreaterThan(0.5);
     expect(curve.soldAt(25) - curve.soldAt(24)).toBeGreaterThan(0.1);
-    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16, mu2: 68 })));
+    expect(e.at(16).expectedProfit).toBe(Math.round(refExpected({ mu: 20, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 90280, n: 16, mu24: 48 })));
   });
   it('a seller pulling and reposting is not new competition: new = max(0, new - pulled) (round 3)', () => {
     // Poached Sunscale Salmon pattern: about 1,700 units pulled near the floor and 822 posted again in one hour
@@ -270,14 +272,18 @@ describe('sale events and new posts from the stored hourly counts', () => {
 
 describe('carryover through the same queue (round 2 of independent testing, H1)', () => {
   it('settle: tonight at the net; the rest relisted for one more deposit and sold tomorrow, when that beats the vendor', () => {
-    // 10 posted, 6 expected tonight, 9 by tomorrow night, net 100, vendor 10, deposit 20
+    // 10 posted, 6 expected tonight; tomorrow's queue takes up to 3 of whatever is relisted; net 100, vendor 10, deposit 20
     //   relist: 9 x 100 - 4 relisted x 20 - 1 left x (20 - 10) = 810; vendor instead: 600 + 4 x (10 - 20) = 560
-    expect(settle(10, 6, 9, 100, 10, 20, 1, 1, true)).toEqual({ value: 810, tomorrow: 3 });
-    expect(settle(10, 6, 9, 100, 10, 20, 1, 1, false)).toEqual({ value: 560, tomorrow: 0 });
-    // bad case halves both days: 3 tonight, 1.5 tomorrow: 4.5 x 100 - 7 x 20 - 5.5 x 10 = 255, over the vendor 3 x 100 - 70 = 230
-    expect(settle(10, 6, 9, 100, 10, 20, 0.5, 0.5, true)).toEqual({ value: 255, tomorrow: 1.5 });
-    // tomorrow sells nothing more: relisting only adds deposits, so the vendor is chosen
-    expect(settle(10, 6, 6, 100, 10, 20, 1, 1, true)).toEqual({ value: 560, tomorrow: 0 });
+    const three = (left: number) => Math.min(left, 3);
+    expect(settle(10, 6, three, 100, 10, 20, 1, 1, true)).toEqual({ value: 810, tomorrow: 3 });
+    expect(settle(10, 6, three, 100, 10, 20, 1, 1, false)).toEqual({ value: 560, tomorrow: 0 });
+    // bad case: 3 tonight; the 7 left go to tomorrow's queue, which takes 3, halved to 1.5:
+    //   4.5 x 100 - 7 x 20 - 5.5 x 10 = 255, over the vendor 3 x 100 - 70 = 230
+    expect(settle(10, 6, three, 100, 10, 20, 0.5, 0.5, true)).toEqual({ value: 255, tomorrow: 1.5 });
+    // tonight's shortfall rolls into tomorrow: with room for 10 tomorrow, the 7 left sell 3.5 (half of 7)
+    expect(settle(10, 6, (left: number) => Math.min(left, 10), 100, 10, 20, 0.5, 0.5, true).tomorrow).toBe(3.5);
+    // tomorrow sells nothing: relisting only adds deposits, so the vendor is chosen
+    expect(settle(10, 6, () => 0, 100, 10, 20, 1, 1, true)).toEqual({ value: 560, tomorrow: 0 });
   });
   it('a flip that sells nothing tonight is never low risk: the Dye with 70 new posts a day (more than its 60 sales)', () => {
     const r = run(ceruleanAtBens({ dyeDemand: { newPerDay: 70 } }));
@@ -303,8 +309,9 @@ describe('carryover through the same queue (round 2 of independent testing, H1)'
     expect(half.risk.drivers.join(' ')).toMatch(/expected to sell tonight/);
   });
   it('the card says when most of it sells tomorrow, not tonight', () => {
-    // 60 a day middle, 40 new a day: about 8 tonight; with the lichen ladder the best runs well past that
-    const f = run(ceruleanAtBens({ dyeDemand: { newPerDay: 40 } })).flips.find(x => x.key === DYE_KEY)!;
+    // 60 a day middle, 40 new a day: about 8 tonight and 20 in tomorrow's queue. With cheap lichen (5s) the margin is
+    //   wide enough that a larger amount is still not high risk, so the best runs past tonight's sales.
+    const f = run(ceruleanAtBens({ lichen: [L(LICHEN, 500, 200)], dyeDemand: { newPerDay: 40 } })).flips.find(x => x.key === DYE_KEY)!;
     expect(f.best.soldTomorrow!).toBeGreaterThan(f.best.expectedSold);
     expect(f.notes).toContain(MOSTLY_TOMORROW);
     expect(f.best.risk.level).not.toBe('low');

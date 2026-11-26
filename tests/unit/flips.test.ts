@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { A, B, L, many, item, vendor, recipe, sells, inputsOf, evalKey, run, ceruleanAtBens, LICHEN, VIAL, DYE, BAUBLES, DYE_RECIPE, type Fixture } from './flips.fixture.ts';
 import { lowPerDay, typicalUndercut } from '../../src/flips/sellBook.ts';
-import { refBest, refExpected, refRevenue, refTail } from './flips.fixture.ts';
+import { dyeCost, refBest, refBestSafe, refExpected, refRevenue, refTail } from './flips.fixture.ts';
 import { poissonLowerBound, poissonTail } from '../../src/flips/poisson.ts';
 
 const DYE_KEY = `craft_auction:111:${DYE}:${DYE_RECIPE}`;
@@ -34,36 +34,41 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(top.sellQuote.netEach).toBe(7077);
     // Queue (round 1 finding H4): 60 a day middle, 12 a day new posts under him, 0 ahead, one unit per sale event.
     //   Sale events overnight are Poisson with mean (60 - 12) x 10/24 = 20; unit k sells when at least k events come.
-    // Carryover (rounds 3 and 4): the dye has proven demand (60 a day low), so a unit unsold tonight is relisted for one
-    //   more 360c deposit and sells tomorrow through the same queue: events over tonight and the next 24 hours have a
-    //   mean of (60 - 12) x 34/24 = 68, so every one of the first 38 positions is near certain to sell by tomorrow night.
-    //   Every craft up to the last lichen listed costs under 7077 - 360, so the best is 38 crafts, all 76 lichen;
-    //   20.0 are expected to sell tonight and 18.0 tomorrow.
-    expect(top.best.units).toBe(38);
-    expect(top.best.expectedSold).toBe(20);
-    expect(top.best.soldTomorrow).toBe(18);
-    // Cost: all lichen 2 x 2500 + 4 x 2700 + 10 x 2800 + 20 x 2900 + 40 x 3000 = 221,800, plus 8 bundles of vials 160
-    expect(top.best.cost).toBe(221960);
-    // Per item: 7077 - 221960 / 38 = 1235.9, about 12s 36c.
-    expect(top.perItem).toBe(1236);
-    // Expected profit: 38 x 7077 - 18.0 relisted x 360 - 221,960 = 40,485 (4g 4s 85c), and an independent recompute agrees.
-    expect(top.best.expectedProfit).toBe(40485);
-    expect(Math.abs(top.best.expectedProfit - refExpected({ mu: 20, mu2: 68, ahead: 0, net: 7077, salvage: 75, deposit: 360, cost: 221960, n: 38 }))).toBeLessThanOrEqual(1);
-    // Bad case: the dye at its 3 day low of 70s nets 6650, and only half of tonight's 20 and half of tomorrow's 18 sell:
-    //   19 sold, 28 relisted, 19 left: 19 x 6650 - 28 x 360 - 19 x (360 - 75) = 110,855 back on 221,960, a 111,106 loss.
-    //   That is more than the 40,485 expected: high risk. Buying the whole lichen ladder for tomorrow's sales is a bet.
-    expect(top.best.risk.badCaseLoss).toBe(111106);
-    expect(Math.abs(top.best.risk.badCaseLoss - (221960 - refRevenue({ mu: 20, mu2: 68, ahead: 0, net: 6650, salvage: 75, deposit: 360, n: 38, shortTonight: 0.5, shortTomorrow: 0.5 })))).toBeLessThanOrEqual(1);
-    expect(top.best.risk.level).toBe('high');
-    expect(top.best.risk.atStake).toBe(221960 + 38 * 360);
-    expect(top.notes).toContain('about 18 more expected to sell tomorrow once relisted');
+    // Carryover: the dye has proven demand (60 a day low), so a unit unsold tonight is relisted for one more 360c deposit
+    //   and sells tomorrow through tomorrow's queue ((60 - 12) = 48 sale events in the next 24 hours).
+    // Best amount (round 5): the most expected profit among amounts whose risk is not high. The bad case (the 70s low
+    //   nets 6650; half of tonight's sales; the rest relisted, and half of what tomorrow's queue would take sells) loses
+    //   more than the expected profit past 22 crafts, so the best is 22, close to the 20 that sell tonight. An
+    //   independent recompute picks the same amount.
+    const safe = refBestSafe({ mu: 20, mu24: 48, ahead: 0, net: 7077, badNet: 6650, salvage: 75, deposit: 360, costAt: dyeCost, maxN: 38 });
+    expect(safe.n).toBe(22);
+    expect(top.best.units).toBe(22);
+    expect(top.best.expectedSold).toBe(19);
+    expect(top.best.soldTomorrow).toBe(3);
+    // Cost: 44 lichen 2 x 2500 + 4 x 2700 + 10 x 2800 + 20 x 2900 + 8 x 3000 = 125,800, plus 5 bundles of vials 100
+    expect(top.best.cost).toBe(125900);
+    expect(dyeCost(22)).toBe(125900);
+    // Per item: 7077 - 125900 / 22 = 1354.3, about 13s 54c.
+    expect(top.perItem).toBe(1354);
+    // Expected profit 28,721 (2g 87s 21c), bad case 27,405: under the expected profit, but over half of it: medium risk.
+    expect(top.best.expectedProfit).toBe(28721);
+    expect(Math.abs(top.best.expectedProfit - safe.e)).toBeLessThanOrEqual(1);
+    expect(top.best.risk.badCaseLoss).toBe(27405);
+    expect(Math.abs(top.best.risk.badCaseLoss - safe.bad)).toBeLessThanOrEqual(1);
+    expect(top.best.risk.level).toBe('medium');
+    expect(top.best.risk.atStake).toBe(125900 + 22 * 360);
+    // The most profit regardless of risk is the whole lichen ladder: 38 crafts, 4g 4s 85c expected, high risk.
+    const most = top.options.find(o => o.label === 'most')!;
+    expect(most).toMatchObject({ units: 38, expectedProfit: 40485, note: 'most profit, higher risk' });
+    expect(most.risk.level).toBe('high');
+    expect(top.notes).toContain('about 3 more expected to sell tomorrow once relisted');
     // New listings under him overnight: 12 a day x 10/24 = 5, stated on the card.
     expect(top.sellQuote.newOvernight).toBeCloseTo(5, 6);
     expect(top.notes).toContain('about 5 new listings usually appear under you overnight');
-    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 76 });
-    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 40, unitPrice: 4 });
+    expect(top.buy.find(l => l.itemId === LICHEN)).toMatchObject({ kind: 'auction', units: 44 });
+    expect(top.buy.find(l => l.itemId === VIAL)).toMatchObject({ kind: 'vendor', units: 25, unitPrice: 4 });
     expect(top.best.risk.drivers).toContain('thin supply of Frilled Lichen');
-    // all 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
+    // 44 of the 76 lichen listed: not three times deeper than it uses, so one opening, not repeatable
     expect(top.repeatable).toBe(false);
     // The weaker flips are on the same list, below it.
     const spices = r.flips.find(f => f.family === 'vendor_auction' && f.itemId === SPICES)!;
@@ -73,12 +78,13 @@ describe('Cerulean Dye at Ben\'s prices (yardstick 1)', () => {
     expect(spices.rank).toBeGreaterThan(1);
     expect(bandage.rank).toBeGreaterThan(1);
     // Spices: claim 300, undercut median(1, 9) = 5, post 295, net 280, 120 each. Events overnight: (20 - 4) x 10/24 = 6.67.
-    //   Unsold ones are relisted (one more 192c deposit) and sell tomorrow through the same queue, mean (20 - 4) x 34/24
-    //   = 22.7 events over both days. The independent recompute picks 7 units, the engine agrees to the copper.
-    const sp = refBest({ mu: (20 - 4) * 10 / 24, mu2: (20 - 4) * 34 / 24, ahead: 0, net: 280, salvage: 40, deposit: 192, unitCost: 160, maxN: 30 });
-    expect(spices.best.units).toBe(7);
-    expect(sp.n).toBe(7);
+    //   Unsold ones are relisted (one more 192c deposit) and sell tomorrow through tomorrow's queue, 20 - 4 = 16 events.
+    //   The best amount is the most expected profit whose risk is not high (bad case at the 2s 90c low, net 275); the
+    //   independent recompute and the engine agree on it to the copper.
+    const sp = refBestSafe({ mu: (20 - 4) * 10 / 24, mu24: 20 - 4, ahead: 0, net: 280, badNet: 275, salvage: 40, deposit: 192, costAt: n => 160 * n, maxN: 30 });
+    expect(spices.best.units).toBe(sp.n);
     expect(spices.best.expectedProfit).toBe(Math.round(sp.e));
+    expect(spices.best.risk.level).not.toBe('high');
   });
 
   it('the first craft carries the whole 20c bundle of vials: 5000 + 20 = 5020', () => {
@@ -112,18 +118,24 @@ describe('Bright Baubles on Blackwater (yardstick 2)', () => {
     //   Carryover (round 4) adds a little: the 0.2 units expected unsold tonight are relisted and mostly sell tomorrow
     //   (events over both days: 44 x 34/24 = 62.3), worth more than the 62c vendor price after another 1,485 deposit.
     //   13 units, 12.8 tonight and 0.2 tomorrow: 1,976.
-    expect(f.best.units).toBe(13);
-    expect(f.best.expectedProfit).toBe(1976);
-    const bb = refBest({ mu: (48 - 4) * 10 / 24, mu2: (48 - 4) * 34 / 24, ahead: 0, net: 422, salvage: 62, deposit: 1485, unitCost: 250, maxN: 30 });
+    // The most profit regardless of risk is 13 units, 1,976 (19s 76c), and the recompute agrees:
+    const bb = refBest({ mu: (48 - 4) * 10 / 24, mu24: 48 - 4, ahead: 0, net: 422, salvage: 62, deposit: 1485, unitCost: 250, maxN: 30 });
     expect(bb.n).toBe(13);
-    expect(f.best.expectedProfit).toBe(Math.round(bb.e));
-    // Bad case: under 72 hours of floors the 25% drop (375, net 318) is lower than the 480 low; half of tonight's and half
-    //   of tomorrow's sales happen; relisting does not pay at 318 against a 1,485 deposit, so the unsold are sold to a
-    //   vendor: 3250 - (6.412 x 318 + 6.588 x (62 - 1485)) = 10,585 lost, more than expected: high risk.
-    expect(f.best.risk.badCaseLoss).toBe(10585);
+    const most = f.options.find(o => o.label === 'most')!;
+    expect(most).toMatchObject({ units: 13, expectedProfit: 1976, note: 'most profit, higher risk' });
+    expect(most.expectedProfit).toBe(Math.round(bb.e));
+    // Bad case at 13: under 72 hours of floors the 25% drop (375, net 318) is lower than the 480 low; half sell tonight,
+    //   relisting does not pay at 318 against a 1,485 deposit: 3250 - (6.412 x 318 + 6.588 x (62 - 1485)) = 10,585 lost.
+    expect(most.risk.badCaseLoss).toBe(10585);
+    expect(most.risk.level).toBe('high');
+    // Round 5: no amount has a bad case under its expected profit (the unverified 14s 85c deposit is 3.5 times the net),
+    //   so the best is the smallest that makes money, 1 unit (1s 72c), and the flip stays high risk.
+    expect(refBestSafe({ mu: (48 - 4) * 10 / 24, mu24: 48 - 4, ahead: 0, net: 422, badNet: 318, salvage: 62, deposit: 1485, costAt: n => 250 * n, maxN: 30 }).n).toBe(0);
+    expect(f.best.units).toBe(1);
+    expect(f.best.expectedProfit).toBe(172);
     expect(f.best.risk.level).toBe('high');
     expect(f.notes.join(' ')).toMatch(/Blackwater deposit is not verified/);
-    expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 13 });
+    expect(f.buy[0]).toMatchObject({ kind: 'vendor', who: 'Old Man Heming', unitPrice: 250, units: 1 });
   });
   it('low sales: held back, and the reason says it sells under 1 a day', () => {
     const r = run(baubles({ unitsPerDay: 1, lowPerDay: 0.5, newPerDay: 0.2, recentSales: 1 }));
@@ -274,13 +286,15 @@ describe('other families', () => {
     expect(f.key).toBe(`cross_house:116:${WOOL}`);
     expect(f.buy[0]).toMatchObject({ kind: 'auction', houseId: 111, unitPrice: 100 });
     // post at 297 (undercut 3c), net floor(297 x 0.85) = 252; 152 each; 20 sale events expected overnight, but with a
-    //   790c deposit (5 x floor(33 x 0.2 x 24)); unsold units relist and sell tomorrow (68 events over both days). The
-    //   independent recompute picks 16 units and the engine agrees.
+    //   790c deposit (5 x floor(33 x 0.2 x 24)); unsold units relist and sell tomorrow (48 events in tomorrow's queue).
+    //   The most profit is 16 units (the recompute agrees), but no amount has a bad case under its expected profit
+    //   (the 25% drop to 2s 25c nets 191 against a 790c deposit), so the best is 1 unit and the flip stays high risk.
     expect(f.perItem).toBe(152);
-    const wb = refBest({ mu: 20, mu2: 48 * 34 / 24, ahead: 0, net: 252, salvage: 33, deposit: 790, unitCost: 100, maxN: 40 });
-    expect(f.best.units).toBe(16);
+    const wb = refBest({ mu: 20, mu24: 48, ahead: 0, net: 252, salvage: 33, deposit: 790, unitCost: 100, maxN: 40 });
     expect(wb.n).toBe(16);
-    expect(f.best.expectedProfit).toBe(Math.round(wb.e));
+    expect(f.options.find(o => o.label === 'most')).toMatchObject({ units: 16, expectedProfit: Math.round(wb.e) });
+    expect(f.best.units).toBe(1);
+    expect(f.best.risk.level).toBe('high');
   });
   it('cheap listing: bought well under the typical floor and relisted near it', () => {
     const ORE = 2770;
