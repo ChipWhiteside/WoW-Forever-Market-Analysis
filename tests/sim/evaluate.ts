@@ -40,8 +40,9 @@ export interface Score {
   lowWindows: number;
   lowUnder: number;
   lowShare: number;
-  /** the same for windows of 6 (the gate), 24 and 72 hours */
-  low: Record<number, { windows: number; under: number; share: number }>;
+  /** the same for windows of 6 (the gate), 24 and 72 hours. `zero`: windows whose truth is 0 (nothing bought), and
+   * `falseSale`: of those, the share where the low is above 0 (a sale that never happened). */
+  low: Record<number, { windows: number; under: number; share: number; zero: number; falseSale: number }>;
   breaches: number;
   ageConflicts: number;
   /** per seed daily errors, for the spread */
@@ -53,7 +54,7 @@ export const WINDOWS = [6, 24, 72] as const;
 export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts> = {}): Score {
   let truth = 0, invisible = 0, oldSum = 0, newSum = 0, netSum = 0, oldHour = 0, newHour = 0, hours = 0, buyers = 0, events = 0;
   let oldDayAll = 0, newDayAll = 0, netDayAll = 0;
-  const lowAcc = new Map<number, { windows: number; under: number; share: number }>(WINDOWS.map(w => [w, { windows: 0, under: 0, share: 0 }]));
+  const lowAcc = new Map<number, Acc>(WINDOWS.map(w => [w, { windows: 0, under: 0, share: 0, zero: 0, falseSale: 0 }]));
   const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
   const perSeed: Score['perSeed'] = [];
   for (const seed of seeds) {
@@ -118,10 +119,12 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
     for (const [wk, w] of win) {
       const [W, , idx] = wk.split(':');
       const wh = winHours.get(`${W}:${idx}`)!;
-      if (wh.n < Number(W) || w.t <= 0) continue; // whole windows only, with sales to compare against
+      if (wh.n < Number(W)) continue; // whole windows only
       const low = lowEstimate({ events: w.ev, units: w.sold, pullEvents: expectedPullEvents(w.rate, w.ev, wh.n), hours: wh.h, publishes: wh.n, sumNet: w.net, sumNetSq: w.netSq });
-      const trueRate = (w.t / wh.h) * 24;
       const a = lowAcc.get(Number(W))!;
+      // Nothing bought: any low above 0 is a false sale, which the share under the truth below never sees.
+      if (w.t <= 0) { a.zero++; if (low > 0) a.falseSale++; continue; }
+      const trueRate = (w.t / wh.h) * 24;
       a.windows++;
       if (low <= trueRate) a.under++;
       a.share += low / trueRate;
@@ -139,16 +142,19 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
   };
 }
 
-function lowFields(acc: Map<number, { windows: number; under: number; share: number }>) {
+type Acc = { windows: number; under: number; share: number; zero: number; falseSale: number };
+function lowFields(acc: Map<number, Acc>) {
   const low: Score['low'] = {};
-  for (const [W, a] of acc) low[W] = { windows: a.windows, under: a.windows ? a.under / a.windows : 1, share: a.windows ? a.share / a.windows : 0 };
+  for (const [W, a] of acc) low[W] = { windows: a.windows, under: a.windows ? a.under / a.windows : 1, share: a.windows ? a.share / a.windows : 0,
+    zero: a.zero, falseSale: a.zero ? a.falseSale / a.zero : 0 };
   return { low, lowWindows: low[72]!.windows, lowUnder: low[72]!.under, lowShare: low[72]!.share };
 }
 
 /** The low estimate's usefulness per window length: share of windows at or under the truth, and mean low over truth. */
 export function lowTable(scores: Score[]): string {
-  const head = ['market', ...WINDOWS.flatMap(W => [`${W}h windows`, `${W}h under truth`, `${W}h low / truth`])];
-  const rows = scores.map(s => [s.type, ...WINDOWS.flatMap(W => [String(s.low[W]!.windows), `${(s.low[W]!.under * 100).toFixed(0)}%`, `${(s.low[W]!.share * 100).toFixed(0)}%`])]);
+  const head = ['market', ...WINDOWS.flatMap(W => [`${W}h windows`, `${W}h under truth`, `${W}h low / truth`, `${W}h no sale windows`, `${W}h false sale`])];
+  const rows = scores.map(s => [s.type, ...WINDOWS.flatMap(W => [String(s.low[W]!.windows), `${(s.low[W]!.under * 100).toFixed(0)}%`, `${(s.low[W]!.share * 100).toFixed(0)}%`,
+    String(s.low[W]!.zero), `${(s.low[W]!.falseSale * 100).toFixed(0)}%`])]);
   const w = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i]!.length)));
   const line = (r: string[]) => '| ' + r.map((c, i) => c.padEnd(w[i]!)).join(' | ') + ' |';
   return [line(head), '|' + w.map(x => '-'.repeat(x + 2)).join('|') + '|', ...rows.map(line)].join('\n');
