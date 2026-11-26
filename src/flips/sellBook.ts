@@ -201,7 +201,8 @@ export class SellBook {
     // A price that just jumped: the listings sit above the proven price, and buyers paid up to the new level in the
     // last hour. Ranked on the proven price; the higher one is only noted.
     const sweep = d?.sweepHigh ?? null;
-    const rising = sweep != null && floor > judged.price && sweep >= floor && !gates.length;
+    // Not while the floor is falling: the card would say rising beside a note that the floor is dropping (round 3, L1).
+    const rising = sweep != null && floor > judged.price && sweep >= floor && !gates.length && driftDrop <= 0;
     const basis: SellQuote['basis'] = judged.picture.used;
     return {
       houseId: h.id, claimPrice: claim, netEach: netPerUnit(h.faction, post), undercutPrice: post, listed: floor, basis, ahead,

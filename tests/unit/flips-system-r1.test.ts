@@ -83,7 +83,7 @@ describe('the price just jumped only when the floor rose (coordinator item 7)', 
   it('a sweep above the claim with a still floor is said as it is', () => {
     const f = at(0);
     expect(f.best.risk.drivers).not.toContain('the price just jumped');
-    expect(f.best.risk.drivers).toContain('buyers paid up to 90s this hour, above the price used');
+    expect(f.best.risk.drivers).toContain('buyers paid up to 90s this hour, more than the price counted on');
   });
   it('a floor up over 10 percent this hour is a jump', () => {
     expect(at(0.15).best.risk.drivers).toContain('the price just jumped');

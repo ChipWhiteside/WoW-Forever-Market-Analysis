@@ -234,7 +234,7 @@ function buildFlip(c: Candidate, e: Evaluation, inputs: FlipInputs, recipes: Map
   });
   const vendorFed = buy.some(l => l.kind === 'vendor') && auction.length === 0 && !buy.some(l => l.kind === 'vendor' && l.note?.includes('limited'));
   const repeatable = c.family === 'cheap_listing' || c.family === 'auction_vendor' ? false : vendorFed || (auction.length > 0 && deep);
-  const opening: Flip['opening'] = q.rising ? 'rising' : inputs.history.recent.has(c.key) ? null : 'new';
+  const opening: Flip['opening'] = q.rising && !((q.driftDrop ?? 0) > 0) ? 'rising' : inputs.history.recent.has(c.key) ? null : 'new';
   return {
     key: c.key, kind: FAMILY_KIND[c.family], family: c.family, itemId: c.itemId, name: c.name,
     recipeId: c.recipe?.id, recipeName: c.recipe?.name, profession: c.recipe?.profession,
@@ -277,8 +277,11 @@ export function setupFor(r: FlipRecipe, inputs: FlipInputs): Flip['setup'] {
     let floor: number | null = null, houseId: number | null = null;
     for (const h of inputs.houses) { const l = inputs.listings.get(h.id)?.get(itemId)?.[0]; if (l && (floor == null || l.unitPrice! < floor)) { floor = l.unitPrice!; houseId = h.id; } }
     const house = houseId != null ? inputs.houses.find(h => h.id === houseId) : null;
-    const onAuction = floor != null ? `${money(floor)} on the ${house?.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house` : null;
-    const fromVendor = vendor ? `${money(vendor.unitPrice)} from ${vendor.npcName}${vendor.zone ? `, ${vendor.zone}` : ''}` : null;
+    const costNow = Math.min(floor ?? Infinity, vendor?.unitPrice ?? Infinity);
+    // The cheapest price is the card's "learn for" amount, so it is not printed again here (round 3, L4).
+    const priced = (c: number) => (c === costNow ? '' : `${money(c)} `);
+    const onAuction = floor != null ? `${priced(floor)}on the ${house?.faction === 'blackwater' ? 'Blackwater' : 'Alliance'} auction house` : null;
+    const fromVendor = vendor ? `${priced(vendor.unitPrice)}from ${vendor.npcName}${vendor.zone ? `, ${vendor.zone}` : ''}` : null;
     const extra = { teachItem: { id: itemId, name }, auctionPrice: floor, auctionHouseId: houseId };
     const prices = [onAuction, fromVendor].filter(Boolean).join(', or ');
     const cost = Math.min(floor ?? Infinity, vendor?.unitPrice ?? Infinity);

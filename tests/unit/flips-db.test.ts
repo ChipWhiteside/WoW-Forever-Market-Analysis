@@ -155,7 +155,7 @@ describe('setup for a craft', () => {
     pure.recipeItems.set('holy protection potion', 6053);
     pure.vendors.set(6053, [{ npcId: 1, npcName: 'Alchemist Mallory', zone: 'Elwynn Forest', places: [], unitPrice: 100, bundle: 1, limited: true, minStanding: 4 }]);
     expect(setupFor(recipe(7255, 'Holy Protection Potion', 6051, [[2589, 1]], { learnSkill: 100 }), pure))
-      .toMatchObject({ rank: 100, cost: 100, where: 'Recipe: Holy Protection Potion: 1s from Alchemist Mallory, Elwynn Forest', teachItem: { id: 6053 } });
+      .toMatchObject({ rank: 100, cost: 100, where: 'Recipe: Holy Protection Potion: from Alchemist Mallory, Elwynn Forest', teachItem: { id: 6053 } });
   });
   it('teaching items by id first, any prefix by name as the fallback, with the auction price when listed (round 1 M4)', () => {
     const LIFE = 13488, RACK = 273096;
@@ -164,17 +164,17 @@ describe('setup for a craft', () => {
     // linked by id (recipes.teach_item_id): the name differs ("Transmute: Life to Earth"), the link does not care
     expect(setupFor(recipe(9950, 'Transmute: Life to Earth', 7076, [[2589, 1]], { learnSkill: 275, teachItemId: LIFE }), f))
       .toMatchObject({ rank: 275, cost: 450000, auctionPrice: 450000, auctionHouseId: 111, teachItem: { id: LIFE, name: 'Recipe: Transmute Life to Earth' },
-        where: 'Recipe: Transmute Life to Earth: 45g on the Alliance auction house' });
+        where: 'Recipe: Transmute Life to Earth: on the Alliance auction house' });
     // no id: a Blueprint: prefix matches by name, punctuation aside
     f.recipeItems.set(recipeKey('Tanning Rack'), RACK);
     expect(setupFor(recipe(57015, 'Tanning Rack', 279941, [[2589, 1]], { learnSkill: 125, profession: 'Leatherworking' }), f))
-      .toMatchObject({ rank: 125, cost: 750, auctionPrice: 750, where: 'Blueprint: Tanning Rack: 7s 50c on the Alliance auction house' });
+      .toMatchObject({ rank: 125, cost: 750, auctionPrice: 750, where: 'Blueprint: Tanning Rack: on the Alliance auction house' });
     expect(TEACH_PREFIX.exec('Blueprint: Tanning Rack')![2]).toBe('Tanning Rack');
     for (const p of ['Recipe', 'Pattern', 'Plans', 'Formula', 'Schematic', 'Blueprint', 'Manual']) expect(TEACH_PREFIX.test(`${p}: Thing`)).toBe(true);
     // listed and sold by a vendor: both named, the cheaper is the cost
     f.vendors.set(RACK, [{ npcId: 9, npcName: 'Kendor', zone: 'Stormwind City', places: [], unitPrice: 1500, bundle: 1, limited: false, minStanding: 4 }]);
     expect(setupFor(recipe(57015, 'Tanning Rack', 279941, [[2589, 1]], { learnSkill: 125, teachItemId: RACK }), f))
-      .toMatchObject({ cost: 750, where: 'Blueprint: Tanning Rack: 7s 50c on the Alliance auction house, or 15s from Kendor, Stormwind City' });
+      .toMatchObject({ cost: 750, where: 'Blueprint: Tanning Rack: on the Alliance auction house, or 15s from Kendor, Stormwind City' });
   });
   it('trainer rows without a spell id match by name; the rank is the recipe\'s learn skill; Horde only is said plainly', () => {
     const f = inputsOf({ listings: { 111: [] }, items: [] });

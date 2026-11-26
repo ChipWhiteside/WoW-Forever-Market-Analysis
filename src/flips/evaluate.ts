@@ -272,7 +272,7 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
     if (q.ahead > 0 && q.ahead >= (q.salesPerDayLow ?? 0) * (inputs.settings.horizonHours / 24)) drivers.push('many units listed ahead of you');
     // The floor itself rose over 10 percent this hour: the price just jumped. A sweep above the claim alone is said as it is.
     if (q.floorChange1h != null && q.floorChange1h > RISK.priceJumpRise) drivers.push('the price just jumped');
-    else if (q.rising && q.upTo != null) drivers.push(`buyers paid up to ${money(q.upTo)} this hour, above the price used`);
+    else if (q.rising && q.upTo != null) drivers.push(`buyers paid up to ${money(q.upTo)} this hour, more than the price counted on`);
     const war = priceWar(q);
     if (war) drivers.push(war);
     if (n > cap) drivers.push('more units than sell overnight');
@@ -385,8 +385,10 @@ export function priceWar(q: SellQuote): string | null {
   const flood = q.newPerHour > soldPerHour && q.newPerHour > 0;
   if (!fell && !slid && !flood) return null;
   const perHour = Math.round(fell && q.newLastHour != null ? q.newLastHour : q.newPerHour);
-  if (fell) return `price war: floor fell ${Math.round(-q.floorChange1h! * 100)}% this hour, ${perHour} new listings an hour`;
-  if (slid) return `price war: floor fell ${Math.round(q.floorFall! * 100)}% over the last ${Math.round(q.floorSpanHours ?? 0)} hours, ${perHour} new listings an hour`;
+  // Never print a measured zero beside a falling floor: it reads as a contradiction (round 3, L2).
+  const posts = perHour > 0 ? `, ${perHour} new listings an hour` : '';
+  if (fell) return `price war: floor fell ${Math.round(-q.floorChange1h! * 100)}% this hour${posts}`;
+  if (slid) return `price war: floor fell ${Math.round(q.floorFall! * 100)}% over the last ${Math.round(q.floorSpanHours ?? 0)} hours${posts}`;
   return `price war: ${perHour} new listings an hour, more than the ${Math.round(soldPerHour * 10) / 10} that sell`;
 }
 
@@ -404,7 +406,7 @@ export function legsOf(trace: TraceEntry[], traceEnd: number, inputs: FlipInputs
     if (e.source === 'craft') {
       const r = recipes.get(e.recipeId!);
       const g = crafts.get(e.recipeId!) ?? { kind: 'craft' as const, itemId: e.itemId, name, units: 0, unitPrice: 0, who: r ? `${r.profession}: ${r.name}` : 'craft', places: [], total: 0, depth: e.depth };
-      g.units += e.units; g.total += e.cost; g.depth = Math.min(g.depth, e.depth); crafts.set(e.recipeId!, g);
+      g.units += e.units; g.total += e.cost; g.depth = Math.max(g.depth, e.depth); crafts.set(e.recipeId!, g);
       if (e.opportunity) g.note = COOLDOWN_OPPORTUNITY;
       continue;
     }
