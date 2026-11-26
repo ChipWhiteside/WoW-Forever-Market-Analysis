@@ -1,0 +1,740 @@
+diff --git a/src/catalog/items.ts b/src/catalog/items.ts
+index d56299d..c27f57f 100644
+--- a/src/catalog/items.ts
++++ b/src/catalog/items.ts
+@@ -157,6 +157,54 @@ export function applyItemSparse(db: DB, game: Pick<GameData, 'items'>): SparseCh
+   return { updated, compared, disagree, sellCompared, sellDisagree };
+ }
+ 
++export interface TradeVerdict { tradeable: boolean; by: 'listed' | 'api' | 'itemsparse' | 'none'; reason: string | null }
++
++/** The last verdicts computed, so the flip gate (which has no database) reads the same answer. */
++let tradeCache: Map<number, TradeVerdict> | null = null;
++
++/**
++ * Can an item reach an auction house right now? One answer for the flip engine and the conversion filter.
++ * 1. Listed on a tracked house in the last 24 hours: tradeable, whatever any field says. Market evidence wins
++ *    (Blinding Powder 5530 is Bonding 1 in ItemSparse yet listed by the thousand).
++ * 2. Else, with Forever item data (data_source forever): the Forever API binding decides. ON_ACQUIRE or QUEST blocks.
++ * 3. Else ItemSparse Bonding 1 (pickup) or 4 (quest) blocks.
++ * Blizzard's Classic binding (data_source classic1x) alone never blocks: it describes another game.
++ * Items in neither the catalog nor a listing are absent from the map; callers decide (the conversion filter treats
++ * them as bound).
++ */
++export function itemTradeable(db: DB, now = Date.now()): Map<number, TradeVerdict> {
++  const out = new Map<number, TradeVerdict>();
++  for (const r of db.prepare(`SELECT DISTINCT item_id FROM item_stats WHERE listings > 0 AND published_at >= ? AND house_id IN (SELECT id FROM houses WHERE tracked = 1)`)
++    .all(now - 24 * 3600_000) as Array<{ item_id: number }>) out.set(r.item_id, { tradeable: true, by: 'listed', reason: null });
++  for (const r of db.prepare('SELECT id, binding, bonding, data_source, status FROM items').all() as Array<{ id: number; binding: string | null; bonding: number | null; data_source: string | null; status: number }>) {
++    if (out.has(r.id)) continue;
++    if (r.status === 200 && r.data_source === 'forever') {
++      out.set(r.id, r.binding === 'ON_ACQUIRE' ? { tradeable: false, by: 'api', reason: 'binds on pickup, it cannot be sold on an auction house' }
++        : r.binding === 'QUEST' ? { tradeable: false, by: 'api', reason: 'a quest item, it cannot be sold on an auction house' }
++        : { tradeable: true, by: 'api', reason: null });
++      continue;
++    }
++    out.set(r.id, r.bonding === 1 ? { tradeable: false, by: 'itemsparse', reason: 'binds on pickup, it cannot be sold on an auction house' }
++      : r.bonding === 4 ? { tradeable: false, by: 'itemsparse', reason: 'a quest item, it cannot be sold on an auction house' }
++      : { tradeable: true, by: r.bonding == null ? 'none' : 'itemsparse', reason: null });
++  }
++  tradeCache = out;
++  return out;
++}
++
++/**
++ * Why an item cannot be listed, or null. Reads the verdicts from the last itemTradeable run; before any run (the
++ * flip CLI), falls back to the item's own fields: Blizzard binding or ItemSparse bonding, pickup or quest.
++ */
++export function tradeBlock(it: { id: number; binding: string | null; bonding: number | null } | undefined): string | null {
++  if (!it) return null;
++  const v = tradeCache?.get(it.id);
++  if (v) return v.reason;
++  if (it.binding === 'ON_ACQUIRE' || it.bonding === 1) return 'binds on pickup, it cannot be sold on an auction house';
++  if (it.binding === 'QUEST' || it.bonding === 4) return 'a quest item, it cannot be sold on an auction house';
++  return null;
++}
++
+ /** Resolve icon urls for items that have a media id but no icon yet. */
+ export async function resolveIcons(client: BlizzardClient, db: DB, limit = 2000): Promise<number> {
+   const rows = db.prepare('SELECT id, media_id FROM items WHERE media_id IS NOT NULL AND icon_url IS NULL LIMIT ?').all(limit) as Array<{ id: number; media_id: number }>;
+diff --git a/src/datasets/eglink.ts b/src/datasets/eglink.ts
+index 4908c68..93ed53d 100644
+--- a/src/datasets/eglink.ts
++++ b/src/datasets/eglink.ts
+@@ -72,7 +72,10 @@ export function vendorFaction(reactions: Record<string, Set<number>>, sides: Set
+   const hOk = h.some(r => r >= 4) || sides.has('Horde');
+   if (aOk && hOk) return 'neutral';
+   const aHostile = !aOk && a.length > 0;
+-  if (!aHostile && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
++  // An NPC EG Link records on the Horde side is Horde's, even inside a Steamwheedle town: Creeg Bothunk (263570),
++  // the Darkspear Islands quartermaster, stands at 65.0, 34.6, inside the Ratchet box.
++  const hordeSide = sides.has('Horde');
++  if (!aHostile && !hordeSide && ((npcId != null && KNOWN_NEUTRAL[Number(npcId)]) || town)) return 'neutral';
+   if (hOk && h.length && Math.max(...h) === 4 && !sides.has('Horde')) return 'unconfirmed';
+   // Alliance players saw it at exactly Neutral: a neutral faction, and usable by Alliance either way.
+   if (aOk && a.length && Math.max(...a) === 4 && !sides.has('Alliance')) return 'neutral';
+diff --git a/src/datasets/recipes.ts b/src/datasets/recipes.ts
+index ca26bf1..5a9f2c9 100644
+--- a/src/datasets/recipes.ts
++++ b/src/datasets/recipes.ts
+@@ -1,7 +1,7 @@
+ import type { BlizzardClient } from '../blizzard/client.ts';
+ import { ProfessionIndex, Profession, SkillTier, Recipe } from '../blizzard/contracts.ts';
+ import { type DB, tx } from '../store/db.ts';
+-import { pool, resolveItems, applyItemSparse, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
++import { pool, resolveItems, applyItemSparse, itemTradeable, type ResolveResult, type SparseCheck } from '../catalog/items.ts';
+ import { fetchGameData, loadNewestCachedGameData, parseCsv, type GameData } from './gamedata.ts';
+ import { applyGameToEgLink, type GameFixes } from './eglink.ts';
+ 
+@@ -77,12 +77,10 @@ export interface RecipeReport {
+   randomYield: Array<{ id: number; name: string }>;
+   live: number; notLive: number;
+   /** conversions kept, left out because an item is not in Forever, because an item cannot be traded, or because the data does not prove the counts */
+-  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; boundByApiOnly: number; unproven: Array<{ spellId: number; name: string; why: string }> };
++  conversions: { kept: Array<{ id: number; name: string }>; notLive: number; bound: number; unproven: Array<{ spellId: number; name: string; why: string }> };
+ }
+ 
+ /** Blizzard binding words that mean an item can never reach the auction house. */
+-const BOUND_WORDS = new Set(['ON_ACQUIRE', 'QUEST']);
+-
+ export interface RecipeBuildOpts {
+   /** craft spell -> lowest rank an Alliance or neutral trainer teaches it at (EG Link) */
+   trainerRanks: Map<number, number>;
+@@ -90,22 +88,31 @@ export interface RecipeBuildOpts {
+   hordeRanks?: Map<number, number>;
+   /** whether an item is in Forever (B27) */
+   exists: (itemId: number) => boolean;
+-  /** the live API's binding for an item (ON_ACQUIRE, QUEST...), from the items table; a hotfix can bind what ItemSparse leaves unbound */
+-  apiBinding?: (itemId: number) => string | null | undefined;
++  /**
++   * whether a teaching item is confirmed in Forever: Blizzard's Forever item data has it (status 200, source forever)
++   * or a house listed it. Stricter than `exists`, because ItemSparse keeps deprecated recipe items (Pattern: Double
++   * stitched Leather Gloves OLD 4295). Defaults to `exists`.
++   */
++  teachConfirmed?: (itemId: number) => boolean;
++  /** the one tradeable verdict (itemTradeable: listings, then the Forever API, then ItemSparse); undefined for unknown items */
++  tradeable?: (itemId: number) => boolean | undefined;
+ }
+ 
+ /**
+- * The item that teaches a craft spell: of the Forever items whose learn effect casts it, the one needing the lowest
+- * RequiredSkillRank, then the lowest id. Its rank is that RequiredSkillRank (0 means no rank needed, so 1).
++ * The item that teaches a craft spell: of the items whose learn effect casts it and that are confirmed in Forever
++ * (`confirmed`), the one needing the lowest RequiredSkillRank, then the lowest id. A RequiredSkillRank of 0 says
++ * nothing about the rank, so such an item is kept only when no ranked one exists, and gives no skill (null): the
++ * learn rank then falls through to the next source, never to 1.
+  */
+-export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, exists: (itemId: number) => boolean): { itemId: number; skill: number } | null {
++export function teachingItem(game: Pick<GameData, 'teachers' | 'items'>, spellId: number | null, confirmed: (itemId: number) => boolean): { itemId: number; skill: number | null } | null {
+   if (spellId == null) return null;
+-  let best: { itemId: number; skill: number } | null = null;
++  let best: { itemId: number; skill: number | null } | null = null;
++  const rank = (x: number | null) => x ?? Infinity;
+   for (const itemId of game.teachers.get(spellId) ?? []) {
+     const it = game.items.get(itemId);
+-    if (!it || !exists(itemId)) continue;
+-    const skill = Math.max(1, it.requiredSkillRank);
+-    if (!best || skill < best.skill || (skill === best.skill && itemId < best.itemId)) best = { itemId, skill };
++    if (!it || !confirmed(itemId)) continue;
++    const skill = it.requiredSkillRank > 0 ? it.requiredSkillRank : null;
++    if (!best || rank(skill) < rank(best.skill) || (rank(skill) === rank(best.skill) && itemId < best.itemId)) best = { itemId, skill };
+   }
+   return best;
+ }
+@@ -152,7 +159,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
+   const report: RecipeReport = {
+     build: game.build, recipes: 0, learn: { trainer_alliance: 0, trainer_horde_only: 0, item: 0, auto: 0, yellow: 0, conversion: 0, none: 0, teachItem: 0 },
+     byProfession: {}, source: { wago: 0, blizzard: 0, both: 0 }, dropped: { test: [], seasonOfDiscovery: 0 },
+-    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, boundByApiOnly: 0, unproven: [] },
++    notCrafts: 0, disagreements: [], randomYield: [], live: 0, notLive: 0, conversions: { kept: [], notLive: 0, bound: 0, unproven: [] },
+   };
+   const profLines = new Map<number, string>();
+   for (const p of blizzard.professions) profLines.set(p.id, p.name);
+@@ -215,7 +222,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
+     const cd = spell != null ? game.cooldowns.get(spell) : undefined;
+     const hasThresholds = !!s && (s.yellow > 0 || s.grey > 0);
+     const yellow = hasThresholds ? s!.yellow : null, grey = hasThresholds ? s!.grey : null;
+-    const teach = teachingItem(game, spell, opts.exists);
++    const teach = teachingItem(game, spell, opts.teachConfirmed ?? opts.exists);
+     const learn = learnFrom({
+       trainer: spell != null ? opts.trainerRanks.get(spell) : null,
+       horde: spell != null ? opts.hordeRanks?.get(spell) : null,
+@@ -237,7 +244,7 @@ export function buildRecipes(game: GameData, blizzard: { professions: Array<{ id
+     };
+     out.push(r);
+   }
+-  out.push(...buildConversions(game, opts.exists, report, opts.apiBinding));
++  out.push(...buildConversions(game, opts.exists, report, opts.tradeable));
+   for (const r of out) {
+     report.recipes++;
+     report.learn[r.learnSource ?? 'none']++;
+@@ -262,7 +269,7 @@ const NUMBER_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, thre
+  * names every count above 1, so inputs and outputs are proven from data, only when every item is in Forever, and
+  * only when the game table shows every item can be traded (quest spells like "fill the flask" are left out).
+  */
+-export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, apiBinding?: RecipeBuildOpts['apiBinding']): BuiltRecipe[] {
++export function buildConversions(game: GameData, exists: (itemId: number) => boolean, report?: RecipeReport, tradeable?: RecipeBuildOpts['tradeable']): BuiltRecipe[] {
+   const slaSpells = new Set([...game.sla.values()].map(s => s.spellId));
+   const bySpell = new Map<number, Array<{ itemId: number; inputs: Array<{ itemId: number; quantity: number }> }>>();
+   for (const u of game.itemUses) {
+@@ -299,12 +306,16 @@ export function buildConversions(game: GameData, exists: (itemId: number) => boo
+     const live = exists(product) && inputs.every(i => exists(i.itemId));
+     if (!live) { if (report) report.conversions.notLive++; continue; }
+     // Quest items (fill a flask, sign a paper) pass every rule above but can never be bought or sold. Keep a conversion
+-    // only when every item it touches can be traded: bound if EITHER the game table (bonding pickup or quest, or no row)
+-    // OR the live API says pickup or quest, since a server hotfix can bind what ItemSparse leaves unbound (Rogue poisons).
++    // only when every item it touches can be traded, by the one verdict (catalog itemTradeable: recent listings, then the
++    // Forever API binding, then ItemSparse). An item with no verdict falls back to the game table: bonding pickup or
++    // quest, or no row, counts as bound.
+     const touched = [product, ...inputs.map(i => i.itemId)];
+-    const sparseBound = touched.some(i => { const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4; });
+-    const apiBound = touched.some(i => BOUND_WORDS.has(apiBinding?.(i) ?? ''));
+-    if (sparseBound || apiBound) { if (report) { report.conversions.bound++; if (!sparseBound) report.conversions.boundByApiOnly++; } continue; }
++    const bound = touched.some(i => {
++      const v = tradeable?.(i);
++      if (v != null) return !v;
++      const b = game.items.get(i)?.bonding; return b == null || b === 1 || b === 4;
++    });
++    if (bound) { if (report) report.conversions.bound++; continue; }
+     const cd = game.cooldowns.get(spellId);
+     const id = CONVERSION_ID_BASE + spellId;
+     out.push({
+@@ -392,7 +403,7 @@ export function summarizeRecipes(r: SyncRecipesResult): string {
+   const l = p.learn;
+   return `${r.recipes} recipes (${p.source.both} both sources, ${p.source.wago} wago only, ${p.source.blizzard} blizzard only), ${p.live} live, `
+     + `${p.disagreements.length} disagreements, ${p.randomYield.length} random yield, ${p.conversions.kept.length} conversions `
+-    + `(${p.conversions.bound} left out as bound, ${p.conversions.boundByApiOnly} of them by the live API only), `
++    + `(${p.conversions.bound} left out as bound), `
+     + `dropped ${p.dropped.test.length} test and ${p.dropped.seasonOfDiscovery} Season of Discovery; learned from: ${l.trainer_alliance} Alliance trainer, `
+     + `${l.item} item, ${l.auto} automatic, ${l.trainer_horde_only} Horde trainer only, ${l.yellow} yellow guess, ${l.conversion} conversion, ${l.none} unknown; ${l.teachItem} have a teaching item; `
+     + `items ${r.items.bySource.forever} forever, ${r.items.bySource.classic1x} classic1x, ${r.items.bySource.wago} game table only, ${r.items.bySource.none} unknown; `
+@@ -448,7 +459,7 @@ export async function syncRecipes(client: BlizzardClient, db: DB, dataDir: strin
+   const items = await resolveItems(client, db, [...ids], { maxAgeMs: Infinity, game });
+   log(`recipes: ${ids.size} recipe items, ${items.fetched} fetched (${items.bySource.forever} forever, ${items.bySource.classic1x} classic1x), ${items.bySource.wago} from the game table only, ${items.bySource.none} unknown, ${items.errors} errors, ${client.throttled} throttled so far`);
+   const sparse = applyItemSparse(db, game);
+-  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), apiBinding: apiBindings(db) });
++  const { recipes, report } = buildRecipes(game, bz, { trainerRanks, hordeRanks, exists: foreverItems(db, game), teachConfirmed: confirmedInForever(db), tradeable: tradeableFn(db) });
+   const withThresholds = recipes.filter(r => r.yellow != null).length;
+   writeRecipes(db, recipes, {
+     version: `wago ${game.build} + blizzard`,
+@@ -473,9 +484,16 @@ export function trainerRankMaps(db: DB): { trainerRanks: Map<number, number>; ho
+   return { trainerRanks, hordeRanks };
+ }
+ 
+-/** The live API's binding per item, from the catalog. */
+-export function apiBindings(db: DB): (itemId: number) => string | null {
+-  const m = new Map<number, string>();
+-  for (const r of db.prepare(`SELECT id, binding FROM items WHERE status = 200 AND binding IS NOT NULL`).all() as Array<{ id: number; binding: string }>) m.set(r.id, r.binding);
+-  return id => m.get(id) ?? null;
++/** Confirmed in Forever: Blizzard's Forever item data has it, or any house listed it. Used for teaching items. */
++export function confirmedInForever(db: DB): (itemId: number) => boolean {
++  const known = new Set<number>();
++  for (const r of db.prepare(`SELECT id FROM items WHERE status = 200 AND data_source = 'forever'
++    UNION SELECT DISTINCT item_id FROM item_stats WHERE listings > 0 UNION SELECT DISTINCT item_id FROM item_daily`).all() as Array<{ id: number }>) known.add(r.id);
++  return id => known.has(id);
++}
++
++/** The catalog's tradeable verdict per item, as a lookup for buildRecipes. */
++export function tradeableFn(db: DB): (itemId: number) => boolean | undefined {
++  const m = itemTradeable(db);
++  return id => m.get(id)?.tradeable;
+ }
+diff --git a/src/engine/engine.ts b/src/engine/engine.ts
+index b35a265..cd6fe69 100644
+--- a/src/engine/engine.ts
++++ b/src/engine/engine.ts
+@@ -4,7 +4,7 @@ import type { BlizzardClient } from '../blizzard/client.ts';
+ import { Collector, KINDS, type SnapshotEvent } from './collector.ts';
+ import { syncHouses, trackedHouses } from './houses.ts';
+ import { buildContext } from './context.ts';
+-import { resolveItems, resolveIcons } from '../catalog/items.ts';
++import { resolveItems, resolveIcons, itemTradeable } from '../catalog/items.ts';
+ import { vendorDump } from '../detectors/vendorDump.ts';
+ import { vendorSupply } from '../detectors/vendorSupply.ts';
+ import { crossHouse } from '../detectors/crossHouse.ts';
+@@ -147,6 +147,8 @@ export class Engine {
+     const a = await alertCycle(this.db, this.opts.webhookUrl, fresh, pinned, { now, fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null });
+     this.log(`detect: ${plays.length} plays (${life.created.length} new, ${life.gone.length} gone), alert ${a.sent ? `sent ${a.sent}` : a.skipped}`);
+     // The flip engine (docs/flip-plan.md): every flip on Chip's two houses, crafting and flipping ranked together.
++    // Who can trade what, from this hour's listings first, so the flip gate and the page agree.
++    try { itemTradeable(this.db, now); } catch (e) { this.log(`tradeable check failed: ${(e as Error).message}`); }
+     hourlyFlips(this.db, (h, k) => this.collector.listings(h, k), now, this.log);
+     return { plays, alerted: a.sent };
+   }
+diff --git a/src/flips/families.ts b/src/flips/families.ts
+index 2e4b5b0..9904bdb 100644
+--- a/src/flips/families.ts
++++ b/src/flips/families.ts
+@@ -6,6 +6,7 @@ import type { SellBook } from './sellBook.ts';
+ import type { FlipInputs, FlipItem, FlipRecipe } from './inputs.ts';
+ import type { Candidate } from './evaluate.ts';
+ import type { Family, HeldBack, HouseRef, SellQuote } from './types.ts';
++import { tradeBlock } from '../catalog/items.ts';
+ 
+ /**
+  * Every flip family, as candidates for the evaluator. A family only says what is bought, how, and where it sells;
+@@ -20,9 +21,8 @@ export const flipKey = (family: Family, sellHouseId: number | null, itemId: numb
+ /** Bind on pickup (Blizzard binding or the game table's Bonding 1) or a quest item: never sold on an auction house. */
+ export function cannotList(it: FlipItem | undefined): string | null {
+   if (!it) return null;
+-  if (it.binding === 'ON_ACQUIRE' || it.bonding === 1) return 'binds on pickup, it cannot be sold on an auction house';
+-  if (it.binding === 'QUEST' || it.bonding === 4) return 'a quest item, it cannot be sold on an auction house';
+-  return null;
++  // One authority for both the flip engine and the conversion filter: listings, then Forever API, then ItemSparse.
++  return tradeBlock(it);
+ }
+ 
+ const houseWord = (h: HouseRef) => (h.faction === 'blackwater' ? 'Blackwater' : 'Alliance');
+diff --git a/tests/fixtures/eglink/npcs-cut.json b/tests/fixtures/eglink/npcs-cut.json
+index 4d3dbc9..c228486 100644
+--- a/tests/fixtures/eglink/npcs-cut.json
++++ b/tests/fixtures/eglink/npcs-cut.json
+@@ -1,5 +1,5 @@
+ {
+- "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210.",
++ "note": "Real EG Link records (CC BY 4.0, Efficient Games), cut November 25 to a few NPCs: Cylania 4164, Kixxle 8305, Kzixx 3134, Salazar Bloch 4581, Tharynn Bouden 66, Fradd Swiftgear 2682, trainers 3603 and 4210, Creeg Bothunk 263570, Old Man Heming 2626.",
+  "builds": [
+   {
+    "build": "1.60.1.70205",
+@@ -150,6 +150,40 @@
+        "stack": 1
+       }
+      }
++    },
++    "263570": {
++     "name": "Creeg Bothunk",
++     "lastSeen": "2026-11-05",
++     "positions": [
++      {
++       "instance": 1,
++       "mapX": 0.6503,
++       "mapY": 0.3464,
++       "uiMap": 1413,
++       "worldX": -728.1,
++       "worldY": -3966.5
++      }
++     ],
++     "entries": {
++      "item:17348": {
++       "costs": {
++        "4": 1000
++       },
++       "itemId": 17348,
++       "name": "Major Healing Draught",
++       "sources": 1,
++       "stack": 1
++      },
++      "item:17349": {
++       "costs": {
++        "4": 500
++       },
++       "itemId": 17349,
++       "name": "Superior Healing Draught",
++       "sources": 1,
++       "stack": 1
++      }
++     }
+     }
+    },
+    "npcs": {
+@@ -164,6 +198,10 @@
+     "4581": {
+      "name": "Salazar Bloch",
+      "side": "Horde"
++    },
++    "263570": {
++     "name": "Creeg Bothunk",
++     "side": "Horde"
+     }
+    },
+    "creatures": {
+@@ -191,6 +229,14 @@
+        5
+       ]
+      }
++    },
++    "263570": {
++     "name": "Creeg Bothunk",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
+     }
+    },
+    "trainers": {}
+@@ -214,6 +260,31 @@
+   {
+    "build": "1.60.1.70862",
+    "vendors": {
++    "2626": {
++     "name": "Old Man Heming",
++     "lastSeen": "2026-11-08",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.2743,
++       "mapY": 0.7713,
++       "uiMap": 1434,
++       "worldX": -14449.8,
++       "worldY": 470.4
++      }
++     ],
++     "entries": {
++      "item:6532": {
++       "costs": {
++        "4": 250
++       },
++       "itemId": 6532,
++       "name": "Bright Baubles",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
+     "4581": {
+      "name": "Salazar Bloch",
+      "lastSeen": "2026-11-08",
+@@ -277,6 +348,9 @@
+     }
+    },
+    "npcs": {
++    "2626": {
++     "name": "Old Man Heming"
++    },
+     "4581": {
+      "name": "Salazar Bloch",
+      "side": "Horde"
+@@ -286,6 +360,14 @@
+     }
+    },
+    "creatures": {
++    "2626": {
++     "name": "Old Man Heming",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
++    },
+     "4581": {
+      "name": "Salazar Bloch",
+      "reactions": {
+@@ -308,6 +390,31 @@
+   {
+    "build": "1.60.1.70888",
+    "vendors": {
++    "2626": {
++     "name": "Old Man Heming",
++     "lastSeen": "2026-11-12",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.2745,
++       "mapY": 0.7713,
++       "uiMap": 1434,
++       "worldX": -14449.9,
++       "worldY": 469
++      }
++     ],
++     "entries": {
++      "item:6532": {
++       "costs": {
++        "4": 250
++       },
++       "itemId": 6532,
++       "name": "Bright Baubles",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
+     "3134": {
+      "name": "Kzixx",
+      "lastSeen": "2026-11-11",
+@@ -360,6 +467,9 @@
+     }
+    },
+    "npcs": {
++    "2626": {
++     "name": "Old Man Heming"
++    },
+     "3134": {
+      "name": "Kzixx"
+     },
+@@ -369,6 +479,14 @@
+     }
+    },
+    "creatures": {
++    "2626": {
++     "name": "Old Man Heming",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
++    },
+     "3134": {
+      "name": "Kzixx",
+      "reactions": {
+@@ -479,6 +597,31 @@
+   {
+    "build": "1.60.1.70959",
+    "vendors": {
++    "2626": {
++     "name": "Old Man Heming",
++     "lastSeen": "2026-11-19",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.2745,
++       "mapY": 0.7711,
++       "uiMap": 1434,
++       "worldX": -14449,
++       "worldY": 468.9
++      }
++     ],
++     "entries": {
++      "item:6532": {
++       "costs": {
++        "4": 250
++       },
++       "itemId": 6532,
++       "name": "Bright Baubles",
++       "sources": 1,
++       "stack": 1
++      }
++     }
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "lastSeen": "2026-11-18",
+@@ -531,6 +674,9 @@
+     }
+    },
+    "npcs": {
++    "2626": {
++     "name": "Old Man Heming"
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "side": "Alliance"
+@@ -538,9 +684,22 @@
+     "4581": {
+      "name": "Salazar Bloch",
+      "side": "Horde"
++    },
++    "263570": {
++     "name": "Creeg Bothunk",
++     "side": "Horde"
+     }
+    },
+    "creatures": {
++    "2626": {
++     "name": "Old Man Heming",
++     "reactions": {
++      "Horde": [
++       4,
++       5
++      ]
++     }
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "reactions": {
+@@ -557,6 +716,14 @@
+        7
+       ]
+      }
++    },
++    "263570": {
++     "name": "Creeg Bothunk",
++     "reactions": {
++      "Horde": [
++       4
++      ]
++     }
+     }
+    },
+    "trainers": {}
+@@ -564,6 +731,32 @@
+   {
+    "build": "1.60.1.71037",
+    "vendors": {
++    "2626": {
++     "name": "Old Man Heming",
++     "lastSeen": "2026-11-22",
++     "positions": [
++      {
++       "instance": 0,
++       "mapX": 0.2743,
++       "mapY": 0.7715,
++       "uiMap": 1434,
++       "worldX": -14450.9,
++       "worldY": 470.3
++      }
++     ],
++     "entries": {
++      "item:6532": {
++       "costs": {
++        "4": 250,
++        "5": 250
++       },
++       "itemId": 6532,
++       "name": "Bright Baubles",
++       "sources": 2,
++       "stack": 1
++      }
++     }
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "lastSeen": "2026-11-21",
+@@ -650,6 +843,9 @@
+     }
+    },
+    "npcs": {
++    "2626": {
++     "name": "Old Man Heming"
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "side": "Alliance"
+@@ -672,6 +868,15 @@
+     }
+    },
+    "creatures": {
++    "2626": {
++     "name": "Old Man Heming",
++     "reactions": {
++      "Horde": [
++       4,
++       5
++      ]
++     }
++    },
+     "2682": {
+      "name": "Fradd Swiftgear",
+      "reactions": {
+diff --git a/tests/unit/eglink.test.ts b/tests/unit/eglink.test.ts
+index e1c6a74..9748701 100644
+--- a/tests/unit/eglink.test.ts
++++ b/tests/unit/eglink.test.ts
+@@ -16,7 +16,7 @@ describe('vendor faction (test T4)', () => {
+   it('Alliance NPC is Alliance (Edna Mullby)', () => expect(vendorFaction(S({ Alliance: [5, 6] }), new Set(['Alliance']))).toBe('alliance'));
+   it('Old Man Heming (2626) is usable: Chip bought Bright Baubles from him in game (B3, V22)', () => {
+     expect(vendorFaction(S({ Horde: [4] }), new Set(), 2626)).toBe('neutral');
+-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 2626)).toBe('neutral');
++    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 2626)).toBe('neutral');
+   });
+   // Round 2 fix 7: seen only by Horde at Neutral, outside a Steamwheedle town and not a named case: unconfirmed.
+   it('seen only by Horde at Neutral elsewhere is unconfirmed, not neutral', () => expect(vendorFaction(S({ Horde: [4] }), new Set())).toBe('unconfirmed'));
+@@ -27,7 +27,8 @@ describe('vendor faction (test T4)', () => {
+     expect(steamwheedleTown(1452, 61.2, 37.1)).toBe('Everlook');   // Qia
+     expect(steamwheedleTown(1413, 41.8, 38.6)).toBeNull();          // Kiknikle, not in Ratchet
+     expect(steamwheedleTown(1434, 32.7, 29.2)).toBeNull();          // Nerrist, Grom'gol
+-    expect(vendorFaction(S({ Horde: [5] }), new Set(['Horde']), 1, 'Ratchet')).toBe('neutral');
++    expect(vendorFaction(S({ Horde: [4, 5] }), new Set(), 1, 'Ratchet')).toBe('neutral');
++    expect(vendorFaction(S({ Horde: [4] }), new Set(['Horde']), 1, 'Ratchet')).toBe('horde');
+     expect(vendorFaction(S({ Horde: [5], Alliance: [2] }), new Set(), 1, 'Ratchet')).toBe('horde');
+   });
+   it('seen by Alliance at Neutral is neutral', () => expect(vendorFaction(S({ Alliance: [4] }), new Set())).toBe('neutral'));
+@@ -82,6 +83,15 @@ describe('round 2 fixes on real EG Link records', () => {
+       { name: 'Elixir of Minor Strength', skill: 'Alchemy' }, { name: 'Cerulean Dye', skill: 'Alchemy' }]);
+     expect(db.prepare('SELECT name, skill FROM trainer_spells WHERE npc_id = 4210').get()).toEqual({ name: 'Spiced Wolf Meat', skill: 'Cooking' });
+   });
++  it('round 3 D1: Creeg Bothunk (263570) stands inside the Ratchet box but EG Link records his side as Horde, so he stays Horde', () => {
++    const v = V(263570);
++    expect(v.length).toBeGreaterThan(0);
++    expect(steamwheedleTown(v[0]!.uiMap, v[0]!.x, v[0]!.y)).toBe('Ratchet');
++    expect(v.every(x => x.faction === 'horde')).toBe(true);
++  });
++  it('Old Man Heming (2626) from his real records is neutral: Bright Baubles usable', () => {
++    expect(V(2626, 6532).map(x => x.faction)).toEqual(['neutral']);
++  });
+   it('fix 7: Kixxle (8305), seen only by Horde at Neutral, is unconfirmed; Kzixx (3134) stays neutral as a known neutral', () => {
+     expect(V(8305).every(v => v.faction === 'unconfirmed')).toBe(true);
+     expect(V(3134).every(v => v.faction === 'neutral')).toBe(true);
+diff --git a/tests/unit/items-binding.test.ts b/tests/unit/items-binding.test.ts
+index 491f08c..5ab849a 100644
+--- a/tests/unit/items-binding.test.ts
++++ b/tests/unit/items-binding.test.ts
+@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
+ import { checkItemsAfterRefresh } from '../../src/datasets/recipes.ts';
+ import { BlizzardClient } from '../../src/blizzard/client.ts';
+ import { ItemResponse } from '../../src/blizzard/contracts.ts';
+-import { resolveItems, applyItemSparse, getItem } from '../../src/catalog/items.ts';
++import { resolveItems, applyItemSparse, getItem, itemTradeable, tradeBlock } from '../../src/catalog/items.ts';
+ import { loadGameDataFromDir, type SparseItem } from '../../src/datasets/gamedata.ts';
+ import { openDb } from '../../src/store/db.ts';
+ import { tempDir } from '../helpers.ts';
+@@ -136,3 +136,41 @@ describe('binding against ItemSparse.Bonding (B23)', () => {
+     expect((db.prepare(`SELECT note FROM datasets WHERE name = 'gamedata'`).get() as { note: string }).note).toBe(`wago wowf tables; ${line}`);
+   });
+ });
++
++// Round 3 D2: one tradeable verdict. Rows as the live catalog held them on November 25 (wowf.db copy), listings as
++// recorded on tracked houses: Blinding Powder 5530 and Encrypted Twilight Text 20404 listed that hour, Piccolo of the
++// Flaming Fire 13379 too; Instant Poison 6947 last listed November 24, more than 24 hours before.
++describe('itemTradeable: market evidence, then the Forever API, then ItemSparse (round 3 D2)', () => {
++  const NOW = 1795631176000;
++  const setup = () => {
++    const db = openDb(tempDir(), ':memory:');
++    db.exec(`INSERT INTO houses (id, name, faction, cut, tracked) VALUES (111, 'A', 'alliance', 0.05, 1), (999, 'Old', 'alliance', 0.05, 0);
++      INSERT INTO items (id, name, binding, bonding, status, fetched_at, data_source) VALUES
++        (5530, 'Blinding Powder', NULL, 1, 200, 0, 'forever'),
++        (20404, 'Encrypted Twilight Text', NULL, 4, 200, 0, 'forever'),
++        (13379, 'Piccolo of the Flaming Fire', 'ON_ACQUIRE', NULL, 200, 0, 'classic1x'),
++        (6947, 'Instant Poison', 'ON_ACQUIRE', 1, 200, 0, 'forever'),
++        (1, 'Unlisted, unbound in the API, bound in ItemSparse', NULL, 1, 200, 0, 'forever'),
++        (2, 'Unlisted, Classic says pickup', 'ON_ACQUIRE', 0, 200, 0, 'classic1x'),
++        (3, 'Unlisted, only ItemSparse', NULL, 1, 404, 0, 'wago');
++      INSERT INTO item_stats (snapshot_id, house_id, item_id, published_at, floor, units_at_floor, units_within5, total_units, listings, ladder) VALUES
++        (1, 111, 5530, ${NOW}, 100, 1, 1, 6470, 40, '[]'), (1, 111, 20404, ${NOW}, 100, 1, 1, 45, 45, '[]'), (1, 111, 13379, ${NOW}, 100, 1, 1, 30, 30, '[]'),
++        (2, 111, 6947, 1795501512000, 10, 1, 1, 5, 5, '[]'), (3, 999, 1, ${NOW}, 10, 1, 1, 5, 5, '[]');`);
++    return db;
++  };
++  it('listed in the last 24 hours wins; poisons stay blocked; the API beats ItemSparse; Classic binding alone never blocks', () => {
++    const t = itemTradeable(setup(), NOW);
++    expect(t.get(5530)).toMatchObject({ tradeable: true, by: 'listed' });
++    expect(t.get(20404)).toMatchObject({ tradeable: true, by: 'listed' });
++    expect(t.get(13379)).toMatchObject({ tradeable: true, by: 'listed' });
++    expect(t.get(6947)).toMatchObject({ tradeable: false, by: 'api' });
++    expect(t.get(1)).toMatchObject({ tradeable: true, by: 'api' }); // its listing is on an untracked house
++    expect(t.get(2)).toMatchObject({ tradeable: true });
++    expect(t.get(3)).toMatchObject({ tradeable: false, by: 'itemsparse' });
++  });
++  it('the flip gate reads the same verdict', () => {
++    itemTradeable(setup(), NOW);
++    expect(tradeBlock({ id: 5530, binding: null, bonding: 1 })).toBeNull();
++    expect(tradeBlock({ id: 6947, binding: 'ON_ACQUIRE', bonding: 1 })).toMatch(/binds on pickup/);
++  });
++});
+diff --git a/tests/unit/recipe-build.test.ts b/tests/unit/recipe-build.test.ts
+index 3cf9b3f..5ed4626 100644
+--- a/tests/unit/recipe-build.test.ts
++++ b/tests/unit/recipe-build.test.ts
+@@ -190,15 +190,16 @@ describe('conversions from item use spells', () => {
+     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
+     expect(r.report.conversions.bound).toBe(2);
+   });
+-  it('bound if EITHER source says so: the live API binds Lesser Magic Essence on pickup while ItemSparse says unbound (a server hotfix)', () => {
++  it('the one tradeable verdict decides: blocked when it says so even if ItemSparse is unbound, kept when it says tradeable even if ItemSparse binds', () => {
+     expect(game.items.get(10938)?.bonding).toBe(0);
+-    const r = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10938 ? 'ON_ACQUIRE' : null) });
++    const r = buildRecipes(game, blizzard, { trainerRanks, exists, tradeable: id => (id === 10938 ? false : undefined) });
+     expect(r.recipes.some(x => x.kind === 'conversion')).toBe(false);
+-    expect(r.report.conversions).toMatchObject({ bound: 2, boundByApiOnly: 2 });
+-    const q = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: id => (id === 10939 ? 'QUEST' : 'ON_USE') });
+-    expect(q.report.conversions.bound).toBe(2);
+-    const free = buildRecipes(game, blizzard, { trainerRanks, exists, apiBinding: () => 'ON_EQUIP' });
+-    expect(free.report.conversions.kept.length).toBe(2);
++    expect(r.report.conversions.bound).toBe(2);
++    const items = new Map(game.items).set(10938, { ...game.items.get(10938)!, bonding: 1 });
++    const listed = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => true });
++    expect(listed.report.conversions.kept.length).toBe(2);
++    const noVerdict = buildRecipes({ ...game, items }, blizzard, { trainerRanks, exists: id => items.has(id), tradeable: () => undefined });
++    expect(noVerdict.report.conversions.bound).toBe(2);
+   });
+ });
+ 
