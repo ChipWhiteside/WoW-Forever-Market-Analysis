@@ -52,3 +52,9 @@ Open question when stopped: after "recipes on start" the engine went quiet for 1
 - About 3,100 listed items are 404 on the Forever item API and 200 on Classic (`static-classic1x-us`).
 - Transmutes share cooldown category 310; Mooncloth 95 h on its own; Iron to Gold 1 h.
 - Live house 111 (November 23): about 120k equipment listings over 5,593 items, 92k commodity listings over 1,345 items.
+
+## State at the November 26 limit stop (newest, read first)
+- Merged and pushed: game data (3 test rounds done), sale counting round 1 fixes, flip core through round 5 (risk aware best amount; Cerulean Dye at Ben's prices: 22 crafts, medium risk, about 2g 87s; bad case model: tomorrow gets its own queue behind tonight's shortfall, accepted). 304 tests pass.
+- In progress when stopped: sale counting round 2 fixes (agent was fixing a tie break and two tests); its work is in docs/handoff/sale-counting-round2-fixes.patch. Its brief: drop the equipment pull term; t bound on hourly units with the Poisson floor; expose Demand.hourlyMean, hourlySd and hourly hours (flip engine reads `hourlyHours`); dominant front reposter scenario and flag; netPerDay formula; out of sample seeds 301 to 312.
+- Next: finish that, then sale counting test round 3 and flip core test round 3 (probe Timbermaw Brawlers at 464g and Felblood Soul Bag at 65g), then whole system rounds 1 to 3, Flips page screenshots, tutorial.
+- **Chip's request for the restart: first assess how to do this work more token efficiently without losing depth or quality, then continue.**

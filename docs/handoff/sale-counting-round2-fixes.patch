@@ -1,0 +1,606 @@
+diff --git a/src/analysis/aggregate.ts b/src/analysis/aggregate.ts
+index fd3af54..0948184 100644
+--- a/src/analysis/aggregate.ts
++++ b/src/analysis/aggregate.ts
+@@ -344,7 +344,9 @@ export function aggregate(current: Listing[], previous: Listing[] | null, opts:
+           let best: Listing | null = null;
+           for (const n of fresh) {
+             if (used.has(n.id) || n.quantity !== e.l.quantity || Math.abs(n.unitPrice! - old) > old * 0.25) continue;
+-            if (!best || Math.abs(n.unitPrice! - old) < Math.abs(best.unitPrice! - old) || (n.unitPrice === best.unitPrice && n.id > best.id)) best = n;
++            const dn = Math.abs(n.unitPrice! - old), db = best ? Math.abs(best.unitPrice! - old) : Infinity;
++            // Closest price first; then the cheaper post; then the newest. Same answer whatever order the posts came in.
++            if (!best || dn < db || (dn === db && (n.unitPrice! < best.unitPrice! || (n.unitPrice === best.unitPrice && n.id > best.id)))) best = n;
+           }
+           if (best) { used.add(best.id); e.verdict = 'undercut'; }
+         }
+diff --git a/src/analysis/history.ts b/src/analysis/history.ts
+index 69d0b3b..24cc1c3 100644
+--- a/src/analysis/history.ts
++++ b/src/analysis/history.ts
+@@ -22,40 +22,79 @@ export const MIN_PUBLISHES_LOW = 6;
+ 
+ /**
+  * Share of listings sellers pull each hour where no buyer can reach, from the real snapshots (B38). A pull of the
+- * listing at the front reads as a sale, and nothing in a snapshot tells it apart (P15), so the cautious estimate
+- * takes off the pulls expected at this rate. Thin commodity markets are 5 listings or fewer.
++ * stack at the front of a commodity market reads as a sale, and nothing in a snapshot tells it apart (P15).
++ * Thin commodity markets are 5 listings or fewer. Equipment needs no allowance: there the counter also misses buys
++ * (a dearer copy picked, a buy erased as an undercut) and in the simulator those offset the pulls (B36, B42).
+  */
+ export const PULL_RATE = { deep: 0.022, thin: 0.026, equipment: 0.035 } as const;
+-/** Equipment copies within this many times the floor read as sold when pulled (the counter's band, EQUIP_SOLD_BAND). */
+-const PULL_BAND = 1.25;
++
++/** Pull rate that applies to one hourly row: commodities only. */
++export function rowPullRate(kind: 'commodities' | 'auctions', listings: number): number {
++  if (kind !== 'commodities' || listings <= 0) return 0;
++  return listings <= 5 ? PULL_RATE.thin : PULL_RATE.deep;
++}
++
++/**
++ * Units judged sold in one row less the units expected to be pulls of the front: only the stack at the front of the
++ * previous publish can be pulled and still read as bought, so the pull rate times that publish's units at the floor.
++ * Can be below 0 for one hour (it is an expectation); sums are what count. Equipment rows are left as they are.
++ */
++export function rowNet(kind: 'commodities' | 'auctions', prevListings: number, prevUnitsAtFloor: number, sold: number): number {
++  return sold - rowPullRate(kind, prevListings) * prevUnitsAtFloor;
++}
++
++/** One sided Student t quantile (Cornish Fisher expansion around the normal; within 0.002 of tables from 5 degrees of freedom). */
++export function tQuantile(conf: number, df: number): number {
++  const z = normalQuantile(conf);
++  if (!Number.isFinite(df) || df > 1e6) return z;
++  const z3 = z ** 3, z5 = z ** 5, z7 = z ** 7;
++  return z + (z3 + z) / (4 * df) + (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2) + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3);
++}
++
++/** What the cautious estimate is built from, over one item's watched window. */
++export interface LowInputs {
++  /** sale events seen (buyers: a run of stacks is one) and units judged sold */
++  events: number;
++  units: number;
++  /** events expected to be pulls of the front stack read as sales (commodities) */
++  pullEvents: number;
++  /** hours watched and differenced publishes of the item's kind; publishes with no row for the item count as 0 sold */
++  hours: number;
++  publishes: number;
++  /** sum and sum of squares of the hourly net units (rowNet) over the item's rows */
++  sumNet: number;
++  sumNetSq: number;
++}
+ 
+ /**
+- * Pulls expected to read as sales in one hourly row, in events and units. Commodities: only the stack at the front can
+- * be pulled and still read as bought (anything behind a stack still up reads as pulled), so the units at the floor
+- * times the pull rate. Equipment: every copy within 1.25 times the floor, times the pull rate; each is one event and
+- * one unit (units kept at 0, see below). Same arithmetic as the SQL in demandByItem, kept here for the simulator.
++ * The cautious units sold a day, the larger of two lower bounds (B42):
++ *  - Hourly: the one sided 95 percent t bound on the mean of hourly net units over every watched publish, hours with
++ *    nothing sold included: max(0, mean - t * sd / sqrt(n)). It tracks volume, so a steady busy market reads near its
++ *    middle.
++ *  - Events: the 95 percent Poisson lower bound of sale events, less the pulls expected to read as sales, times
++ *    units per event. It is the floor for thin items, where hourly figures are mostly zero.
+  */
+-export function rowPulls(kind: 'commodities' | 'auctions', s: { listings: number; unitsAtFloor: number; floor: number | null; ladder: Array<[number, number]> }): { events: number; units: number } {
+-  if (kind === 'commodities') {
+-    const rate = s.listings <= 5 ? PULL_RATE.thin : PULL_RATE.deep;
+-    return { events: s.listings > 0 ? rate : 0, units: rate * s.unitsAtFloor };
++export function lowEstimate(x: LowInputs): number {
++  if (x.hours <= 0) return 0;
++  const events = x.events > 0 ? (Math.max(0, poissonLower(x.events) - x.pullEvents) * (x.units / x.events) / x.hours) * 24 : 0;
++  let hourly = 0;
++  const n = x.publishes;
++  if (n >= 2) {
++    const mean = x.sumNet / n;
++    const sd = Math.sqrt(Math.max(0, (x.sumNetSq - n * mean * mean) / (n - 1)));
++    hourly = Math.max(0, mean - tQuantile(LOW_CONFIDENCE, n - 1) * sd / Math.sqrt(n)) * (n / x.hours) * 24;
+   }
+-  if (s.floor == null) return { events: 0, units: 0 };
+-  let band = 0;
+-  for (const [p, u] of s.ladder) if (p <= s.floor * PULL_BAND) band += u;
+-  // Units are left out for equipment: there the counter also misses buys (a dearer copy picked, a buy erased as an
+-  // undercut), which in the simulator offset the pulls, so taking them off the middle made it worse (B36). The
+-  // cautious estimate still takes the pulled events off.
+-  return { events: PULL_RATE.equipment * band, units: 0 };
++  return Math.max(events, hourly);
+ }
+ 
+ /**
+- * The cautious units sold a day: the 95 percent lower bound of the sale events seen, less the pulls expected to have
+- * read as sales, times units per event, over hours watched. Never below 0.
++ * Pulls expected to read as sale events over a window of commodity rows: the pull rate of each row times the chance
++ * the hour had no real sale (a pull inside a real run adds no event, by the run rule), estimated as the share of
++ * publishes without a sale.
+  */
+-export function lowEstimate(events: number, units: number, pullEvents: number, hours: number): number {
+-  if (events <= 0 || hours <= 0) return 0;
+-  return (Math.max(0, poissonLower(events) - pullEvents) * (units / events) / hours) * 24;
++export function expectedPullEvents(rateSum: number, events: number, publishes: number): number {
++  if (publishes <= 0) return 0;
++  return rateSum * Math.max(0, 1 - events / publishes);
+ }
+ 
+ /**
+@@ -107,11 +146,11 @@ function normalQuantile(p: number): number {
+  * The window stretches backward after a gap: it always looks at the last `snapshots` differenced publishes.
+  *
+  * Two estimates. `unitsPerDay` is the middle one: units sold over hours watched, never projected from under
+- * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses:
+- * the 95 percent one sided lower bound of the number of sale EVENTS (buyers, not units: a sweep of 116 stacks is
+- * one sale), less the pulls of the front listing expected to have read as sales (P15), times the average units per
+- * event, over hours watched. Under 6 differenced publishes it is null, never projected. `netPerDay` is the middle
+- * one less the units those pulls would add.
++ * 6 hours (one busy hour is not a typical hour of the day). `lowPerDay` is the cautious one the flip ranking uses
++ * (lowEstimate): the larger of a t bound on hourly net units and a Poisson bound on sale events. Under 6 differenced
++ * publishes it is null, never projected, and it is null when the whole front was replaced every hour.
++ * `netPerDay` is the middle less the share expected to be pulls (commodities). `hourlyMean` and `hourlySd` describe
++ * hourly sold units over every watched publish, zero hours included, for the flip engine's overnight queue.
+  */
+ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; now?: number } = {}): Map<number, Demand> {
+   const now = opts.now ?? Date.now();
+@@ -132,14 +171,26 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
+   const events = hasSoldEvents(db) ? `COALESCE(sold_events, ${FALLBACK_EVENTS})` : FALLBACK_EVENTS;
+   // New units other sellers posted near the floor; rows written before that was measured fall back to all new units.
+   // Units near the floor that left without being bought (cancelled, expired, pulled to post again).
+-  const rows = db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(${events}) events,
+-     SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(s.kind) kind,
+-     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * (listings > 0)
+-       ELSE ${PULL_RATE.equipment} * COALESCE((SELECT SUM(json_extract(j.value, '$[1]')) FROM json_each(ladder) j WHERE json_extract(j.value, '$[0]') <= floor * ${PULL_BAND}), 0) END) pull_events,
+-     SUM(CASE WHEN s.kind = 'commodities' THEN (CASE WHEN listings > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) * units_at_floor ELSE 0 END) pull_units
++  // Per row: the pull rate (commodities only, rowPullRate), units less the share expected to be pulls (rowNet), and
++  // whether the whole front at the floor was replaced: the floor held at the same price as the row before, units
++  // were judged sold, and every unit now at the floor is new (frontReplacedHourly).
++  // The previous publish's row of the same item gives the front that could be pulled (all rows, differenced or not).
++  const rate = (l: string) => `(CASE WHEN kind = 'commodities' AND ${l} > 0 THEN (CASE WHEN ${l} > 5 THEN ${PULL_RATE.deep} ELSE ${PULL_RATE.thin} END) ELSE 0 END)`;
++  const rows = db.prepare(`WITH a AS (SELECT item_stats.*, s.kind kind,
++       LAG(floor) OVER w prev_floor, LAG(listings) OVER w prev_listings, LAG(units_at_floor) OVER w prev_front
+      FROM item_stats JOIN snapshots s ON s.id = item_stats.snapshot_id
+-     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`)
+-    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string; pull_events: number; pull_units: number }>;
++     WHERE item_stats.house_id = ? AND item_stats.published_at >= ? AND item_stats.published_at <= ?
++     WINDOW w AS (PARTITION BY item_stats.item_id ORDER BY item_stats.published_at)),
++     r AS (SELECT a.*, ${SOLD} x, ${rate('COALESCE(prev_listings, listings)')} rate, ${events.replace(/s\.kind/g, 'kind')} ev FROM a
++       WHERE gone_units IS NOT NULL AND sold_value IS NOT NULL),
++     q AS (SELECT r.*, x - rate * COALESCE(prev_front, units_at_floor) net1 FROM r)
++     SELECT item_id, SUM(x) sold, SUM(COALESCE(sold_value, 0)) value, COUNT(*) n, SUM(ev) events,
++     SUM(COALESCE(new_near_floor, new_units, 0)) fresh, SUM(COALESCE(gone_units_expiring_near_floor, 0)) pulled, MAX(kind) kind,
++     SUM(rate) rate_sum, SUM(x * x) sold_sq, SUM(net1) net, SUM(net1 * net1) net_sq,
++     SUM(CASE WHEN prev_floor = floor AND x > 0 AND units_at_floor > 0 AND COALESCE(new_near_floor, 0) >= units_at_floor THEN 1 ELSE 0 END) replaced
++     FROM q GROUP BY item_id`)
++    .all(houseId, since, now) as Array<{ item_id: number; sold: number; value: number; n: number; events: number | null; fresh: number | null; pulled: number | null; kind: string;
++      rate_sum: number; sold_sq: number; net: number; net_sq: number; replaced: number }>;
+   const recent = new Map((db.prepare(`SELECT item_id, SUM(${SOLD}) sold, SUM(COALESCE(sold_value, 0)) value
+      FROM item_stats WHERE house_id = ? AND published_at >= ? AND published_at <= ? AND gone_units IS NOT NULL AND sold_value IS NOT NULL GROUP BY item_id`).all(houseId, now - 24 * 3600_000, now) as Array<{ item_id: number; sold: number; value: number }>)
+     .map(r => [r.item_id, r]));
+@@ -160,12 +211,28 @@ export function demandByItem(db: DB, houseId: number, opts: { hours?: number; no
+     // Hours watched of this item's kind (commodities and equipment publish separately).
+     const kc = coveredBy.get(r.kind) ?? { h: covered, n: 0 };
+     const h = kc.h > 0 ? kc.h : covered;
++    // Every watched publish of the kind counts, those with no row for this item as 0 sold.
++    const n = Math.max(kc.n, r.n);
++    const pullEvents = expectedPullEvents(r.rate_sum ?? 0, ev, n);
++    const mean = r.sold / n;
++    const hourlySd = n >= 2 ? Math.sqrt(Math.max(0, ((r.sold_sq ?? 0) - n * mean * mean) / (n - 1))) : null;
++    // One seller pulling the whole front and posting it again every hour reads as the front selling every hour
++    // (tests/sim/reposter.test.ts): middle 11 to 14 times the truth. No snapshot field tells it apart, so the
++    // cautious estimate is withheld for such an item.
++    const frontReplacedHourly = n >= MIN_PUBLISHES_LOW && r.replaced >= n;
++    const unitsPerDay = (r.sold / Math.max(h, 6)) * 24;
++    // Never above the middle (which is never projected from under 6 hours).
++    let lowPerDay: number | null = kc.n < MIN_PUBLISHES_LOW ? null
++      : Math.min(unitsPerDay, lowEstimate({ events: ev, units: r.sold, pullEvents, hours: h, publishes: n, sumNet: r.net ?? 0, sumNetSq: r.net_sq ?? 0 }));
++    let lowNote: string | undefined;
++    if (frontReplacedHourly) { lowPerDay = null; lowNote = 'the whole front at the floor was replaced every hour: a seller pulling and posting again reads as sales, so no cautious figure'; }
+     // Never project from under 6 hours of watching: one sale in the first hour is not 24 a day.
+-    out.set(r.item_id, { unitsPerDay: (r.sold / Math.max(h, 6)) * 24, hours: Math.round(h * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
++    out.set(r.item_id, { unitsPerDay, hours: Math.round(h * 10) / 10, snapshots: r.n, soldPrice: r.sold > 0 && r.value > 0 ? Math.round(r.value / r.sold) : null,
+       recentSales: rc?.sold ?? 0, recentSoldPrice: rc && rc.sold > 0 && rc.value > 0 ? Math.round(rc.value / rc.sold) : null, floorCv: steady.get(r.item_id) ?? null,
+-      lowPerDay: kc.n < MIN_PUBLISHES_LOW ? null : lowEstimate(ev, r.sold, r.pull_events ?? 0, h),
++      lowPerDay, lowNote, frontReplacedHourly,
+       newPerDay: ((r.fresh ?? 0) / h) * 24, pulledPerDay: ((r.pulled ?? 0) / h) * 24,
+-      pullEvents: r.pull_events ?? 0, netPerDay: (Math.max(0, r.sold - (r.pull_units ?? 0)) / Math.max(h, 6)) * 24,
++      pullEvents, netPerDay: (Math.max(0, r.net ?? 0) / Math.max(h, 6)) * 24,
++      hourlyMean: r.sold / h, hourlySd,
+       sweepHigh: sweep.get(r.item_id) ?? null, low3d: low3d.get(r.item_id) ?? null, soldUnits: r.sold, saleEvents: ev, unitsPerEvent, hoursWatched: Math.round(h * 10) / 10 });
+   }
+   return out;
+diff --git a/src/detectors/types.ts b/src/detectors/types.ts
+index 048911c..f63bd44 100644
+--- a/src/detectors/types.ts
++++ b/src/detectors/types.ts
+@@ -45,8 +45,15 @@ export interface Demand { unitsPerDay: number; hours: number; snapshots: number;
+   sweepHigh?: number | null;
+   /** lowest hourly floor in the last 3 days */
+   low3d?: number | null;
+-  /** sale events expected to be pulls of the front listing read as sales (P15), already taken off lowPerDay */
++  /** sale events expected to be pulls of the front listing read as sales (P15, commodities), taken off the event bound */
+   pullEvents?: number;
++  /** hourly sold units over every watched publish, zero hours included: mean per hour and standard deviation per publish */
++  hourlyMean?: number;
++  hourlySd?: number | null;
++  /** the whole front at the floor was replaced in every watched hour (one seller pulling and posting again reads as
++   * sales); lowPerDay is null then and lowNote says why */
++  frontReplacedHourly?: boolean;
++  lowNote?: string;
+   /** unitsPerDay less the units those expected pulls add: the middle estimate with the known leak taken out */
+   netPerDay?: number;
+   /** units judged sold in the window, the sale events behind them (buyers: a run of stacks is one), and units per event */
+diff --git a/tests/sim/evaluate.ts b/tests/sim/evaluate.ts
+index 9e04ae0..076da28 100644
+--- a/tests/sim/evaluate.ts
++++ b/tests/sim/evaluate.ts
+@@ -5,7 +5,7 @@
+  * cautious low estimate, which should sit under the true rate about 95 percent of the time.
+  */
+ import { aggregate, nextSeen, type Seen, type Diagnostics } from '../../src/analysis/aggregate.ts';
+-import { rowPulls, lowEstimate } from '../../src/analysis/history.ts';
++import { rowNet, rowPullRate, lowEstimate, expectedPullEvents } from '../../src/analysis/history.ts';
+ import { aggregate as oldAggregate } from './old-aggregate.ts';
+ import { simulate, MEASURED_CANCELS, type MarketType, type SimOpts } from './market.ts';
+ 
+@@ -40,25 +40,31 @@ export interface Score {
+   lowWindows: number;
+   lowUnder: number;
+   lowShare: number;
++  /** the same for windows of 6 (the gate), 24 and 72 hours */
++  low: Record<number, { windows: number; under: number; share: number }>;
+   breaches: number;
+   ageConflicts: number;
+   /** per seed daily errors, for the spread */
+   perSeed: Array<{ seed: number; oldDayError: number; newDayError: number; netDayError: number; newBias: number; netBias: number }>;
+ }
+ 
+-const WINDOW = 72;
++export const WINDOWS = [6, 24, 72] as const;
+ 
+ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts> = {}): Score {
+   let truth = 0, invisible = 0, oldSum = 0, newSum = 0, netSum = 0, oldHour = 0, newHour = 0, hours = 0, buyers = 0, events = 0;
+-  let oldDayAll = 0, newDayAll = 0, netDayAll = 0, lowWindows = 0, lowUnder = 0, lowShareSum = 0;
++  let oldDayAll = 0, newDayAll = 0, netDayAll = 0;
++  const lowAcc = new Map<number, { windows: number; under: number; share: number }>(WINDOWS.map(w => [w, { windows: 0, under: 0, share: 0 }]));
+   const diag: Diagnostics = { ageConflicts: 0, breaches: [] };
+   const perSeed: Score['perSeed'] = [];
+   for (const seed of seeds) {
+     const run = simulate({ type, seed, ...extra });
+     const kind = run.commodity ? 'commodities' : 'auctions';
+     let seen: Map<number, Seen> | null = null;
++    let prevStats: Map<number, { listings: number; unitsAtFloor: number }> | null = null;
+     const day = new Map<string, { t: number; o: number; n: number; x: number }>();
+-    const win = new Map<string, { t: number; sold: number; ev: number; pulls: number; h: number }>();
++    type Win = { t: number; sold: number; ev: number; rate: number; net: number; netSq: number };
++    const win = new Map<string, Win>();
++    const winHours = new Map<string, { h: number; n: number }>();
+     let sTruth = 0, sOld = 0, sNew = 0, sNet = 0;
+     for (let k = 0; k < run.snapshots.length; k++) {
+       const cur = run.snapshots[k]!;
+@@ -70,14 +76,17 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
+       const n = aggregate(cur.listings, prev.listings, { commodity: run.commodity, prevAt: prev.at, curAt: cur.at, seen: before ?? undefined, diag });
+       const o = oldAggregate(cur.listings, prev.listings, { commodity: run.commodity });
+       const nm = new Map(n.map(s => [s.itemId, s]));
++      if (!prevStats) prevStats = new Map(aggregate(prev.listings, null, { commodity: run.commodity }).map(s => [s.itemId, s]));
++      const ps = prevStats;
+       const om = new Map(o.map(s => [s.itemId, Math.max(0, (s.goneUnitsNearFloor ?? 0) - (s.goneUnitsExpiringNearFloor ?? 0))]));
+       const items = new Set([...nm.keys(), ...om.keys(), ...run.visible[k]!.keys()]);
+       for (const item of items) {
+         const t = run.visible[k]!.get(item) ?? 0, ov = om.get(item) ?? 0;
+         const s = nm.get(item);
+         const nv = s?.soldUnits ?? 0;
+-        const p = s ? rowPulls(kind, s) : { events: 0, units: 0 };
+-        const xv = nv - p.units;
++        const before = ps.get(item) ?? s;
++        const xv = s ? rowNet(kind, before?.listings ?? 0, before?.unitsAtFloor ?? 0, nv) : 0;
++        const rate = s ? rowPullRate(kind, before?.listings ?? 0) : 0;
+         truth += t; oldSum += ov; newSum += nv; netSum += xv;
+         sTruth += t; sOld += ov; sNew += nv; sNet += xv;
+         oldHour += Math.abs(ov - t); newHour += Math.abs(nv - t);
+@@ -87,23 +96,35 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
+         const d = day.get(key) ?? { t: 0, o: 0, n: 0, x: 0 };
+         d.t += t; d.o += ov; d.n += nv; d.x += xv;
+         day.set(key, d);
+-        const wk = `${item}:${Math.floor((k - 1) / WINDOW)}`;
+-        const w = win.get(wk) ?? { t: 0, sold: 0, ev: 0, pulls: 0, h: 0 };
+-        w.t += t; w.sold += nv; w.ev += s?.soldEvents ?? 0; w.pulls += p.events; w.h += (cur.at - prev.at) / 3600_000;
+-        win.set(wk, w);
++        for (const W of WINDOWS) {
++          const wk = `${W}:${item}:${Math.floor((k - 1) / W)}`;
++          const w = win.get(wk) ?? { t: 0, sold: 0, ev: 0, rate: 0, net: 0, netSq: 0 };
++          w.t += t; w.sold += nv; w.ev += s?.soldEvents ?? 0; w.rate += rate; w.net += xv; w.netSq += xv * xv;
++          win.set(wk, w);
++        }
++      }
++      for (const W of WINDOWS) {
++        const hk = `${W}:${Math.floor((k - 1) / W)}`;
++        const wh = winHours.get(hk) ?? { h: 0, n: 0 };
++        wh.h += (cur.at - prev.at) / 3600_000; wh.n++;
++        winHours.set(hk, wh);
+       }
+       for (const v of run.invisible[k]!.values()) invisible += v;
++      prevStats = nm;
+     }
+     let oldDay = 0, newDay = 0, netDay = 0;
+     for (const d of day.values()) { oldDay += Math.abs(d.o - d.t); newDay += Math.abs(d.n - d.t); netDay += Math.abs(d.x - d.t); }
+     oldDayAll += oldDay; newDayAll += newDay; netDayAll += netDay;
+-    for (const w of win.values()) {
+-      if (w.h < WINDOW - 2 || w.t <= 0) continue; // whole windows only, with sales to compare against
+-      const low = lowEstimate(w.ev, w.sold, w.pulls, w.h);
+-      const trueRate = (w.t / w.h) * 24;
+-      lowWindows++;
+-      if (low <= trueRate) lowUnder++;
+-      lowShareSum += low / trueRate;
++    for (const [wk, w] of win) {
++      const [W, , idx] = wk.split(':');
++      const wh = winHours.get(`${W}:${idx}`)!;
++      if (wh.n < Number(W) || w.t <= 0) continue; // whole windows only, with sales to compare against
++      const low = lowEstimate({ events: w.ev, units: w.sold, pullEvents: expectedPullEvents(w.rate, w.ev, wh.n), hours: wh.h, publishes: wh.n, sumNet: w.net, sumNetSq: w.netSq });
++      const trueRate = (w.t / wh.h) * 24;
++      const a = lowAcc.get(Number(W))!;
++      a.windows++;
++      if (low <= trueRate) a.under++;
++      a.share += low / trueRate;
+     }
+     const rel = (x: number) => sTruth > 0 ? x / sTruth : 0;
+     perSeed.push({ seed, oldDayError: rel(oldDay), newDayError: rel(newDay), netDayError: rel(netDay), newBias: rel(sNew - sTruth), netBias: rel(sNet - sTruth) });
+@@ -113,11 +134,26 @@ export function score(type: MarketType, seeds: number[], extra: Partial<SimOpts>
+     type, seeds: seeds.length, hours, truth, invisible, old: oldSum, new: newSum, net: Math.round(netSum),
+     oldBias: rel(oldSum - truth), newBias: rel(newSum - truth), netBias: rel(netSum - truth),
+     oldDayError: rel(oldDayAll), newDayError: rel(newDayAll), netDayError: rel(netDayAll), oldHourError: rel(oldHour), newHourError: rel(newHour),
+-    buyers, events, lowWindows, lowUnder: lowWindows ? lowUnder / lowWindows : 1, lowShare: lowWindows ? lowShareSum / lowWindows : 0,
++    buyers, events, ...lowFields(lowAcc),
+     breaches: diag.breaches.length, ageConflicts: diag.ageConflicts, perSeed,
+   };
+ }
+ 
++function lowFields(acc: Map<number, { windows: number; under: number; share: number }>) {
++  const low: Score['low'] = {};
++  for (const [W, a] of acc) low[W] = { windows: a.windows, under: a.windows ? a.under / a.windows : 1, share: a.windows ? a.share / a.windows : 0 };
++  return { low, lowWindows: low[72]!.windows, lowUnder: low[72]!.under, lowShare: low[72]!.share };
++}
++
++/** The low estimate's usefulness per window length: share of windows at or under the truth, and mean low over truth. */
++export function lowTable(scores: Score[]): string {
++  const head = ['market', ...WINDOWS.flatMap(W => [`${W}h windows`, `${W}h under truth`, `${W}h low / truth`])];
++  const rows = scores.map(s => [s.type, ...WINDOWS.flatMap(W => [String(s.low[W]!.windows), `${(s.low[W]!.under * 100).toFixed(0)}%`, `${(s.low[W]!.share * 100).toFixed(0)}%`])]);
++  const w = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i]!.length)));
++  const line = (r: string[]) => '| ' + r.map((c, i) => c.padEnd(w[i]!)).join(' | ') + ' |';
++  return [line(head), '|' + w.map(x => '-'.repeat(x + 2)).join('|') + '|', ...rows.map(line)].join('\n');
++}
++
+ /** Mean and standard deviation of one per seed measure. */
+ export function spread(s: Score, f: (p: Score['perSeed'][number]) => number): { mean: number; sd: number } {
+   const xs = s.perSeed.map(f);
+diff --git a/tests/sim/reposter.test.ts b/tests/sim/reposter.test.ts
+new file mode 100644
+index 0000000..f18fbfc
+--- /dev/null
++++ b/tests/sim/reposter.test.ts
+@@ -0,0 +1,80 @@
++/**
++ * One dominant seller holds the front: 5 stacks of 20 at the floor, pulled and posted again every hour, while 3 real
++ * buyers an hour take a few units each. Every publish the whole front has vanished with nothing ahead of it still up,
++ * so the counter reads it as bought: the middle runs 11 to 14 times the truth (round 2 test). No snapshot field tells
++ * a pull from a buy, so the item is flagged (frontReplacedHourly) and its cautious estimate withheld.
++ * A normal simulated deep market, run through the same database path, must not be flagged.
++ */
++import { describe, it, expect } from 'vitest';
++import { openDb } from '../../src/store/db.ts';
++import { rawPath, writeRaw } from '../../src/engine/rawstore.ts';
++import { rebuildHistory } from '../../src/engine/rebuild.ts';
++import { demandByItem } from '../../src/analysis/history.ts';
++import type { Listing, TimeLeft } from '../../src/analysis/aggregate.ts';
++import { rng, simulate } from './market.ts';
++import { tempDir } from '../helpers.ts';
++
++const H = 3600_000;
++const T0 = Date.parse('2026-11-20T00:25:00Z');
++
++function load(snaps: Array<{ at: number; listings: Listing[] }>, kind: 'commodities' | 'auctions' = 'commodities') {
++  const dir = tempDir();
++  const db = openDb(dir, ':memory:');
++  for (const s of snaps) {
++    const path = rawPath(dir, 111, kind, s.at);
++    writeRaw(path, s.listings);
++    db.prepare(`INSERT INTO snapshots (house_id, kind, last_modified, published_at, fetched_at, rows, distinct_items, bytes, raw_path) VALUES (111, ?, ?, ?, ?, ?, 1, 1, ?)`)
++      .run(kind, new Date(s.at).toUTCString(), s.at, s.at, s.listings.length, path);
++  }
++  rebuildHistory(db);
++  return db;
++}
++
++/** The reposter market, minute by minute for `hours`, snapshot each hour. Returns snapshots and true units bought. */
++function reposter(hours: number) {
++  const r = rng(7);
++  type L = { id: number; qty: number; price: number; posted: number; ends: number };
++  const ls: L[] = [];
++  let id = 1, last = -1, truth = 0;
++  const post = (qty: number, price: number, t: number, mins: number) => ls.push({ id: id++, qty, price, posted: t, ends: t + mins });
++  for (let i = 0; i < 60; i++) post(20, 100 + i, 0, 100_000);
++  for (let i = 0; i < 5; i++) post(20, 95, 0, 480);
++  const snaps: Array<{ at: number; listings: Listing[] }> = [];
++  const tl = (m: number): TimeLeft => m > 720 ? 'VERY_LONG' : m > 120 ? 'LONG' : m > 30 ? 'MEDIUM' : 'SHORT';
++  for (let m = 0; m <= hours * 60; m++) {
++    if (m % 60 === 0) {
++      snaps.push({ at: T0 + m * 60_000, listings: ls.filter(l => l.qty > 0).map(l => ({ id: l.id, itemId: 1, quantity: l.qty, unitPrice: l.price, timeLeft: tl(l.ends - m) })) });
++      last = m;
++    }
++    if (r() < 1 / 10) post(20, 100 + Math.floor(r() * 60), m, 100_000);
++    if (m % 60 === 30) { for (let i = ls.length - 1; i >= 0; i--) if (ls[i]!.price === 95) ls.splice(i, 1); for (let i = 0; i < 5; i++) post(20, 95, m, 480); }
++    if (r() < 3 / 60) {
++      let q = 1 + Math.floor(-Math.log(1 - r()) * 5);
++      ls.sort((a, b) => a.price - b.price || b.id - a.id);
++      while (q > 0 && ls.length) { const l = ls[0]!; const x = Math.min(q, l.qty); l.qty -= x; q -= x; if (l.posted < last && m > 0) truth += x; if (l.qty === 0) ls.shift(); }
++    }
++  }
++  return { snaps, truth };
++}
++
++describe('a dominant seller who pulls and posts the front again every hour', () => {
++  it('reads as many times the real sales, so the item is flagged and no cautious figure is given', () => {
++    const { snaps, truth } = reposter(24);
++    const db = load(snaps);
++    const d = demandByItem(db, 111, { now: snaps[snaps.length - 1]!.at + 1 }).get(1)!;
++    expect(d.soldUnits! / truth).toBeGreaterThan(5); // the leak this guards against
++    expect(d.frontReplacedHourly).toBe(true);
++    expect(d.lowPerDay).toBeNull();
++    expect(d.lowNote).toMatch(/replaced every hour/);
++  });
++
++  it('a normal simulated deep market and equipment market are never flagged', () => {
++    for (const type of ['deep', 'equipment'] as const) {
++      const run = simulate({ type, seed: 211, hours: 48 });
++      const db = load(run.snapshots, run.commodity ? 'commodities' : 'auctions');
++      const d = demandByItem(db, 111, { now: run.snapshots[run.snapshots.length - 1]!.at + 1 });
++      expect(d.size).toBeGreaterThan(0);
++      for (const v of d.values()) { expect(v.frontReplacedHourly).toBe(false); expect(v.lowPerDay).not.toBeNull(); }
++    }
++  });
++});
+diff --git a/tests/sim/simulator.test.ts b/tests/sim/simulator.test.ts
+index bea0f74..43cbba9 100644
+--- a/tests/sim/simulator.test.ts
++++ b/tests/sim/simulator.test.ts
+@@ -18,8 +18,14 @@
+  *    apart; the old rules land closer only because throwing away every 2 hour listing offsets that leak. Marks: daily
+  *    error no worse than 1.25 times the old rules', and the middle less expected pulls (net) biased within 15%
+  *    (measured +5.8%, +11.1% on the second seed set).
+- *  - The cautious low estimate (lowPerDay arithmetic, pulls taken off) sits at or under the true rate in at least 90%
+- *    of 72 hour item windows on every market (measured 99 to 100%).
++ *  - The cautious low estimate (lowEstimate: the larger of a t bound on hourly net units and a Poisson bound on sale
++ *    events) must be honest AND useful: at or under the true rate in at least 90% of item windows of 6 hours (the
++ *    gate), 24 and 72 hours on every market, and on deep and equipment markets at least a stated share of the truth on
++ *    average. Measured on 12 seeds, low over truth at 6 / 24 / 72 hours: deep 48 / 74 / 86%, equipment 46 / 69 / 80%,
++ *    thin 13 / 35 / 63%, under truth 98 to 100%. Marks: deep at least 40% at 6 hours and 65% at 24; equipment at least
++ *    38% and 60%.
++ *  - Out of sample: seeds 301 to 312 must meet the same marks (measured deep 48 / 74%, equipment 45 / 68%, thin net
++ *    bias +11%, thin under truth 93 to 98%).
+  *  - The stack growth check never fires. Age conflicts appear only because the simulator reads bucket edges a few
+  *    minutes off (a fresh 2 hour listing can read LONG); the counter then falls back to the time left alone, and with
+  *    an exact clock there are none (the real snapshots have none either, B37).
+@@ -31,35 +37,43 @@ import { describe, it, expect } from 'vitest';
+ import { score } from './evaluate.ts';
+ 
+ const seeds = Array.from({ length: 12 }, (_, i) => 201 + i);
++const outOfSample = Array.from({ length: 12 }, (_, i) => 301 + i);
+ const few = seeds.slice(0, 5);
++const useful = { deep: { 6: 0.4, 24: 0.65 }, equipment: { 6: 0.38, 24: 0.6 } } as const;
+ 
+ describe('sale counter against simulated truth, sellers pulling at the measured rates', () => {
+-  it('deep commodities: far better than the old rules', () => {
+-    const s = score('deep', seeds);
+-    expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.1);
+-    expect(s.newDayError).toBeLessThanOrEqual(0.08);
+-    expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 0.35);
+-    expect(s.lowUnder).toBeGreaterThanOrEqual(0.9);
+-    expect(s.breaches).toBe(0);
+-  }, 60_000);
++  for (const [label, set] of [['seeds 201 to 212', seeds], ['out of sample, seeds 301 to 312', outOfSample]] as const) {
++    it(`deep commodities, ${label}: far better than the old rules, and a useful low estimate`, () => {
++      const s = score('deep', [...set]);
++      expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.1);
++      expect(s.newDayError).toBeLessThanOrEqual(0.08);
++      expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 0.35);
++      for (const W of [6, 24, 72]) expect(s.low[W]!.under).toBeGreaterThanOrEqual(0.9);
++      expect(s.low[6]!.share).toBeGreaterThanOrEqual(useful.deep[6]);
++      expect(s.low[24]!.share).toBeGreaterThanOrEqual(useful.deep[24]);
++      expect(s.breaches).toBe(0);
++    }, 60_000);
+ 
+-  it('equipment: better than the old rules', () => {
+-    const s = score('equipment', seeds);
+-    expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.08);
+-    expect(s.newDayError).toBeLessThanOrEqual(0.17);
+-    expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 0.75);
+-    expect(s.lowUnder).toBeGreaterThanOrEqual(0.9);
+-    expect(s.breaches).toBe(0);
+-  }, 60_000);
++    it(`equipment, ${label}: better than the old rules, and a useful low estimate`, () => {
++      const s = score('equipment', [...set]);
++      expect(Math.abs(s.newBias)).toBeLessThanOrEqual(0.08);
++      expect(s.newDayError).toBeLessThanOrEqual(0.17);
++      expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 0.75);
++      for (const W of [6, 24, 72]) expect(s.low[W]!.under).toBeGreaterThanOrEqual(0.9);
++      expect(s.low[6]!.share).toBeGreaterThanOrEqual(useful.equipment[6]);
++      expect(s.low[24]!.share).toBeGreaterThanOrEqual(useful.equipment[24]);
++      expect(s.breaches).toBe(0);
++    }, 60_000);
+ 
+-  it('thin commodities: no better than the old rules, but the net middle and the low estimate are honest', () => {
+-    const s = score('thin', seeds);
+-    expect(s.newBias).toBeGreaterThan(0); // pulls read as sales: the leak is upward
+-    expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 1.25);
+-    expect(Math.abs(s.netBias)).toBeLessThanOrEqual(0.15);
+-    expect(s.lowUnder).toBeGreaterThanOrEqual(0.9);
+-    expect(s.breaches).toBe(0);
+-  }, 60_000);
++    it(`thin commodities, ${label}: no better than the old rules, but the net middle and the low estimate are honest`, () => {
++      const s = score('thin', [...set]);
++      expect(s.newBias).toBeGreaterThan(0); // pulls read as sales: the leak is upward
++      expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 1.25);
++      expect(Math.abs(s.netBias)).toBeLessThanOrEqual(0.15);
++      for (const W of [6, 24, 72]) expect(s.low[W]!.under).toBeGreaterThanOrEqual(0.9);
++      expect(s.breaches).toBe(0);
++    }, 60_000);
++  }
+ 
+   it('holds when the bucket edge, undercutting, the clock or the pull rate differ', () => {
+     const variants = [{ longEndsAt: 660 }, { longEndsAt: 900 }, { exactClock: true }];
+@@ -71,7 +85,7 @@ describe('sale counter against simulated truth, sellers pulling at the measured
+       for (const { v, s } of runs) {
+         if (t === 'thin') expect(s.newDayError).toBeLessThanOrEqual(s.oldDayError * 1.3);
+         else expect(s.newDayError).toBeLessThan(s.oldDayError);
+-        expect(s.lowUnder).toBeGreaterThanOrEqual(0.9);
++        for (const W of [6, 24, 72]) expect(s.low[W]!.under).toBeGreaterThanOrEqual(0.9);
+         expect(s.breaches).toBe(0);
+         if ('exactClock' in v) expect(s.ageConflicts).toBe(0);
+       }
+diff --git a/tests/unit/rebuild.test.ts b/tests/unit/rebuild.test.ts
+index 806718d..3abc2ef 100644
+--- a/tests/unit/rebuild.test.ts
++++ b/tests/unit/rebuild.test.ts
+@@ -104,20 +104,23 @@ describe('rebuilding history from raw snapshots', () => {
+     expect(d.hoursWatched).toBe(6);
+     expect(d.unitsPerDay).toBeCloseTo(284 / 6 * 24, 6);
+     // 95% lower bound of 3 events is 0.818, less the pulls of the front stack expected to read as sales: 6 hours of a
+-    // deep market (more than 5 listings) at 2.2% an hour is 0.132. (0.818 - 0.132) * 94.7 / 6 * 24 = 260 a day,
+-    // against 1,136 in the middle.
+-    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep, 6);
+-    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 6 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
++    // deep market (more than 5 listings) at 2.2% an hour, times the chance an hour had no real sale (3 of 6 had none),
++    // is 0.066. (0.818 - 0.066) * 94.7 / 6 * 24 = 285 a day, against 1,136 in the middle. The hourly bound is 0 here:
++    // three busy hours and three empty ones are too uneven to prove much.
++    expect(d.pullEvents).toBeCloseTo(6 * PULL_RATE.deep * 0.5, 6);
++    expect(d.lowPerDay).toBeCloseTo((poissonLower(3) - 3 * PULL_RATE.deep) * (284 / 3) / 6 * 24, 6);
++    expect(d.hourlyMean).toBeCloseTo(284 / 6, 6);
++    expect(d.hourlySd).toBeCloseTo(Math.sqrt((15 ** 2 + 48 ** 2 + 221 ** 2 - 6 * (284 / 6) ** 2) / 5), 6);
+     expect(d.lowPerDay! / d.unitsPerDay).toBeLessThan(0.3);
+     const sweep = demandByItem(db, 111, { now: t0 + 7 * 3600_000 }).get(12211)!;
+     expect(sweep.soldUnits).toBe(284);
+     expect(sweep.saleEvents).toBe(1);
+-    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.132), so the
+-    // cautious estimate is 0. One sale could have been a seller pulling the front stack.
++    // One buyer in 6 hours: its lower bound (0.051) is under the pulls expected to read as sales (0.11), and one busy
++    // hour in six proves nothing hourly, so the cautious estimate is 0. One sale could have been a pull of the front.
+     expect(sweep.lowPerDay).toBe(0);
+   });
+ 
+-  it('equipment pulls in SQL match rowPulls, hours watched are per kind, and the low estimate waits for 6 publishes', () => {
++  it('equipment takes no pull allowance, hours watched are per kind, the low estimate waits for 6 publishes and tracks steady sales', () => {
+     const dir = tempDir();
+     const db = openDb(dir, ':memory:');
+     const t0 = Date.parse('2026-11-19T08:25:00Z');
+@@ -137,9 +140,13 @@ describe('rebuilding history from raw snapshots', () => {
+     expect(d.saleEvents).toBe(6);
+     expect(d.hoursWatched).toBe(6); // 5.99 rounded
+     expect(d.lowPerDay).not.toBeNull(); // 6 publishes, though under 6 hours
+-    // In band after each hour: the 1000s left plus 1100 and 1200 (1200 <= 1.25 * 1000): (7 + 6 + 5 + 4 + 3 + 2) + 12 copies.
+-    expect(d.pullEvents).toBeCloseTo(PULL_RATE.equipment * (27 + 12), 6);
+-    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6); // equipment: the middle is left as it is
++    // Equipment: the counter's missed buys offset the pulls (B42), so no allowance and the middle is left as it is.
++    expect(d.pullEvents).toBe(0);
++    expect(d.netPerDay).toBeCloseTo(d.unitsPerDay, 6);
++    // One sale every hour, no spread: the hourly bound proves the full rate, capped at the middle (24 a day). The event
++    // bound alone would give poissonLower(6) / 5.99 * 24 = 10.5.
++    expect(d.hourlySd).toBe(0);
++    expect(d.lowPerDay).toBeCloseTo(d.unitsPerDay, 6);
+     // 5 publishes: no low estimate yet.
+     expect(demandByItem(db, 111, { now: t0 + 5 * gap + 1 }).get(7001)!.lowPerDay).toBeNull();
+   });
