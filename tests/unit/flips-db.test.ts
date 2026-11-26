@@ -132,13 +132,16 @@ describe('persistFlips and the trends it feeds', () => {
     expect((d.prepare('SELECT COUNT(*) n FROM flip_history WHERE key = ?').get(key) as { n: number }).n).toBe(2);
     expect((d.prepare('SELECT COUNT(*) n FROM flip_runs').get() as { n: number }).n).toBe(3);
   });
-  it('an incomplete run writes its report and changes no flip', () => {
+  it('an incomplete run writes its report and marks every listed flip gone, history kept', () => {
     const d = db();
     persistFlips(d, runFlips(buildFlipInputs(d, market(), HOUR)), HOUR);
-    const before = d.prepare('SELECT key, state FROM flips ORDER BY key').all();
+    const before = d.prepare('SELECT key, state FROM flips ORDER BY key').all() as Array<{ key: string; state: string }>;
+    expect(before.length).toBeGreaterThan(0);
+    const hist = d.prepare('SELECT COUNT(*) n FROM flip_history').get();
     const bad = runFlips(buildFlipInputs(d, new Map(), 2 * HOUR));
     persistFlips(d, bad, 2 * HOUR);
-    expect(d.prepare('SELECT key, state FROM flips ORDER BY key').all()).toEqual(before);
+    expect(d.prepare('SELECT key, state, gone_at FROM flips ORDER BY key').all()).toEqual(before.map(r => ({ key: r.key, state: 'gone', gone_at: 2 * HOUR })));
+    expect(d.prepare('SELECT COUNT(*) n FROM flip_history').get()).toEqual(hist);
     expect(d.prepare('SELECT complete FROM flip_runs WHERE at = ?').get(2 * HOUR)).toMatchObject({ complete: 0 });
   });
 });

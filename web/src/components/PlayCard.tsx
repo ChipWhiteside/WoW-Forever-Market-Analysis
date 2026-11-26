@@ -36,7 +36,7 @@ export function PlayCard({ p, onOpenItem }: { p: Play; onOpenItem: (id: number) 
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <button onClick={() => onOpenItem(p.item_id)} className="block truncate text-left text-base hover:underline"><ItemName name={p.item_name} id={p.item_id} quality={p.quality} /></button>
+              <button onClick={() => onOpenItem(p.item_id)} className="block min-w-0 break-words text-left text-base hover:underline"><ItemName name={p.item_name} id={p.item_id} quality={p.quality} /></button>
               <p className="text-xs text-muted">{PLAY_LABEL[p.detector]}{p.state === 'new' ? ', new this hour' : p.state === 'fading' ? ', profit shrinking' : gone ? ', gone' : ''}</p>
             </div>
             <div className="shrink-0 text-right">

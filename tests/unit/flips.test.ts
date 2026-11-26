@@ -365,6 +365,9 @@ describe('the cautious sales inputs', () => {
   it('one typical undercut is the median gap between the cheapest price levels, within 1c and 5%', () => {
     expect(typicalUndercut([{ unitPrice: 7500 }, { unitPrice: 7501 }, { unitPrice: 7550 }, { unitPrice: 7600 }, { unitPrice: 7800 }, { unitPrice: 8000 }], 7500)).toBe(50);
     expect(typicalUndercut([{ unitPrice: 100 }, { unitPrice: 100 }], 100)).toBe(1);
-    expect(typicalUndercut([{ unitPrice: 100 }, { unitPrice: 200 }], 100)).toBe(5);
+    expect(typicalUndercut([{ unitPrice: 1000 }, { unitPrice: 1150 }], 1000)).toBe(50);
+    // a level over 1.2 times the claim is a troll, not an undercut: one 5g listing leaves the gap alone (system review round 1)
+    expect(typicalUndercut([{ unitPrice: 7500 }, { unitPrice: 7501 }, { unitPrice: 7550 }, { unitPrice: 7600 }, { unitPrice: 7800 }, { unitPrice: 50000 }], 7500)).toBe(50);
+    expect(typicalUndercut([{ unitPrice: 100 }, { unitPrice: 200 }], 100)).toBe(1);
   });
 });

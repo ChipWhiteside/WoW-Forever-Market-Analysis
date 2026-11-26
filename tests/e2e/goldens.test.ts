@@ -336,7 +336,7 @@ describe('4. Near misses', () => {
     // ENGINE BUG (findings-system-r1-A.txt, finding 1): typicalUndercut (src/flips/sellBook.ts) takes the median gap of
     // the cheapest 6 price levels with no limit on how far above the claim a level sits. A 5g troll over a 76s to 80s
     // ladder adds a 42,000c gap, the median moves from 100c to 150c, and the post price and net drop by about 50c.
-    it.fails(`${label}: post price and net unchanged`, () => {
+    it(`${label}: post price and net unchanged`, () => {
       const a = dyeFlip(W.bens!)!, b = dyeFlip(W[name]!)!;
       expect(b.sellQuote.undercutPrice).toBe(a.sellQuote.undercutPrice);
       expect(b.sellQuote.netEach).toBe(a.sellQuote.netEach);
@@ -397,7 +397,7 @@ describe('6. Run report', () => {
   // ENGINE BUG? (findings-system-r1-A.txt, finding 2): persistFlips returns before touching the flips table when a run is
   // incomplete, so /api/flips keeps serving the last complete run's cards next to the incomplete chip. hourlyFlips says a
   // failed run is stored "so the page says so instead of showing an old or partial list as if it were current".
-  it.fails('incomplete when the data is stale: the page gets no cards from an older run', async () => {
+  it('incomplete when the data is stale: the page gets no cards from an older run', async () => {
     const w = W.bens!.world;
     const o = await runAt(w, w.lastAt + 3 * H);
     expect(o.api.run!.complete).toBe(false);

@@ -1,3 +1,4 @@
+import { money } from '../format/money.ts';
 import { deposit, netPerUnit } from '../rules/fees.ts';
 import { vendorMargin, CARRYOVER, CRAFT_SESSION_MINUTES_DEFAULT, EFFORT, LISTING_HOURS, MAX_UNITS, RISK, SALES_SHORTFALL, SMALL_QUANTITY } from '../rules/flips.ts';
 import { AUCTION_HOUSES } from '../datasets/places.ts';
@@ -269,7 +270,9 @@ function riskOf(c: Candidate, inputs: FlipInputs, n: number, cost: number, sold:
     if ((q.cv ?? 0) > RISK.jumpyCv) drivers.push('the price jumps around');
     if ((q.provenSales ?? 0) < RISK.fewSales) drivers.push('few sales seen');
     if (q.ahead > 0 && q.ahead >= (q.salesPerDayLow ?? 0) * (inputs.settings.horizonHours / 24)) drivers.push('many units listed ahead of you');
-    if (q.rising) drivers.push('the price just jumped');
+    // The floor itself rose over 10 percent this hour: the price just jumped. A sweep above the claim alone is said as it is.
+    if (q.floorChange1h != null && q.floorChange1h > RISK.priceJumpRise) drivers.push('the price just jumped');
+    else if (q.rising && q.upTo != null) drivers.push(`buyers paid up to ${money(q.upTo)} this hour, above the price used`);
     const war = priceWar(q);
     if (war) drivers.push(war);
     if (n > cap) drivers.push('more units than sell overnight');

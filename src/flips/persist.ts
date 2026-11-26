@@ -6,14 +6,20 @@ import type { FlipRunResult } from './run.ts';
  * Store one run. Every run gets a flip_runs row with its report. A complete run then updates the list: a key seen
  * for the first time (or back after it was gone) is new, a repeat is live, a repeat whose expected profit fell by a
  * quarter is fading, and a key that did not come back is gone (kept 24 hours, like plays). Each flip on the list gets
- * a flip_history row, which feeds "new this hour" and "open N of the last 72 hours". An incomplete run changes no flip.
+ * a flip_history row, which feeds "new this hour" and "open N of the last 72 hours". An incomplete run marks every listed flip gone.
  */
 export function persistFlips(db: DB, result: FlipRunResult, now = Date.now()): { created: string[]; gone: string[] } {
   const created: string[] = [], gone: string[] = [];
   tx(db, () => {
     db.prepare('INSERT OR REPLACE INTO flip_runs (at, data_at, ms, complete, report) VALUES (?, ?, ?, ?, ?)')
       .run(now, result.report.dataAt, result.report.ms, result.report.complete ? 1 : 0, JSON.stringify(result.report));
-    if (!result.report.complete) return;
+    // An incomplete run marks every flip not already gone as gone, so an old list never shows as current next to the
+    // incomplete chip (coordinator decision, system review round 1). Card history stays in flip_history.
+    if (!result.report.complete) {
+      const gone1 = db.prepare(`UPDATE flips SET state = 'gone', gone_at = ?, rank = NULL WHERE key = ?`);
+      for (const r of db.prepare(`SELECT key FROM flips WHERE state != 'gone'`).all() as Array<{ key: string }>) { gone1.run(now, r.key); gone.push(r.key); }
+      return;
+    }
     const get = db.prepare('SELECT state, expected_profit FROM flips WHERE key = ?');
     const ins = db.prepare(`INSERT INTO flips (key, kind, family, house_id, item_id, recipe_id, state, rank, expected_profit, risk, detail, first_seen, last_seen, data_at, gone_at)
       VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, NULL)`);

@@ -51,11 +51,13 @@ export function newPerDay(d: FlipDemand | undefined): { value: number; measured:
   return { value: 0, measured: false };
 }
 
-/** One typical undercut in copper, from the gaps between the cheapest distinct price levels. */
+/** One typical undercut in copper, from the gaps between the cheapest distinct price levels at most 1.2 times the claim. */
 export function typicalUndercut(ladder: Array<Pick<Listing, 'unitPrice'>>, claim: number): number {
   const levels: number[] = [];
   for (const l of ladder) {
     if (l.unitPrice == null) continue;
+    // A level far above the claim (a troll listing) says nothing about how sellers undercut (system review round 1).
+    if (l.unitPrice > claim * UNDERCUT.maxLevelOverClaim) break;
     if (levels[levels.length - 1] !== l.unitPrice) levels.push(l.unitPrice);
     if (levels.length >= UNDERCUT.levels) break;
   }

@@ -83,7 +83,9 @@ export const SELL_CHANCE = { negligible: 0.001,
  * never over 5 percent of the price. With a single price level nobody is undercutting yet, so 1 percent is assumed.
  * First guesses (plan section 6, "the sell price assumes one typical undercut").
  */
-export const UNDERCUT = { levels: 6, maxShare: 0.05, singleLevelShare: 0.01, minCopper: 1 };
+export const UNDERCUT = { levels: 6, maxShare: 0.05, singleLevelShare: 0.01, minCopper: 1,
+  /** levels over this many times the claim are left out: one 5g troll moved a 100c undercut to 150c (system review round 1) */
+  maxLevelOverClaim: 1.2 };
 
 /**
  * The margin gate: profit each must beat this item's own price wobble, one standard deviation of its hourly floor
@@ -114,7 +116,9 @@ export const FLIP_GATES = { minSalesPerDay: 1, strengthShowAt: PRICE.showAt };
  */
 export const RISK = { unknownLowDrop: 0.25, lowCoverHours: 72, jumpyCv: 0.25, fewSales: 10, thinSupplyShare: 0.5, priceWarDrop: 0.1,
   /** risk is at least medium when under half the units posted are expected to sell tonight, high under a quarter (round 2 H1) */
-  tonightMedium: 0.5, tonightHigh: 0.25 };
+  tonightMedium: 0.5, tonightHigh: 0.25,
+  /** "the price just jumped" only when the floor itself rose more than 10 percent since the previous publish (system review round 1) */
+  priceJumpRise: 0.1 };
 
 /**
  * New listings that compete with Chip overnight (round 2 finding H2): only units other sellers posted at or under his

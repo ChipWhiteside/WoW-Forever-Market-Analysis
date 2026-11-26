@@ -76,3 +76,17 @@ describe('J2 and J1: learnability risk', () => {
     expect(base.best.risk.drivers).not.toContain(HORDE_ONLY_DRIVER);
   });
 });
+
+describe('the price just jumped only when the floor rose (coordinator item 7)', () => {
+  const at = (floorChange1h: number | null) => run(ceruleanAtBens({ dye: [L(DYE, 9000, 5), L(DYE, 9001, 5), L(DYE, 9050, 5)],
+    dyeDemand: { soldPrice: 7550, recentSoldPrice: 7550, sweepHigh: 9000, floorChange1h } })).flips.find(f => f.key === DYE_KEY)!;
+  it('a sweep above the claim with a still floor is said as it is', () => {
+    const f = at(0);
+    expect(f.best.risk.drivers).not.toContain('the price just jumped');
+    expect(f.best.risk.drivers).toContain('buyers paid up to 90s this hour, above the price used');
+  });
+  it('a floor up over 10 percent this hour is a jump', () => {
+    expect(at(0.15).best.risk.drivers).toContain('the price just jumped');
+    expect(at(0.05).best.risk.drivers).not.toContain('the price just jumped');
+  });
+});
