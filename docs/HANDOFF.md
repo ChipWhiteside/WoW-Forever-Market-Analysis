@@ -61,3 +61,6 @@ Open question when stopped: after "recipes on start" the engine went quiet for 1
 
 ## Build complete, November 26
 Every piece passed at least three independent test rounds, and the whole system passed three rounds plus a polish round. 373 tests pass. The tutorial is `docs/flips-tutorial.md`. Open items for Chip are listed in `docs/flip-plan.md` under "In game checks for Chip". Known limit: this cloud session never holds 6 straight hours of history (worker restarts kill the collector), so live auction flips were validated by the end to end yardstick suite, the simulator and the backtest. On Chip's PC the engine runs continuously.
+
+## Refresh button and alerts, November 27
+Refresh button on the Flips page, quiet hourly collection, Discord alerts only for Good (10g) and Amazing (20g) flips that pass every evidence gate, no cap per hour, a 24 hour repeat rule with a 25% growth exception, old play alerts off by default. Three test rounds and a live recheck passed: exactly one post per alert under every race, at most the in flight post doubles after a crash, a second engine on the same data sends nothing, a hung webhook costs one 15 second wait per run. 413 tests pass. Phase 2 (Vercel, GitHub Actions, Supabase) is next when Chip says go.

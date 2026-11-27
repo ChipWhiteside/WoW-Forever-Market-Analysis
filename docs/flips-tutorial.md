@@ -19,6 +19,10 @@ You need Node 22 or newer and git.
 
 The engine collects every hour, right after each house publishes. Your PC must be on, because an hour it misses is gone for good.
 
+Press **Refresh** at the top of the Flips page whenever you open it. It asks Blizzard for the newest publish, counts what sold, reruns every flip and shows the result in a few seconds. Blizzard publishes about 25 past each hour, so the card under the button says how old the data is and when the next publish lands. If Blizzard does not answer, it says so in red and keeps the last list.
+
+Leave the app running even when you are not playing. It quietly saves every hourly publish. That history is how it knows what really sells, and an hour it misses is gone for good.
+
 Auction flips need 6 hours of watched sales before they rank. Until then you see only vendor flips, and the rest wait in Held back as "learning". Leave it running and the list fills in on its own.
 
 ## 3. Read one card, line by line
@@ -68,9 +72,21 @@ The list under the cards shows the closest calls that missed, with the reason. T
 - **Gold on hand.** Caps every flip by its full cost to do. Set it so the list never shows what you cannot afford.
 - **Only craft sub steps in my professions.** A checkbox in Settings, off by default. When on, a step in a profession you lack is bought instead when someone sells it. Leave it off if your alts cover the other professions. The recipe on the card is never blocked either way. Every card lists each profession its craft needs.
 - **Crafting session, in minutes.** 30 by default. The best amount stays inside one session. The Most row may go past it and says so.
+- **Alert bars, in gold.** Good (10) and Amazing (20). See section 7.
 - **Time rate, silver per hour.** 0 by default, because you list and sleep. Raise it if you want minutes charged against profit.
 
-## 7. The five in game checks
+## 7. Discord alerts
+
+Discord only hears about the best. A flip is sent when its expected profit overnight is at or above your **Good** bar (10g by default), labeled **Amazing** at or above your **Amazing** bar (20g by default). It must also be low or medium risk, strength 75 or more, have 6 hours of watched sales, a known way to learn it, and nothing held back.
+
+- Every flip that qualifies in the same hour is sent, Amazing first.
+- The same flip is not sent again within 24 hours unless its profit grew by a quarter.
+- Quiet hours hold alerts and send them when quiet ends, if the flip still holds up.
+- The old play alerts are off. Turn them back on in Settings if you miss them.
+- Too many alerts? Raise the bars in Settings. Too few? Lower them.
+- `npx tsx scripts/alert-review.ts` lists recent alerts and whether each one held up at the next publishes.
+
+## 8. The five in game checks
 
 Each settles a question the data cannot.
 
@@ -80,7 +96,7 @@ Each settles a question the data cannot.
 4. **Buy from one vendor each in Ratchet, Gadgetzan and Everlook.** Booty Bay is proven. This confirms those towns count as neutral.
 5. **Tell the tool your Blackwater house.** Use Booty Bay screenshots with prices. Without it, no cross house flips.
 
-## 8. When you see a flip
+## 9. When you see a flip
 
 1. **Check the card.** Fresh data, risk you can live with, strength 60 or more.
 2. **Pick an amount.** Best is the default. Take Small to test a new flip.
