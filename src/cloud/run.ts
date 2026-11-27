@@ -27,8 +27,9 @@ const RAW_KEEP_DAYS = (RAW_KEEP_HOURS + 24) / 24;
  * Cloud retention (brief item 7), from a measurement on a copy of Chip's data (docs/verification.md G8): Chip's two
  * houses add 1.44 MB of hourly item_stats an hour, so the 30 days the brief asked for is about 1.06 GB (378 MB
  * gzipped), too big for the site's function. Hourly rows are kept 3 days (72 to 96 hours, the whole UTC day kept),
- * which every flip window needs (72 hours) and no more; daily rollups are kept forever as asked. Raw as above; no
- * local backups (the release keeps the last two databases).
+ * which every flip window needs (72 hours) and no more. Daily rollups are kept 30 days in the cloud (about 23 MB),
+ * as Chip's coordinator decided (docs/phase2-plan.md item 9); local mode keeps them forever. Raw as above; no local
+ * backups (the release keeps the last two databases).
  */
 export const CLOUD_RETENTION: Retention = { statsKeepDays: 3, dailyKeepDays: 30, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
 
@@ -101,8 +102,8 @@ async function waitForPublish(client: BlizzardClient, last: Array<{ house: numbe
       const path = `/data/wow/ruleset/${RULESET}/auctions/${l.house}` + (l.kind === 'commodities' ? '/commodities' : '');
       try {
         const r = await client.get(client.url(path, 'dynamic'), z.unknown(), { ifModifiedSince: l.lastModified, retries: 1 });
-        if (r.status === 200 && r.lastModified && r.lastModified !== l.lastModified) { log(`publish ready: ${l.house} ${l.kind} ${r.lastModified}`); return true; }
-      } catch (e) { log(`publish probe ${l.house} ${l.kind} failed: ${(e as Error).message}`); }
+        if (r.status === 200 && r.lastModified && r.lastModified !== l.lastModified) { log(`publish ready: ${l.kind} ${r.lastModified}`); return true; }
+      } catch (e) { log(`publish probe ${l.kind} failed: ${(e as Error).message}`); }
     }
     if (Date.now() + everyMs > until) return false;
     await sleep(everyMs);
@@ -136,14 +137,14 @@ const removeDb = (dir: string) => { for (const s of ['', '-wal', '-shm']) rmSync
  */
 export async function cloudRun(opts: CloudRunOptions): Promise<CloudRunResult> {
   const started = Date.now();
-  const log = opts.log ?? ((m: string) => console.log(`[${new Date().toISOString()}] ${m}`));
+  let db: DB | null = null;
+  const log = publicLog(opts.log ?? ((m: string) => console.log(`[${new Date().toISOString()}] ${m}`)), () => db);
   const remote = new Counted(opts.remote);
   const dir = opts.dataDir;
   for (const sub of ['raw', 'datasets', 'reports']) mkdirSync(join(dir, sub), { recursive: true });
   const result: CloudRunResult = { restoredFrom: 'fresh', refresh: null, publishes: [], events: { applied: 0, refused: 0, skipped: 0 }, waitedMs: 0, ms: 0,
     bytesDown: 0, bytesUp: 0, daily: 'not due', dbBytes: 0, dbGzBytes: 0, rawFiles: 0, message: '' };
 
-  let db: DB | null = null;
   try {
     // 1. Restore.
     removeDb(dir);
@@ -219,6 +220,19 @@ export async function cloudRun(opts: CloudRunOptions): Promise<CloudRunResult> {
     result.bytesUp = remote.up;
   }
   return result;
+}
+
+/**
+ * The cycle's log, for the Actions logs, which anyone can read on a public repository. The cycle's own lines are
+ * counts only; this also turns the id of every tracked or pinned house into "a house" in the engine's lines (a poll
+ * error names its URL), so no line says which houses Chip trades on.
+ */
+function publicLog(log: (m: string) => void, db: () => DB | null): (m: string) => void {
+  return (m: string) => {
+    let ids: number[] = [];
+    try { ids = (db()?.prepare('SELECT id FROM houses WHERE tracked = 1 OR pinned = 1').all() as Array<{ id: number }> | undefined ?? []).map(h => h.id); } catch { /* not open yet */ }
+    log(ids.length ? m.replace(new RegExp(`\\b(${ids.join('|')})\\b`, 'g'), 'a house') : m);
+  };
 }
 
 function countRaw(dir: string): number {

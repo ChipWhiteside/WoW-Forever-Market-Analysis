@@ -15,6 +15,9 @@ export function fakeGitHub(o: { token?: string } = {}) {
   const releases: Array<{ id: number; tag: string; assets: Map<number, Asset> }> = [];
   const files = new Map<string, { sha: string; bytes: Uint8Array }>();
   const branches = new Set(['main']);
+  const trees = new Map<string, string[]>();
+  const commits = new Map<string, { tree: string; parents: string[] }>();
+  const refs = new Map<string, string>();
   const runs: Run[] = [];
   const calls: string[] = [];
   const knobs = {
@@ -89,11 +92,24 @@ export function fakeGitHub(o: { token?: string } = {}) {
     }
     // Branches
     if ((m = /^\/git\/ref\/heads\/(.+)$/.exec(p)) && method === 'GET') return branches.has(m[1]!) ? res(200, { object: { sha: 'abc123' } }) : res(404, { message: 'Not Found' });
+    if (p === '/git/trees' && method === 'POST') {
+      const b = await body();
+      const t = { sha: `tree${nextId++}`, paths: (b.tree as Array<{ path: string }>).map(x => x.path) };
+      trees.set(t.sha, t.paths);
+      return res(201, { sha: t.sha });
+    }
+    if (p === '/git/commits' && method === 'POST') {
+      const b = await body();
+      if (!trees.has(b.tree)) return res(422, { message: 'Tree SHA does not exist' });
+      const c = `commit${nextId++}`;
+      commits.set(c, { tree: b.tree, parents: b.parents });
+      return res(201, { sha: c });
+    }
     if (p === '/git/refs' && method === 'POST') {
       const b = await body();
       const name = String(b.ref).replace(/^refs\/heads\//, '');
       if (branches.has(name)) return res(422, { message: 'Reference already exists' });
-      branches.add(name); return res(201, { ref: b.ref });
+      branches.add(name); refs.set(String(b.ref), String(b.sha)); return res(201, { ref: b.ref });
     }
     // Contents
     if ((m = /^\/contents\/(.+)$/.exec(p))) {
@@ -144,5 +160,7 @@ export function fakeGitHub(o: { token?: string } = {}) {
   const assets = () => releases.flatMap(r => [...r.assets.values()]);
   /** Every byte the fake holds: asset bodies and inbox files. */
   const allBytes = () => [...assets().map(a => a.bytes), ...[...files.values()].map(f => f.bytes)];
-  return { fetchFn, token, releases, assets, files, branches, runs, calls, knobs, addRun, allBytes };
+  /** The tree paths and parents of a branch made through git/refs. */
+  const branchCommit = (name: string) => { const c = commits.get(refs.get(`refs/heads/${name}`) ?? ''); return c && { parents: c.parents, paths: trees.get(c.tree) ?? [] }; };
+  return { fetchFn, token, releases, assets, files, branches, runs, calls, knobs, addRun, allBytes, branchCommit };
 }

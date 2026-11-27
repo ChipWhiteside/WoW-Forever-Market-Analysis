@@ -142,7 +142,7 @@ describe('cloud cycle: restore from nothing, the inbox, and what it publishes', 
     expect(results).toEqual(api.json());
     expect(Object.keys(results!).sort()).toEqual(['flips', 'heldBack', 'run']);
     expect(results!.run).not.toBeNull();
-    expect(await getJson<LedgerFile>(c.remote, LEDGER_KEY)).toEqual({ rows: [], applied: [pinKey] });
+    expect(await getJson<LedgerFile>(c.remote, LEDGER_KEY)).toEqual({ rows: [], applied: [pinKey], refused: [] });
     db.close();
   });
 
@@ -239,8 +239,16 @@ describe('cloud cycle: inbox events', () => {
       await ev(t + 2, 'Dana', 'POST', '/api/ledger/1/sold', { units: 1, received: 900 }), // not Dana's: refused
       await ev(t + 3, 'Dana', 'PUT', '/api/settings', { alert_good_gold: 12 }),
     ];
-    const r = await c.run();
+    const lines: string[] = [];
+    const r = await c.run({ log: m => lines.push(m) });
     expect(r.events).toEqual({ applied: 3, refused: 1, skipped: 0 });
+    // Actions logs are public: counts only, no event name, path, flip, item, house or person.
+    expect(lines).toContain('inbox: 3 applied, 1 not applied');
+    expect(lines.join('\n')).not.toMatch(/\/api\/|events\/|f1|Bandage|Chip|Dana|\b111\b|\b116\b/);
+    // The refused Sold is not dropped silently: ledger.json says it was not applied, and why.
+    const refused = (await getJson<LedgerFile>(c.remote, LEDGER_KEY))!.refused!;
+    expect(refused.map(x => [x.key, x.action, x.username, x.units, x.name])).toEqual([[keys[2], 'sold', 'Dana', 1, 'Bandage']]);
+    expect(refused[0]!.reason).toMatch(/\w/);
     const db = await c.stored();
     expect(db.prepare('SELECT action, username, units, expected_cost, received FROM user_actions ORDER BY id').all().map(x => ({ ...x }))).toEqual([
       { action: 'did', username: 'Chip', units: 2, expected_cost: 400, received: null },
@@ -267,9 +275,21 @@ describe('cloud cycle: inbox events', () => {
     const lines: string[] = [];
     const r = await c.run({ log: m => lines.push(m) });
     expect(r.events.refused).toBe(1);
-    expect(lines.some(l => /inbox .* unreadable, dropped/.test(l))).toBe(true);
+    expect(lines).toContain('inbox: 0 applied, 1 not applied');
     expect(lines.join('\n')).not.toMatch(/Chip|alert_good_gold/);
     expect(await c.remote.list('events/')).toEqual([]);
+    expect((await getJson<LedgerFile>(c.remote, LEDGER_KEY))!.refused!.map(x => [x.what, x.reason])).toEqual([['A saved change', expect.stringMatching(/could not decrypt/)]]);
+  });
+
+  it('a sealed event copied under another name does not open, so it is never applied twice', async () => {
+    const c = cloud();
+    await c.run();
+    const key = await addEvent(c.remote, { at: Date.now(), user: 'Chip', method: 'PUT', url: '/api/settings', contentType: 'application/json', body: '{"alert_good_gold":13}' });
+    const copy = `events/${String(Date.now() + 5).padStart(13, '0')}-aaaaaaaaaaaa.json`;
+    await c.remote.inner.put(copy, (await c.remote.inner.get(key))!.body);
+    const r = await c.run();
+    expect(r.events).toEqual({ applied: 1, refused: 1, skipped: 0 });
+    expect((await getJson<LedgerFile>(c.remote, LEDGER_KEY))!.refused!.map(x => x.key)).toEqual([copy]);
   });
 });
 

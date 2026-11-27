@@ -22,7 +22,8 @@ import type { GitHub } from './githubApi.ts';
  * - inbox add    PUT ~/contents/{path} { message, content, branch }  201; 409 when the branch moved under it (retried);
  *                404 or 422 when the branch does not exist yet (created from the default branch, then retried)
  * - inbox remove DELETE ~/contents/{path} { message, sha, branch }
- * - branch       GET ~/git/ref/heads/{default}, POST ~/git/refs { ref: refs/heads/data-inbox, sha }
+ * - branch       POST ~/git/trees { tree: [README] }, POST ~/git/commits { message, tree, parents: [] }, then
+ *                POST ~/git/refs { ref: refs/heads/data-inbox, sha }: an orphan, 422 when it exists
  */
 export const RELEASE_TAG = 'data';
 export const INBOX_BRANCH = 'data-inbox';
@@ -93,10 +94,16 @@ export class GitHubStore implements BlobStore {
 
   private contentsPath(key: string) { return `~/contents/${key.split('/').map(encodeURIComponent).join('/')}`; }
 
+  /**
+   * The inbox branch, made on the first write as an orphan: one commit with only a README, no parent. Its tree holds
+   * no workflow files, so creating it needs Contents write only, never the Workflows permission a branch made from
+   * main could need (verification G14), and no workflow or deploy ever runs from it.
+   */
   private async ensureBranch(): Promise<void> {
-    const repo = await this.gh.json<{ default_branch: string }>('GET', '~');
-    const head = await this.gh.json<{ object: { sha: string } }>('GET', `~/git/ref/heads/${encodeURIComponent(repo.body!.default_branch)}`);
-    await (await this.gh.request('POST', '~/git/refs', { allow: [422], json: { ref: `refs/heads/${this.branch}`, sha: head.body!.object.sha } })).body?.cancel().catch(() => {});
+    const tree = await this.gh.json<{ sha: string }>('POST', '~/git/trees', { json: { tree: [{ path: 'README.md', mode: '100644', type: 'blob',
+      content: 'Encrypted inbox for Gold Finder: the site saves writes here and the hourly job applies them. Do not edit.\n' }] } });
+    const commit = await this.gh.json<{ sha: string }>('POST', '~/git/commits', { json: { message: 'inbox', tree: tree.body!.sha, parents: [] } });
+    await (await this.gh.request('POST', '~/git/refs', { allow: [422], json: { ref: `refs/heads/${this.branch}`, sha: commit.body!.sha } })).body?.cancel().catch(() => {});
   }
 
   /** A contents write, retried on 409 (another commit landed on the branch first) with a growing pause. */

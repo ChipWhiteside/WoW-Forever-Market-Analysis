@@ -3,14 +3,18 @@ import type { DB } from '../store/db.ts';
 import { getKv } from '../store/db.ts';
 import { EngineBusyError, type Engine } from '../engine/engine.ts';
 
+/** How many gone flips ?gone=1 adds: the most recent. */
+export const GONE_LIMIT = 200;
+
 /** The Flips page: the ranked list, the latest run report, and what was held back and why. */
 export function registerFlipRoutes(app: FastifyInstance, db: DB, engine: Engine | null = null, refreshWaitMs = 30_000): void {
   app.get<{ Querystring: { gone?: string } }>('/api/flips', async req => {
-    const rows = db.prepare(`SELECT f.key, f.kind, f.family, f.house_id, f.item_id, f.recipe_id, f.state, f.rank, f.expected_profit, f.risk, f.detail,
+    const cols = `f.key, f.kind, f.family, f.house_id, f.item_id, f.recipe_id, f.state, f.rank, f.expected_profit, f.risk, f.detail,
         f.first_seen, f.last_seen, f.data_at, f.gone_at, i.icon_url, i.quality, h.name house_name, h.faction
-      FROM flips f LEFT JOIN items i ON i.id = f.item_id LEFT JOIN houses h ON h.id = f.house_id
-      WHERE ${req.query.gone === '1' ? '1' : `f.state != 'gone'`}
-      ORDER BY CASE WHEN f.state = 'gone' THEN 1 ELSE 0 END, f.rank IS NULL, f.rank, f.expected_profit DESC LIMIT 1000`).all() as Array<Record<string, unknown> & { detail: string }>;
+      FROM flips f LEFT JOIN items i ON i.id = f.item_id LEFT JOIN houses h ON h.id = f.house_id`;
+    const rows = db.prepare(`SELECT ${cols} WHERE f.state != 'gone' ORDER BY f.rank IS NULL, f.rank, f.expected_profit DESC LIMIT 1000`).all() as Array<Record<string, unknown> & { detail: string }>;
+    // ?gone=1 adds the GONE_LIMIT most recently gone, after the live ones, so the answer stays far under Vercel's 4.5 MB.
+    if (req.query.gone === '1') rows.push(...db.prepare(`SELECT ${cols} WHERE f.state = 'gone' ORDER BY f.gone_at DESC, f.last_seen DESC LIMIT ?`).all(GONE_LIMIT) as Array<Record<string, unknown> & { detail: string }>);
     const run = db.prepare('SELECT at, data_at, ms, complete, report FROM flip_runs ORDER BY at DESC LIMIT 1').get() as { at: number; data_at: number; ms: number; complete: number; report: string } | undefined;
     const held = getKv(db, 'flip_held_back');
     return {

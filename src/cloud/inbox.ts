@@ -49,39 +49,75 @@ export interface ApplyResult { applied: Array<{ key: string; status: number; err
 /**
  * Replay events on the cycle's database through the existing routes, signed in as the event's user. Each is applied
  * once: a name already in `inbox_applied` is skipped. A route that refuses (a Sold for more units than are left,
- * because two people raced) is logged and counted as applied, so it never blocks the queue.
+ * because two people raced) or an event that cannot be read counts as done, so it never blocks the queue, and is
+ * kept in kv `inbox_refused` with its reason, so ledger.json and the Ledger page say "not applied: <reason>".
+ * Actions logs are public, so the log says counts only: never an event's name, path, flip, item, house or person.
  */
 export async function applyEvents(db: DB, events: Array<{ key: string; ev: InboxEvent | null; error?: string }>, log: (m: string) => void): Promise<ApplyResult> {
   const done = appliedKeys(db);
   const seen = new Set(done);
   const out: ApplyResult = { applied: [], skipped: 0 };
   const fresh = events.filter(e => { if (seen.has(e.key)) { out.skipped++; return false; } return true; });
-  if (!fresh.length) return out;
+  if (!fresh.length) { if (out.skipped) log(`inbox: ${out.skipped} already applied, skipped`); return out; }
   const auth = { password: null, secret: randomBytes(32).toString('hex') };
   const sign = makeAuth(auth);
   const app = buildServer({ db, engine: null, client: null, port: 0, dataDir: '', auth });
+  const refused = refusedActions(db);
   try {
     for (const { key, ev, error } of fresh) {
-      if (!ev) { out.applied.push({ key, status: 0, error }); log(`inbox ${key}: unreadable, dropped`); }
+      let reason: string | null = null;
+      if (!ev) { reason = error ?? 'unreadable'; out.applied.push({ key, status: 0, error: reason }); }
       else {
-        const r = await app.inject({ method: ev.method as 'POST', url: ev.url,
-          headers: { cookie: `${COOKIE}=${encodeURIComponent(sign.sign(ev.user))}`, ...(ev.contentType ? { 'content-type': ev.contentType } : {}) },
-          ...(ev.body ? { payload: ev.body } : {}) });
-        const err = r.statusCode >= 400 ? r.body.slice(0, 200) : undefined;
-        out.applied.push({ key, status: r.statusCode, ...(err ? { error: err } : {}) });
-        // Actions logs are public: the status only, never the body (it can name a person).
-        log(`inbox ${key}: ${ev.method} ${ev.url.split('?')[0]} answered ${r.statusCode}`);
+        const r = await app.inject(eventRequest(ev, sign.sign(ev.user)));
+        if (r.statusCode >= 400) reason = errorText(r.body, r.statusCode);
+        out.applied.push({ key, status: r.statusCode, ...(reason ? { error: reason } : {}) });
+      }
+      if (reason) {
+        const [p] = ev ? pendingActions([{ key, ev }], [], nameIn(db)) : [];
+        refused.push({ ...(p ?? { key, at: Date.now(), username: 'unknown', action: 'other', flipKey: null, didId: null, units: null, received: null, name: null, what: 'A saved change' }), reason });
       }
       done.push(key);
       setKv(db, APPLIED_KV, JSON.stringify(done.slice(-APPLIED_KEEP)));
     }
   } finally { await app.close(); }
+  setKv(db, REFUSED_KV, JSON.stringify(refused.slice(-REFUSED_KEEP)));
+  const bad = out.applied.filter(a => a.status === 0 || a.status >= 400).length;
+  log(`inbox: ${out.applied.length - bad} applied, ${bad} not applied${out.skipped ? `, ${out.skipped} already applied` : ''}`);
   return out;
 }
 
-/** ledger.json: every action row, and the event names already in them, so the site never shows one twice. */
-export const ledgerFile = (db: DB) => JSON.stringify({ rows: ledgerRows(db), applied: appliedKeys(db) });
-export interface LedgerFile { rows: ActionRow[]; applied: string[] }
+/** An inbox event as an inject request, signed in as the person who saved it: the cycle and the site replay alike. */
+export const eventRequest = (ev: InboxEvent, token: string) => ({
+  method: ev.method as 'POST', url: ev.url,
+  headers: { cookie: `${COOKIE}=${encodeURIComponent(token)}`, ...(ev.contentType ? { 'content-type': ev.contentType } : {}) },
+  ...(ev.body ? { payload: ev.body } : {}),
+});
+
+/** A route's refusal in words: its JSON error, else the start of its body. */
+function errorText(body: string, status: number): string {
+  try { const e = (JSON.parse(body) as { error?: unknown }).error; if (typeof e === 'string' && e) return e.slice(0, 200); } catch { /* not JSON */ }
+  return body.slice(0, 200) || `answered ${status}`;
+}
+
+/** Names for a refused event: the flip's from the flips table, the "I did this" row's from user_actions. */
+const nameIn = (db: DB) => (flipKey: string | null, didId: number | null): string | null => {
+  if (flipKey) {
+    const r = db.prepare('SELECT detail FROM flips WHERE key = ?').get(flipKey) as { detail: string } | undefined;
+    try { return r ? (JSON.parse(r.detail) as { name?: string }).name ?? null : null; } catch { return null; }
+  }
+  if (didId != null) return (db.prepare('SELECT name FROM user_actions WHERE id = ?').get(didId) as { name: string | null } | undefined)?.name ?? null;
+  return null;
+};
+
+/** A saved write the cycle could not apply, with the reason. Newest last. */
+export interface RefusedAction extends PendingAction { reason: string }
+export const REFUSED_KV = 'inbox_refused';
+const REFUSED_KEEP = 50;
+export const refusedActions = (db: DB): RefusedAction[] => { try { return JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as RefusedAction[]; } catch { return []; } };
+
+/** ledger.json: every action row, the event names already in them (so the site never shows one twice), and the refused. */
+export const ledgerFile = (db: DB) => JSON.stringify({ rows: ledgerRows(db), applied: appliedKeys(db), refused: refusedActions(db) });
+export interface LedgerFile { rows: ActionRow[]; applied: string[]; refused?: RefusedAction[] }
 
 /** A saved write the next cycle has not applied yet, as the Ledger page and the flip card show it. */
 export interface PendingAction {

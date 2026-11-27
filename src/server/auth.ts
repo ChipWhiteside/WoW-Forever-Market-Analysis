@@ -65,7 +65,9 @@ export function readCookie(header: string | undefined, name: string): string | n
   if (!header) return null;
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0 || part.slice(0, i).trim() !== name) continue;
+    // A malformed value (a bad percent escape) is no session, so the caller answers 401 and the login page.
+    try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return null; }
   }
   return null;
 }
