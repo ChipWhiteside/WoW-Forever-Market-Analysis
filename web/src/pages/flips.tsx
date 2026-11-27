@@ -32,7 +32,7 @@ type Sort = 'rank' | 'each' | 'hour' | 'risk';
  */
 export function FlipsPage() {
   const { openItem } = useNav();
-  const { data, isLoading } = useQuery({ queryKey: ['flips'], queryFn: () => api<Resp>('/api/flips'), refetchInterval: 60_000 });
+  const { data, isLoading, error } = useQuery({ queryKey: ['flips'], queryFn: () => api<Resp>('/api/flips'), refetchInterval: 60_000 });
   const [kind, setKind] = useState<'all' | 'craft' | 'flip'>('all');
   const [risk, setRisk] = useState<'all' | 'low' | 'medium'>('all');
   const [sort, setSort] = useState<Sort>('rank');
@@ -54,7 +54,7 @@ export function FlipsPage() {
           <span>Data from <b>{ago(run.data_at)}</b></span>
           <span className="text-muted">{run.report.items.toLocaleString()} items, {run.report.recipesTried.toLocaleString()} recipes checked in {(run.ms / 1000).toFixed(1)}s</span>
           {run.complete ? <Chip tone="good">complete</Chip> : <Chip tone="bad">incomplete: {run.report.incompleteReason ?? 'see Health'}</Chip>}
-        </> : <span className="text-muted">No flip run yet. The first one happens at the next publish, about 25 past the hour.</span>}
+        </> : error ? <span className="text-bad">{(error as Error).message}</span> : <span className="text-muted">No flip run yet. The first one happens at the next publish, about 25 past the hour.</span>}
         {/* Refresh (Chip, November 26), added beside the run status; nothing above is moved. */}
         <RefreshButton />
         <DiscordLine />
@@ -76,7 +76,7 @@ export function FlipsPage() {
       </div>
 
       {isLoading ? <p className="text-muted">Loading.</p> : rows.length === 0 ? (
-        <Empty title="No flips right now">{!run ? 'Waiting for the first run.' : run.complete ? 'Nothing cleared the checks this hour. The held back list below says why.'
+        <Empty title="No flips right now">{error ? (error as Error).message : !run ? 'Waiting for the first run.' : run.complete ? 'Nothing cleared the checks this hour. The held back list below says why.'
           : /\bold\b/.test(run.report.incompleteReason ?? '') ? `The data is old (${run.report.incompleteReason}). No list is built from old prices; it comes back with the next fresh publish.`
           : `This run is incomplete (${run.report.incompleteReason ?? 'see Health'}). No list is built from partial data.`}</Empty>
       ) : (

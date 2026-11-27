@@ -106,3 +106,29 @@ Each settles a question the data cannot.
 6. **Go to sleep.**
 
 If prices moved while you shopped, skip it. Another flip will come.
+
+## 10. Signing in (online site)
+
+The online site asks for your name and the shared password. It remembers you for 90 days on that browser. Press **Sign out** to forget it sooner. On your PC, the local app has no sign in unless you set `SITE_PASSWORD`.
+
+## 11. I did this and Sold
+
+When you act on a flip, press **I did this** on its card and say how many units. The app saves the expected cost and profit as they were at that moment. When you sell, press **Sold**, enter the units and the gold you received. Only you can mark your own flips sold, and you cannot sell more units than you did.
+
+Online, a saved press counts at the next update, not at once. The Ledger page lists it as saved while it waits. Sold shows on the flip card after the next hourly update.
+
+## 12. The Ledger page
+
+The Ledger shows one row per person: flips done, gold spent, gold received, realised minus spent, expected, and realised against expected. Below it is the History of every I did this and Sold. Use it to see whether the flips pay what the list promised.
+
+## 13. Online versus local
+
+- Online, press **Refresh** on Flips. It runs on GitHub and takes 1 to 2 minutes. If it joins an hourly run that is still waiting for Blizzard, it can take up to about 15 minutes, and the page says so.
+- Saved writes (settings, house pins, I did this, Sold) count at the next update.
+- Online history starts empty. Your local data is not moved. Auction flips need 6 hours of watched sales, so day one shows mostly vendor flips.
+- Online, your PC does not need to stay on. Section 2 still holds for local mode.
+- Online, a red banner on Flips says when the newest results are over 2 hours old.
+
+## 14. Warning: do not run local and online together
+
+Do not run the local app and the online site at the same time with the same Discord webhook. Both post to it, and every alert doubles. Use a different webhook for one of them, or stop the local app.

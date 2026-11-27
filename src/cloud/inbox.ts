@@ -3,7 +3,7 @@ import type { DB } from '../store/db.ts';
 import { getKv, setKv } from '../store/db.ts';
 import { buildServer } from '../server/server.ts';
 import { makeAuth, COOKIE } from '../server/auth.ts';
-import { ledgerRows, EVENT_HEADER, REFUSED_KV, eventRef, type ActionRow } from '../server/ledger.ts';
+import { ledgerRows, EVENT_HEADER, REFUSED_KV, refusedList, type ActionRow } from '../server/ledger.ts';
 import type { BlobStore } from './store.ts';
 import { INBOX_PREFIX } from './githubStore.ts';
 
@@ -122,7 +122,7 @@ const flipOfIn = (db: DB, refused: RefusedAction[]) => (event: string): string |
 export interface RefusedAction extends PendingAction { reason: string }
 export { REFUSED_KV };
 const REFUSED_KEEP = 50;
-export const refusedActions = (db: DB): RefusedAction[] => { try { return JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as RefusedAction[]; } catch { return []; } };
+export const refusedActions = (db: DB): RefusedAction[] => refusedList<RefusedAction>(db);
 
 /** ledger.json: every action row, the event names already in them (so the site never shows one twice), and the refused. */
 export const ledgerFile = (db: DB) => JSON.stringify({ rows: ledgerRows(db), applied: appliedKeys(db), refused: refusedActions(db) });

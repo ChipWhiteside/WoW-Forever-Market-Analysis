@@ -23,6 +23,9 @@ import type { FlipRunResult } from '../flips/run.ts';
 import { flipAlertCycle, flushHeldFlipAlerts, type FlipAlertResult } from '../flips/alerts.ts';
 
 /** The engine was busy with a poll round for longer than the caller would wait (the refresh route answers 409). */
+/** The check, not its numbers: the house and check name stay, counts and percentages after the colon go, so "45% vanished" and "38% vanished" post once. */
+export const suspectKey = (text: string): string => { const i = text.indexOf(':'); return i < 0 ? text.replace(/\d+/g, '#') : text.slice(0, i) + text.slice(i).replace(/\d+/g, '#'); };
+
 export class EngineBusyError extends Error {}
 
 export interface RefreshResult {
@@ -145,7 +148,7 @@ export class Engine {
     const hook = this.opts.devWebhookUrl;
     const post = async (text: string) => { if (hook) await sendDiscord(hook, text, this.opts.fetchFn); };
     for (const sus of h.suspects) {
-      const k = `health:suspect:${sus}`;
+      const k = `health:suspect:${suspectKey(sus)}`;
       if (getKv(this.db, k)) continue;
       setKv(this.db, k, String(Date.now()));
       await post(`**Suspected bug**\n${sus}. Treated as a bug until proven to be a market fact.`);

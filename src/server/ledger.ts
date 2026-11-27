@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../store/db.ts';
 import { getKv } from '../store/db.ts';
 import { actor } from './auth.ts';
-import { INBOX_PREFIX } from '../cloud/githubStore.ts';
 
 /**
  * Who did what (docs/phase2-plan.md item 6). "I did this" on a flip records units with the expected cost and profit
@@ -39,7 +38,11 @@ const EVENT_REF = /^\d{13}-[0-9a-f]{12}$/;
 export const eventRef = (key: string) => key.slice(INBOX_PREFIX.length, -'.json'.length);
 const eventOfRef = (ref: string) => EVENT_REF.test(ref) ? `${INBOX_PREFIX}${ref}.json` : null;
 /** The refused inbox writes (kv inbox_refused, written by src/cloud/inbox.ts applyEvents). */
+/** Where the site's saved writes live in the store. The cloud store uses the same prefix. */
+export const INBOX_PREFIX = 'events/';
 export const REFUSED_KV = 'inbox_refused';
+/** The one reader of the refused list (kv inbox_refused). */
+export const refusedList = <T extends { key: string; reason: string } = { key: string; reason: string }>(db: DB): T[] => { try { return JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as T[]; } catch { return []; } };
 export interface PersonTotals {
   username: string; flipsDone: number; unitsDone: number; unitsSold: number;
   spent: number; received: number; realised: number; expected: number; realisedVsExpected: number | null;
@@ -89,8 +92,7 @@ export function registerLedgerRoutes(app: FastifyInstance, db: DB): void {
     const did = (event ? db.prepare(`SELECT * FROM user_actions WHERE event = ? AND action = 'did'`).get(event)
       : /^\d+$/.test(req.params.id) ? db.prepare(`SELECT * FROM user_actions WHERE id = ? AND action = 'did'`).get(Number(req.params.id)) : undefined) as ActionRow | undefined;
     if (!did) {
-      let refused: { key: string; reason: string } | undefined;
-      try { refused = event ? (JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as Array<{ key: string; reason: string }>).find(x => x.key === event) : undefined; } catch { /* none */ }
+      const refused = event ? refusedList(db).find(x => x.key === event) : undefined;
       if (refused) return reply.code(400).send({ error: `The "I did this" it sells from was not applied (${refused.reason}).` });
       return reply.code(404).send({ error: 'No such "I did this".' });
     }

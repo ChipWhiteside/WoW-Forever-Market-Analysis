@@ -153,7 +153,8 @@ export function fakeGitHub(o: { token?: string } = {}) {
   }) as typeof fetch;
 
   function addRun(status: string, event = 'schedule'): Run {
-    const r: Run = { id: nextId++, status, conclusion: status === 'completed' ? 'success' : null, event, created_at: new Date().toISOString(), html_url: `https://github.com/${REPO}/actions/runs/${nextId}` };
+    const id = nextId++;
+    const r: Run = { id, status, conclusion: status === 'completed' ? 'success' : null, event, created_at: new Date().toISOString(), html_url: `https://github.com/${REPO}/actions/runs/${id}` };
     runs.push(r);
     return r;
   }

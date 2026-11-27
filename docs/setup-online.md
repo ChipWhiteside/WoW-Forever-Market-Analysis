@@ -70,10 +70,10 @@ The site needs its own key to read the data and start a refresh.
 2. In the left list, press **collect**.
 3. Press **Run workflow**, keep the branch as main, and press the green **Run workflow**.
 4. Wait, then open the run. The first run takes longer, up to about 30 minutes, because it downloads the game data (recipes, vendors, items). Later runs take about 2 minutes. A green check means it worked.
-5. Open the step called **One cycle**. Near the end it says `database restored from fresh` on the first run and lists how many publishes it read.
+5. Open the step called **One cycle**. Near the end it says `database restored from cache` or `from fresh`. On the very first run it says `from fresh`. If a scheduled run at 28 past went first, yours says `from cache` and lists how many publishes it read.
 6. Open the repository's **Releases**. A release called `data` now holds `results.json`, `ledger.json` and a `wowf` database file. They are encrypted, so opening them shows nothing readable. That is right.
-7. Open gold.chipwhiteside.com, sign in with your name and the password, and open Flips. The list is there.
-8. Pin your Blackwater house on the Houses page. It counts at the next update. Then press Refresh on Flips: it says "Running on GitHub, usually 1 to 2 minutes", and the list updates when it is done. When Refresh joins an hourly run that is still waiting for Blizzard to publish, it can take up to about 15 minutes, and the page says so.
+7. Open gold.chipwhiteside.com, sign in with your name and the password, and open Flips. The list is there. The online history starts empty: your local data is not moved. On day one you see mostly vendor flips, and auction flips wait in Held back as "learning" until 6 hours of sales are watched. The Ledger starts empty. When you press Sold, it shows on the flip card after the next hourly update.
+8. Pin your Blackwater house: open **Settings**, then **House finder**, and press **This one is mine** on the same house you found in local mode (check its id). Online, only your houses are polled, so the other Blackwater houses show no prices until you pin one. It counts at the next update. Then press Refresh on Flips: it says "Running on GitHub, usually 1 to 2 minutes", and the list updates when it is done. When Refresh joins an hourly run that is still waiting for Blizzard to publish, it can take up to about 15 minutes, and the page says so.
 
 From then on, the job runs at 28 past every hour on its own.
 

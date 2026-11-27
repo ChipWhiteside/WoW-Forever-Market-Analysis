@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { BlobInfo, BlobStore } from './store.ts';
 import type { GitHub } from './githubApi.ts';
+import { INBOX_PREFIX } from '../server/ledger.ts';
 
 /**
  * The cloud blob store on GitHub (brief item 3), over the REST API with fetch only (src/cloud/githubApi.ts).
@@ -27,7 +28,7 @@ import type { GitHub } from './githubApi.ts';
  */
 export const RELEASE_TAG = 'data';
 export const INBOX_BRANCH = 'data-inbox';
-export const INBOX_PREFIX = 'events/';
+export { INBOX_PREFIX };
 const ASSET_NAME = /^[A-Za-z0-9._-]+$/;
 const INBOX_KEY = /^events\/[A-Za-z0-9._-]+$/;
 

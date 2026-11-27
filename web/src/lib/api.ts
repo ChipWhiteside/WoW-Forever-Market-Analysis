@@ -2,7 +2,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } });
   // Phase 2 login: a 401 means the cookie is missing or old; the app shows the login page.
   if (res.status === 401 && path !== '/api/login') dispatchEvent(new Event('wowf-signed-out'));
-  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  if (!res.ok) {
+    // The server's own message (for example the missing DATA_KEY or could not decrypt text) reaches the page; the status stays as the fallback.
+    const b = await res.json().catch(() => null) as { error?: unknown } | null;
+    throw new Error(typeof b?.error === 'string' && b.error ? b.error : `${path} ${res.status}`);
+  }
   return res.json() as Promise<T>;
 }
 export const post = <T,>(path: string, body: unknown) => api<T>(path, { method: 'POST', body: JSON.stringify(body) });
