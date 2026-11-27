@@ -30,6 +30,7 @@ async function setup(env: Record<string, string> = {}, opts: { publish?: boolean
   const detail = { key: 'f1', name: 'Bandage', itemId: 100, perItem: 300, best: { units: 5, cost: 1000, expectedProfit: 1500 }, options: [] };
   db.prepare(`INSERT INTO flips (key, kind, family, house_id, item_id, state, expected_profit, risk, detail, first_seen, last_seen, data_at) VALUES ('f1', 'craft', 'craft_auction', 1, 100, 'live', 1500, 'low', ?, 1, 1, 1)`).run(JSON.stringify(detail));
   db.prepare(`INSERT INTO settings (key, value) VALUES ('alert_good_gold', '10')`).run();
+  db.exec(`INSERT INTO houses (id, name, faction, cut, tracked, pinned) VALUES (111, 'Alliance Auction House', 'alliance', 0.05, 1, 1), (116, 'Blackwater Auction House', 'blackwater', 0.15, 1, 0)`);
   db.prepare(`INSERT INTO user_actions (action, flip_key, username, at, units, expected_cost, expected_profit, item_id, name, kind, house_id) VALUES ('did', 'f1', 'Chip', 1, 5, 1000, 1500, 100, 'Bandage', 'craft', 1)`).run();
   if (opts.publish !== false) {
     await putJson(store, RESULTS_KEY, JSON.stringify({ flips: [{ key: 'f1', detail }], run: null, heldBack: [], fromResults: true }));
@@ -113,6 +114,17 @@ describe('Vercel handler on GitHub storage', () => {
     const { go } = await setup();
     expect((await go('/api/settings', postJson({ alert_good_gold: 12, alert_amazing_gold: 30 }, {}, 'PUT'))).status).toBe(202);
     expect(await (await go('/api/settings')).json()).toEqual({ alert_good_gold: '12', alert_amazing_gold: '30' });
+  });
+
+  it('a saved house pin answers the route own list and shows on GET /api/houses before the next update', async () => {
+    const { go } = await setup();
+    const r = await go('/api/houses/pin', postJson({ blackwater: 116 }));
+    expect(r.status).toBe(202);
+    expect(r.headers.get('x-wowf-pending')).toMatch(/^events\//);
+    const list = await r.json();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.find((h: { id: number }) => h.id === 116).pinned).toBe(1);
+    expect((await (await go('/api/houses')).json()).find((h: { id: number }) => h.id === 116).pinned).toBe(1);
   });
 
   it('Refresh dispatches the collect workflow and answers 202; a second press joins the same run; status follows it', async () => {

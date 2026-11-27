@@ -90,8 +90,6 @@ export interface PendingAction {
 }
 
 const WHAT: Array<[RegExp, string]> = [[/^PUT \/api\/settings$/, 'Settings'], [/^POST \/api\/houses\/pin$/, 'House pins']];
-/** Pending settings writes, which the site lays over GET /api/settings by replaying them on its copy (dbCache dryRun). */
-export const isSettingsWrite = (ev: InboxEvent) => ev.method === 'PUT' && ev.url.split('?')[0] === '/api/settings';
 
 export function pendingActions(events: Array<{ key: string; ev: InboxEvent | null }>, applied: Iterable<string>, nameOf: (flipKey: string | null, didId: number | null) => string | null): PendingAction[] {
   const skip = new Set(applied);

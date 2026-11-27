@@ -1,13 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { FastifyInstance, InjectOptions } from 'fastify';
 import { buildServer } from '../server/server.ts';
-import { makeAuth, LOCAL_USER, type AuthConfig } from '../server/auth.ts';
+import { makeAuth, LOCAL_USER, COOKIE, type AuthConfig } from '../server/auth.ts';
 import { ledgerView, ledgerRows } from '../server/ledger.ts';
 import type { DB } from '../store/db.ts';
 import type { BlobInfo, BlobStore } from './store.ts';
 import { siteDb, dryRun, cachedJson } from './dbCache.ts';
 import { RESULTS_KEY, LEDGER_KEY } from './layout.ts';
-import { addEvent, readEvents, pendingActions, isSettingsWrite, appliedKeys, type LedgerFile } from './inbox.ts';
+import { addEvent, readEvents, pendingActions, appliedKeys, type LedgerFile, type InboxEvent } from './inbox.ts';
 import { dispatchOrJoin, runStatus, type GitHub } from './githubApi.ts';
 
 /**
@@ -16,7 +16,8 @@ import { dispatchOrJoin, runStatus, type GitHub } from './githubApi.ts';
  * - GET /api/flips is results.json and GET /api/ledger is ledger.json plus the inbox, so the common pages never wait
  *   for the database; every other GET reads the newest database asset, cached in /tmp by asset id.
  * - A write is tried on the site's copy and rolled back (dbCache dryRun). A refusal answers as the route does; a
- *   success is saved as an inbox event and answers 202 with `pending: true`. GET /api/settings lays pending settings over.
+ *   success is saved as an inbox event and answers 202. Other GETs replay the saved events on a rolled back copy first,
+ *   so a saved pin or setting shows at once.
  * - Refresh starts the collect workflow, or joins the run already queued or running, and answers 202.
  * - Login, logout and me touch no data.
  */
@@ -96,20 +97,16 @@ export function makeHandler(o: HandlerOpts) {
       }
 
       const s = await siteDb(o.store, listing, { dir: o.dir });
-      if (method === 'GET' && path === '/api/settings') {
-        // Saved settings count at the next update, but the page shows them now: replay the pending ones on a rolled back copy.
-        const writes = (await readEvents(o.store)).filter(e => e.ev && isSettingsWrite(e.ev));
-        if (writes.length) {
-          const r = await dryRun(s, async db => {
-            const app = appFor(db);
-            for (const { ev } of writes) await app.inject({ method: 'PUT', url: ev!.url, headers: { ...(req.headers as Record<string, string>), 'content-type': ev!.contentType ?? 'application/json' }, payload: ev!.body });
-            return app.inject(inject);
-          });
-          return send(res, r.statusCode, r.headers, r.rawPayload);
-        }
-      }
       if (method === 'GET' || method === 'HEAD' || !isApi) {
-        const r = await appFor(s.ro).inject(inject);
+        // Saved writes count at the next update, but pages show them now (a saved pin, saved settings): replay the
+        // pending events through their routes on a rolled back copy, then answer the GET there.
+        const applied = new Set(appliedKeys(s.ro));
+        const pending = isApi ? (await readEvents(o.store)).filter(e => e.ev && !applied.has(e.key)) : [];
+        const r = !pending.length ? await appFor(s.ro).inject(inject) : await dryRun(s, async db => {
+          const app = appFor(db);
+          for (const { ev } of pending) await app.inject(replay(ev!, auth.sign(ev!.user)));
+          return app.inject(inject);
+        });
         return send(res, r.statusCode, r.headers, r.rawPayload);
       }
 
@@ -117,11 +114,21 @@ export function makeHandler(o: HandlerOpts) {
       const tried = await dryRun(s, db => appFor(db).inject(inject));
       if (tried.statusCode >= 400) return send(res, tried.statusCode, tried.headers, tried.rawPayload);
       const event = await addEvent(o.store, { at: Date.now(), user: user ?? LOCAL_USER, method, url, contentType: String(req.headers['content-type'] ?? '') || null, body: body?.toString('utf8') ?? '' });
-      let answer: Record<string, unknown> = {};
-      try { const j = JSON.parse(tried.body) as unknown; answer = j && typeof j === 'object' && !Array.isArray(j) ? j as Record<string, unknown> : { result: j }; } catch { /* not JSON */ }
-      return json(res, 202, { ...answer, pending: true, event, message: 'Saved, counts at the next update.' });
+      // The route's own answer, kept as it is (the Houses page reads its list back); an object also says it is pending.
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(tried.body); } catch { /* not JSON */ }
+      const headers = { ...tried.headers, 'x-wowf-pending': event };
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return send(res, 202, headers, tried.rawPayload);
+      return send(res, 202, { ...headers, 'content-type': 'application/json; charset=utf-8' }, JSON.stringify({ ...parsed, pending: true, event, message: 'Saved, counts at the next update.' }));
     } catch (e) {
       return json(res, 500, { error: (e as Error).message });
     }
   };
 }
+
+/** An inbox event as an inject request, signed in as the person who saved it. */
+const replay = (ev: InboxEvent, token: string): InjectOptions => ({
+  method: ev.method as InjectOptions['method'], url: ev.url,
+  headers: { cookie: `${COOKIE}=${encodeURIComponent(token)}`, ...(ev.contentType ? { 'content-type': ev.contentType } : {}) },
+  ...(ev.body ? { payload: ev.body } : {}),
+});

@@ -1,54 +1,52 @@
 # Phase 2: online at gold.chipwhiteside.com
 
 November 27, 2026. Chip's decisions:
-- Vercel for the site, GitHub Actions for the hourly collector, Supabase for storage.
+- Vercel for the site, GitHub Actions for the hourly collector, GitHub for storage. Free.
 - A shared password plus a free text username. The site remembers the login, and every action records who took it.
 - The address is gold.chipwhiteside.com.
 - Local mode keeps working.
 
-## Design: the same tested engine, its files in the cloud
-Rewriting the engine for Postgres would redo most of what 413 tests prove. Instead, the engine keeps its SQLite database (`wowf.db`), and its files live in Supabase Storage.
+Supabase is out: its free tier cannot carry the engine database. The repository is public, so everything the cloud stores is encrypted.
 
-1. **Blob store** (`src/cloud/store.ts`). One small interface: get, put, list, delete and a lock. It has two implementations: the local folder (tests and local mode) and Supabase Storage over its REST API, with no SDK.
-2. **Cloud run** (`src/cloud/run.ts`). This is one hourly cycle:
-   1. Take the lock.
-   2. Pull `wowf.db` and the last 26 hours of raw snapshots for Chip's houses into a temp folder.
-   3. Poll Blizzard, collect, count sales and run the flips and alerts, all through the existing Engine.
-   4. Write `results.json` (the `/api/flips` payload).
-   5. Push the database, the new raw snapshots and the results.
-   6. Prune raw snapshots older than 14 days.
-   7. Release the lock.
+## Design: the same tested engine, its files in GitHub
+The engine keeps its SQLite database (`wowf.db`). Rewriting it for another database would redo most of what the tests prove.
 
-   The static datasets (wago, EG Link) refresh daily inside the same cycle and are cached in storage too.
-3. **Hourly job** (`.github/workflows/collect.yml`).
-   - The schedule is a few minutes after :25, with a concurrency group so runs never overlap.
-   - It waits for the publish with If-Modified-Since for up to 15 minutes.
-   - Secrets: Blizzard id and secret, Supabase URL and key, the Discord webhook, and the app URL.
-   - Workflows run on the default branch, so this needs a merge or the branch set as default. The setup guide says so.
-4. **Site on Vercel.**
-   - The existing app is built as static files.
-   - One serverless function wraps the existing Fastify server through `inject`, so every existing route works unchanged.
-   - Reads use the database from storage, cached in the function's temp folder by ETag.
-   - Writes (settings, Done, Sold, house pins) run under the lock and push the database back.
-   - Refresh runs the cloud cycle inline, waiting up to 60 seconds, and answers 409 when the hourly job holds the lock.
-5. **Login.**
-   - A shared password, set as a Vercel environment variable.
-   - A free text username.
-   - An HttpOnly signed cookie that lasts 90 days.
-   - Every write records the username.
-   - The Blizzard and Supabase keys never reach the browser.
-6. **People and the ledger.**
-   - On a flip card, "I did this" asks for units and records them with the expected cost and profit.
-   - "Sold" asks for units and gold received.
-   - A Ledger page shows, per person: flips done, gold spent, gold made, realised against expected, and a history list.
-   - All of this is additive: nothing on existing pages moves.
-7. **Limits** (to confirm against current free tiers while building):
-   - Supabase Storage 1 GB: the database plus 14 days of raw files for 2 houses (about 1 MB an hour).
-   - Vercel functions: duration and the 4.5 MB response limit.
-   - GitHub Actions minutes: about 2 minutes an hour.
+1. **Encryption** (`src/cloud/crypto.ts`). Every stored object is sealed with AES 256 GCM. The key is `DATA_KEY`, 32 random bytes in base64, kept as a repository secret and as a Vercel variable. Without it the cloud refuses to start. A wrong key or a changed byte is an error, never wrong data.
+2. **Blob store** (`src/cloud/store.ts`). One small interface: get, put, delete and list. Two implementations:
+   - the local folder (`localStore.ts`): local mode, the Actions cache folder, tests;
+   - GitHub (`githubStore.ts`) over the REST API with fetch only: assets on a release named `data` for objects, and files on a branch named `data-inbox` for the site's writes.
+   There is no lock. The Actions concurrency group runs one cycle at a time, and the site never writes the database.
+3. **Layout** (`src/cloud/layout.ts`) owns the names and the moves:
+   - `wowf-<publish time>.db.gz`: the database, gzipped and sealed. The new asset goes up first, then the old one is deleted. The newest 2 stay.
+   - `results.json`: the /api/flips payload. `ledger.json`: every ledger row and the events already applied. Both are overwritten each run.
+   - `events/<time>-<random>.json` on `data-inbox`: one per write from the site. The name never holds the username.
+4. **Hourly cycle** (`src/cloud/run.ts`, `npm run cloud:run`):
+   1. Restore the database from the Actions cache, or from the newest release asset when the cache is missing or older, or start fresh.
+   2. Wait for Blizzard's publish (not for Refresh).
+   3. Apply the inbox events in name order, through the same routes the local app uses, signed in as each event's person. Each name is applied once (kv `inbox_applied`).
+   4. Poll Chip's houses only, collect, count sales, run the flips and their alerts: the existing Engine.
+   5. Publish the database, results.json and ledger.json, and the sealed copy in the cache. Then delete the applied events.
+   6. Once a day, the dataset refresh with cloud retention, then publish again.
+   The plain database never stays in the cache folder.
+5. **Hourly job** (`.github/workflows/collect.yml`). Cron at 28 past, plus workflow_dispatch for Refresh. A concurrency group that never cancels. Permissions: contents write, actions read. Steps: Node 22, npm ci, cache restore, the cycle, cache save. The cache holds the sealed database, the raw snapshots for the 72 hour windows and the datasets. GitHub runs cron only from the default branch.
+6. **Site on Vercel** (`api/index.ts`, `src/cloud/vercelHandler.ts`).
+   - The existing app is built as static files. One function wraps the existing Fastify server through `inject`.
+   - GET /api/flips is results.json, GET /api/ledger is ledger.json plus the inbox. Every other GET reads the newest database asset, downloaded once per asset into /tmp.
+   - A write (I did this, Sold, settings, house pins) is first tried on the site's copy and rolled back. A refusal answers at once. A success is saved as an inbox event and answers "Saved, counts at the next update."
+   - The Ledger and the flip card show saved events until the next update applies them. Other pages replay saved events on a rolled back copy, so a saved pin or setting shows at once.
+   - Refresh starts the workflow, or joins a run already queued or running, and answers 202. The page says "Running on GitHub, usually 1 to 2 minutes", follows the run, then reloads.
+7. **Login.** A shared password, a free text username, an HttpOnly signed cookie for 90 days. Every write records the username. No key reaches the browser.
+8. **People and the ledger.** "I did this" records units with the expected cost and profit. "Sold" records units and gold received. The Ledger page shows per person totals and a history. All additive.
+9. **Retention**, measured on a copy of Chip's data (verification G8):
+   - The cloud collects only Chip's houses.
+   - Hourly item_stats cost 1.44 MB an hour for his two houses. 30 days would be 1.06 GB, so the cloud keeps 3 days (72 to 96 hours), which every flip window needs.
+   - Daily rollups are kept forever. They add 0.78 MB a day, so the database passes 150 MB after about 2 to 3 weeks. Chip decides whether to trim them.
+   - Raw snapshots stay in the cache for 98 hours. No local backups in the cloud.
+
+## Setup
+`docs/setup-online.md`, click by click.
 
 ## Testing
-- Each piece gets 3 or more independent test rounds.
-- The pieces then get 3 or more rounds together.
-- The whole online system gets checked live against the real Supabase project once its key is in, then as a whole.
-- Test counts are reported at the end.
+- Each piece has its own tests: the seal, the GitHub store against a fake REST API, the cycle, the handler.
+- The pieces run together: the cycle against a sealed folder and against the fake GitHub, the handler against the fake GitHub.
+- The first real run proves the GitHub endpoints (verification G1 to G7). Until then they are assumptions written down in the code.
