@@ -182,3 +182,12 @@ Live check: a copy of the collector's database and datasets, daily refresh run i
 | RC3 | **Orphan rows read "resent after a restart".** An orphan whose flip is claimed again is closed as `resent` (not `failed`) and alert review says so; an orphan that no longer qualifies stays `failed` | Proven in tests | `tests/unit/alert-owner.test.ts` |
 | RC4 | **Discord posts time out after 15 seconds.** The request aborts through an AbortController and the post counts as failed, so its rows are retried next run and a hung webhook no longer holds the engine lock | Proven in tests with a hung and a signal ignoring fetch | `tests/unit/alert-owner.test.ts` |
 | RC5 | **The Flips page says which flips go to Discord**, with the live Good and Amazing bars from /api/settings | Order and wording proven by the page contracts test; not looked at in a browser | `tests/unit/page-contracts.test.ts` |
+
+## Phase 2 site: login, ledger, Vercel function (November 27)
+
+| # | Claim | Status | Settled by |
+| --- | --- | --- | --- |
+| P2A | **Login.** With SITE_PASSWORD set, every /api route but login and me answers 401 without a cookie signed with HMAC SHA256 (SESSION_SECRET, else derived from the password). The cookie is HttpOnly, SameSite=Lax, 90 days, Secure behind https. Tampered, re-dated, wrong secret and expired cookies fail | Proven in tests | `tests/unit/phase2-auth-ledger.test.ts` |
+| P2B | **Ledger math.** "I did this" copies the cost and expected profit of the matching amount on the card, else scales the best amount per unit. Per person: spent is the sum of copied costs, received the sum of Sold, realised is received minus spent, compared with the expected sum. Only the doer can mark Sold, never past the units done | Proven in tests by hand numbers | `tests/unit/phase2-auth-ledger.test.ts` |
+| P2C | **Vercel handler.** GETs read a cached read only copy, downloaded only when the ETag changes. Writes take the `wowf` lock, apply on a fresh copy, upload only on success, release. A held lock gives 409; login needs no lock | Proven over node http with an in memory store; not deployed | `tests/unit/phase2-vercel.test.ts` |
+| P2D | **Vercel limits** (Hobby up to 60 s, 4.5 MB bodies, writable /tmp, Node 22 with node:sqlite, original path in req.url after the rewrite). The Vercel docs were not reachable from the build session | Assumption, see `api/index.ts` | First deploy |
