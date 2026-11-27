@@ -260,6 +260,24 @@ const MIGRATIONS: string[] = [
   ALTER TABLE flip_alerts ADD COLUMN owner TEXT;   -- "pid:token" of the process sending it; null on old rows
   ALTER TABLE flip_alerts ADD COLUMN beat INTEGER; -- last heartbeat of that process, ms
   `,
+  // 17. Who did what (phase 2, the ledger): "I did this" on a flip and "Sold" linked to it, each with the username
+  `
+  CREATE TABLE user_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,             -- did | sold
+    did_id INTEGER,                   -- sold: the "did" row it sells from; null on did rows
+    flip_key TEXT NOT NULL,           -- the flip key, as in flips
+    username TEXT NOT NULL,
+    at INTEGER NOT NULL,              -- epoch ms
+    units INTEGER NOT NULL,
+    expected_cost INTEGER,            -- did: copper, copied from the flip at that moment for these units
+    expected_profit INTEGER,          -- did: copper, copied from the flip at that moment for these units
+    received INTEGER,                 -- sold: copper received, after the cut
+    item_id INTEGER, name TEXT, kind TEXT, house_id INTEGER -- did: what the flip was, so history survives the flip going
+  );
+  CREATE INDEX user_actions_user ON user_actions (username, at);
+  CREATE INDEX user_actions_did ON user_actions (did_id);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

@@ -10,12 +10,17 @@ import { listPlays, houseFinder, itemDetail, searchItems, overview } from './que
 import { computeHealth } from '../health/report.ts';
 import { registerExtraRoutes } from './routes-extra.ts';
 import { registerFlipRoutes } from './flips.ts';
+import { makeAuth, registerAuth, type AuthConfig } from './auth.ts';
+import { registerLedgerRoutes } from './ledger.ts';
 
-export interface ServerDeps { db: DB; engine: Engine | null; client: BlizzardClient | null; port: number; dataDir: string; log?: (m: string) => void; refreshWaitMs?: number }
+export interface ServerDeps { db: DB; engine: Engine | null; client: BlizzardClient | null; port: number; dataDir: string; log?: (m: string) => void; refreshWaitMs?: number;
+  /** Login (phase 2). Defaults to SITE_PASSWORD and SESSION_SECRET from the environment; off when no password. */
+  auth?: AuthConfig }
 
 export function buildServer(deps: ServerDeps) {
   const { db } = deps;
   const app = Fastify({ logger: false });
+  registerAuth(app, makeAuth(deps.auth ?? { password: process.env.SITE_PASSWORD, secret: process.env.SESSION_SECRET }));
 
   app.get('/api/overview', async () => ({ ...overview(db), health: computeHealth(db) }));
   app.get('/api/health', async () => computeHealth(db));
@@ -65,6 +70,7 @@ export function buildServer(deps: ServerDeps) {
 
   registerExtraRoutes(app, deps);
   registerFlipRoutes(app, db, deps.engine, deps.refreshWaitMs);
+  registerLedgerRoutes(app, db);
 
   const dist = join(PROJECT_ROOT, 'web', 'dist');
   if (existsSync(dist)) {
