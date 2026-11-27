@@ -29,12 +29,16 @@ The engine keeps its SQLite database (`wowf.db`). Rewriting it for another datab
    6. Once a day, the dataset refresh with cloud retention, then publish again.
    The plain database never stays in the cache folder.
 5. **Hourly job** (`.github/workflows/collect.yml`). Cron at 28 past, plus workflow_dispatch for Refresh. A concurrency group that never cancels. Permissions: contents write, actions read. Steps: Node 22, npm ci, cache restore, the cycle, cache save. The cache holds the sealed database, the raw snapshots for the 72 hour windows and the datasets. GitHub runs cron only from the default branch.
-6. **Site on Vercel** (`api/index.ts`, `src/cloud/vercelHandler.ts`).
+6. **Site on Vercel** (`src/cloud/vercelEntry.ts`, `src/cloud/vercelHandler.ts`).
+   - `npm run build:vercel` writes Vercel's Build Output API folder: the static app, one esbuild bundle of the function and the routes. Vercel compiles nothing itself.
+   - Login, logout and me touch no data. Every other request checks the cookie before anything reaches GitHub. After 5 wrong passwords from one address in 10 minutes, it waits 30 s.
    - The existing app is built as static files. One function wraps the existing Fastify server through `inject`.
    - GET /api/flips is results.json, GET /api/ledger is ledger.json plus the inbox. Every other GET reads the newest database asset, downloaded once per asset into /tmp.
    - A write (I did this, Sold, settings, house pins) is first tried on the site's copy and rolled back. A refusal answers at once. A success is saved as an inbox event and answers "Saved, counts at the next update."
    - The Ledger and the flip card show saved events until the next update applies them. Other pages replay saved events on a rolled back copy, so a saved pin or setting shows at once.
-   - Refresh starts the workflow, or joins a run already queued or running, and answers 202. The page says "Running on GitHub, usually 1 to 2 minutes", follows the run, then reloads.
+   - Refresh starts the workflow, or joins a run already queued or running, and answers 202. The page says "Running on GitHub, usually 1 to 2 minutes", or up to about 15 when it joins an hourly run waiting for Blizzard, follows the run, then reloads.
+   - A write is judged after the saved writes before it, so Sold works right after "I did this". A saved write the cycle cannot apply is listed on the Ledger as "not applied: <reason>".
+   - Flips shows a banner when the newest results are over 2 hours old, since GitHub turns off a public repository's schedule after 60 days without activity.
 7. **Login.** A shared password, a free text username, an HttpOnly signed cookie for 90 days. Every write records the username. No key reaches the browser.
 8. **People and the ledger.** "I did this" records units with the expected cost and profit. "Sold" records units and gold received. The Ledger page shows per person totals and a history. All additive.
 9. **Retention**, measured on a copy of Chip's data (verification G8):

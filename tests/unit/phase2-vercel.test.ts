@@ -13,6 +13,9 @@ import { GitHub } from '../../src/cloud/githubApi.ts';
 import { SealedStore } from '../../src/cloud/crypto.ts';
 import { pushDb, putJson, RESULTS_KEY, LEDGER_KEY, DB_PREFIX } from '../../src/cloud/layout.ts';
 import { readEvents, ledgerFile } from '../../src/cloud/inbox.ts';
+import { useSiteDb } from '../../src/cloud/dbCache.ts';
+import { LocalStore } from '../../src/cloud/localStore.ts';
+import { existsSync } from 'node:fs';
 import { COOKIE } from '../../src/server/auth.ts';
 import { tempDir } from '../helpers.ts';
 import { fakeGitHub, REPO } from '../fakeGitHub.ts';
@@ -227,5 +230,26 @@ describe('Vercel handler on GitHub storage', () => {
     expect(keys).toHaveLength(201);
     expect(keys.slice(0, 3)).toEqual(['live', 'g249', 'g248']);
     expect(keys.at(-1)).toBe('g50');
+  });
+
+  it('a request keeps its copy of the database while a newer one arrives; the old copy closes when its last request ends', async () => {
+    const store = new SealedStore(new LocalStore(tempDir()), KEY);
+    const dir = tempDir(), site = tempDir();
+    const db = openDb(dir); db.prepare(`INSERT INTO settings (key, value) VALUES ('v', 'old')`).run(); db.close();
+    await pushDb([{ store, keep: 2 }], dir, { at: 1000 });
+    const first = await store.list('');
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    let oldPath = '';
+    const slow = useSiteDb(store, first, async s => { oldPath = s.path; await held; return (s.ro.prepare(`SELECT value FROM settings WHERE key = 'v'`).get() as { value: string }).value; }, { dir: site });
+    await new Promise(r => setTimeout(r, 20));
+    const db2 = openDb(dir); db2.prepare(`UPDATE settings SET value = 'new' WHERE key = 'v'`).run(); db2.close();
+    await pushDb([{ store, keep: 2 }], dir, { at: 2000 });
+    const fresh = await useSiteDb(store, await store.list(''), async s => (s.ro.prepare(`SELECT value FROM settings WHERE key = 'v'`).get() as { value: string }).value, { dir: site });
+    expect(fresh).toBe('new');
+    expect(existsSync(oldPath)).toBe(true); // still in use
+    release();
+    expect(await slow).toBe('old');
+    expect(existsSync(oldPath)).toBe(false);
   });
 });

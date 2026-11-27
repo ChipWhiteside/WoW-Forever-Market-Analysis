@@ -65,6 +65,9 @@ describe('GitHub store paths', () => {
     await store.put('events/0001-a.json', enc('x'));
     expect(f.branches.has('data-inbox')).toBe(true);
     expect(f.calls.filter(c => c.startsWith('POST') && c.includes('/git/refs'))).toHaveLength(1);
+    // An orphan with only a README: no workflow files, so Contents write is enough (verification G14).
+    expect(f.branchCommit('data-inbox')).toEqual({ parents: [], paths: ['README.md'] });
+    expect(f.calls.some(c => c.includes('/git/ref/heads/main'))).toBe(false);
   });
 
   it('uploads to uploads.github.com; replacing an asset uploads the new one first, then deletes the old and renames', async () => {
