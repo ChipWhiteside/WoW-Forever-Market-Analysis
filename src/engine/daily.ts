@@ -48,13 +48,15 @@ export function pruneLogs(db: DB, now = Date.now()): void {
  * How long things are kept. Local mode keeps the defaults; the cloud keeps less (src/cloud/run.ts CLOUD_RETENTION),
  * so its database stays small, and takes no local backups (the release keeps the last two databases).
  */
-export interface Retention { statsKeepDays: number; rawKeepDays: number; rawKeepDaysPinned: number; backups: boolean }
-export const LOCAL_RETENTION: Retention = { statsKeepDays: 90, rawKeepDays: 2, rawKeepDaysPinned: 14, backups: true };
+/** dailyKeepDays: daily rollups (null keeps them forever). They feed only the Market trends, so the cloud keeps 30 days. */
+export interface Retention { statsKeepDays: number; dailyKeepDays: number | null; rawKeepDays: number; rawKeepDaysPinned: number; backups: boolean }
+export const LOCAL_RETENTION: Retention = { statsKeepDays: 90, dailyKeepDays: null, rawKeepDays: 2, rawKeepDaysPinned: 14, backups: true };
 
 export function dailyMaintenance(db: DB, dataDir: string, now = Date.now(), keep: Retention = LOCAL_RETENTION): Record<string, unknown> {
   const pinned = new Set((db.prepare('SELECT id FROM houses WHERE pinned = 1').all() as Array<{ id: number }>).map(r => r.id));
   const rawRemoved = pruneRaw(dataDir, keep.rawKeepDays, keep.rawKeepDaysPinned, pinned);
   const rolled = rollup(db, keep.statsKeepDays, now);
+  if (keep.dailyKeepDays != null) db.prepare('DELETE FROM item_daily WHERE day < ?').run(new Date(now - keep.dailyKeepDays * 86_400_000).toISOString().slice(0, 10));
   const trimmed = trimUnpinned(db, now);
   pruneLogs(db, now);
   const file = keep.backups ? backup(db, dataDir) : null;

@@ -40,7 +40,7 @@ The engine keeps its SQLite database (`wowf.db`). Rewriting it for another datab
 9. **Retention**, measured on a copy of Chip's data (verification G8):
    - The cloud collects only Chip's houses.
    - Hourly item_stats cost 1.44 MB an hour for his two houses. 30 days would be 1.06 GB, so the cloud keeps 3 days (72 to 96 hours), which every flip window needs.
-   - Daily rollups are kept forever. They add 0.78 MB a day, so the database passes 150 MB after about 2 to 3 weeks. Chip decides whether to trim them.
+   - Daily rollups feed only the Market trends: the cloud keeps 30 days of them (about 23 MB), local mode keeps them forever. That holds the cloud database near 130 MB.
    - Raw snapshots stay in the cache for 98 hours. No local backups in the cloud.
 
 ## Setup

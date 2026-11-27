@@ -30,7 +30,7 @@ const RAW_KEEP_DAYS = (RAW_KEEP_HOURS + 24) / 24;
  * which every flip window needs (72 hours) and no more; daily rollups are kept forever as asked. Raw as above; no
  * local backups (the release keeps the last two databases).
  */
-export const CLOUD_RETENTION: Retention = { statsKeepDays: 3, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
+export const CLOUD_RETENTION: Retention = { statsKeepDays: 3, dailyKeepDays: 30, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
 
 export interface CloudRunOptions {
   /** The cloud store, sealed: release assets and the inbox (src/cloud/layout.ts storeFromEnv). */
