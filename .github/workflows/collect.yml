@@ -1,0 +1,31 @@
+# The hourly collector (docs/phase2-plan.md, item 3). Scheduled workflows run on the default branch only.
+name: collect
+on:
+  schedule:
+    - cron: '28 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: collect
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run cloud:run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_BUCKET: gold-finder
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_DEV_WEBHOOK_URL: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          WAIT_FOR_PUBLISH_MIN: '15'
