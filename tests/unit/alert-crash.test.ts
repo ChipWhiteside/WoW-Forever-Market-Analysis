@@ -38,6 +38,20 @@ describe('crash mid send', () => {
     expect(seen[1]!.find(r => r.status === 'sent')!.n).toBeGreaterThan(0);
   });
 
+  it('a failed post stops the run: one wait per run on a hung webhook, the rest marked failed and retried next run', async () => {
+    const d = openDb(tempDir(), ':memory:');
+    let calls = 0;
+    const down = (async () => { calls++; return new Response(null, { status: 500 }); }) as unknown as typeof fetch;
+    await flipAlertCycle(d, 'h', flips(), report, { now: noon, fetchFn: down });
+    expect(calls).toBe(1);
+    expect(status(d)).toEqual([{ status: 'failed', n: 15 }]);
+    let sentPosts = 0;
+    const up = (async () => { sentPosts++; return new Response(null, { status: 204 }); }) as unknown as typeof fetch;
+    await flipAlertCycle(d, 'h', flips(), report, { now: noon + 3600_000, fetchFn: up });
+    expect(sentPosts).toBeGreaterThan(1);
+    expect((d.prepare(`SELECT COUNT(DISTINCT key) n FROM flip_alerts WHERE status = 'sent'`).get() as { n: number }).n).toBe(15);
+  });
+
   it('after a kill during post 2, the restart resends promptly; only the in flight post doubles', async () => {
     const dir = tempDir();
     const d1 = openDb(dir);

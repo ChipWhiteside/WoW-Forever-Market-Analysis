@@ -177,12 +177,19 @@ export async function flipAlertCycle(db: DB, webhookUrl: string | null, flips: F
   const timer = setInterval(() => { try { beatRows.run(Date.now(), me); } catch { /* the database may be closing */ } }, HEARTBEAT_MS);
   timer.unref?.();
   try {
-    for (const p of formatFlipAlerts(chosen, opts.appUrl ?? null)) {
+    const allPosts = formatFlipAlerts(chosen, opts.appUrl ?? null);
+    for (const [i, p] of allPosts.entries()) {
       const ok = await sendDiscord(webhookUrl, p.body, opts.fetchFn);
       // Mark this post's rows right now, before the next post goes out: a crash later never re-sends a delivered post.
       for (const k of p.keys) { mark.run(ok ? 'sent' : 'failed', k, now); fly.delete(claimId(k, now)); unsent.delete(k); }
       db.prepare('INSERT INTO alerts_sent (at, channel, plays, body, ok) VALUES (?, ?, ?, ?, ?)').run(now, 'discord_flips', p.keys.length, p.body, ok ? 1 : 0);
-      if (!ok) { failed.push(...p.keys); continue; }
+      if (!ok) {
+        // Discord failed or timed out: stop here so a hung webhook costs one 15 second wait per run, not one per post.
+        // The rest are marked failed and retried by the next run.
+        failed.push(...p.keys);
+        for (const rest of allPosts.slice(i + 1)) for (const k of rest.keys) { mark.run('failed', k, now); fly.delete(claimId(k, now)); unsent.delete(k); failed.push(k); }
+        break;
+      }
       posts++;
       sent += p.keys.length;
     }
