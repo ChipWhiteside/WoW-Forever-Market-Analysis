@@ -13,9 +13,9 @@ on:
 concurrency:
   group: collect
   cancel-in-progress: false
+# The cycle calls only releases, contents and git refs (src/cloud/githubStore.ts); the Actions cache has its own token.
 permissions:
   contents: write   # the data release and the data-inbox branch
-  actions: read
 jobs:
   collect:
     runs-on: ubuntu-latest

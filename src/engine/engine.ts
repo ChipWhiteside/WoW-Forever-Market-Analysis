@@ -44,6 +44,8 @@ export interface EngineOptions {
   appUrl?: string | null;
   log?: (msg: string) => void;
   fetchFn?: typeof fetch;
+  /** Which houses health watches: every tracked one (default), or Chip's two, the only ones the cloud polls. */
+  healthHouses?: 'tracked' | 'chip';
 }
 
 /** The whole pipeline for one poll round: poll every tracked house, then detect, persist and alert if anything published. */
@@ -115,9 +117,7 @@ export class Engine {
         try { const f = await flushHeldFlipAlerts(this.db, this.opts.webhookUrl, { fetchFn: this.opts.fetchFn, appUrl: this.opts.appUrl ?? null }); if (f) this.log(`flip alerts after quiet hours: ${f.sent ? `sent ${f.sent}` : f.skipped}`); }
         catch (e) { this.log(`flip alert flush failed: ${(e as Error).message}`); }
       }
-      const health = computeHealth(this.db, Date.now(), suspects);
-      await this.reportHealthChange(health);
-      this.lastHealth = health;
+      const health = await this.checkHealth(suspects);
       if (events.length || errors.length || suspects.length) {
         writeRunReport(this.opts.dataDir, { at: Date.now(), ms: Date.now() - started, publishes: events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt })),
           errors, suspects, plays: plays.length, alerted, health: health.status, healthMessage: health.message });
@@ -128,8 +128,17 @@ export class Engine {
     }
   }
 
+  /** Health after a poll, by a round or a refresh (the cloud cycle): computed, kept, and any change posted. */
+  private async checkHealth(suspects: string[]): Promise<ReturnType<typeof computeHealth>> {
+    const only = this.opts.healthHouses === 'chip' ? chipHouses(this.db).map(h => h.id) : undefined;
+    const health = computeHealth(this.db, Date.now(), suspects, only);
+    await this.reportHealthChange(health);
+    this.lastHealth = health;
+    return health;
+  }
+
   /**
-   * Dev channel, never the plays channel. Suspected bugs post once each (they belong to one publish).
+   * Dev channel, never the plays channel. Nothing here is logged: a public cloud log never names a house or an item. Suspected bugs post once each (they belong to one publish).
    * House outages post as a state change: once when a house is over two hours late or failing, once when all recover.
    */
   private async reportHealthChange(h: ReturnType<typeof computeHealth>): Promise<void> {
@@ -246,6 +255,8 @@ export class Engine {
       if (errors.length) this.log(`refresh poll errors: ${errors.join(' | ')}`);
       const now = Date.now();
       const publishes = events.map(e => ({ house: e.house.id, kind: e.kind, rows: e.rows, at: e.publishedAt }));
+      // The hourly cloud cycle runs on refresh, so health is checked here as in a round: late, failing, recovered, suspects.
+      await this.checkHealth(events.flatMap(e => e.suspect));
       // A failed poll is not a 304: with no house answering there is nothing to rerun on, so say so and stop.
       if (!answered.size) return { status: 'failed' as const, publishes, errors, flips: null, alerts: null };
       let out: { flips: FlipRunResult | null; alerts: FlipAlertResult | null };

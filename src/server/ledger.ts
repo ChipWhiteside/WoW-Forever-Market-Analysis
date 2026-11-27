@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../store/db.ts';
+import { getKv } from '../store/db.ts';
 import { actor } from './auth.ts';
+import { INBOX_PREFIX } from '../cloud/githubStore.ts';
 
 /**
  * Who did what (docs/phase2-plan.md item 6). "I did this" on a flip records units with the expected cost and profit
@@ -23,7 +25,21 @@ export function expectedFor(d: FlipDetailLite, units: number): { cost: number; p
 export interface ActionRow {
   id: number; action: 'did' | 'sold'; did_id: number | null; flip_key: string; username: string; at: number; units: number;
   expected_cost: number | null; expected_profit: number | null; received: number | null; item_id: number | null; name: string | null; kind: string | null; house_id: number | null;
+  /** did: the inbox event it came from online (src/cloud/inbox.ts); null locally. */
+  event?: string | null;
 }
+
+/**
+ * Online, the cycle replays an inbox event with this header naming the event, and an "I did this" keeps it on its row.
+ * A Sold saved before that "I did this" applied names it by the event (`/api/ledger/<ms>-<hex>/sold`), never by a row
+ * id guessed on the site, which shifts when an earlier saved write is refused.
+ */
+export const EVENT_HEADER = 'x-wowf-event';
+const EVENT_REF = /^\d{13}-[0-9a-f]{12}$/;
+export const eventRef = (key: string) => key.slice(INBOX_PREFIX.length, -'.json'.length);
+const eventOfRef = (ref: string) => EVENT_REF.test(ref) ? `${INBOX_PREFIX}${ref}.json` : null;
+/** The refused inbox writes (kv inbox_refused, written by src/cloud/inbox.ts applyEvents). */
+export const REFUSED_KV = 'inbox_refused';
 export interface PersonTotals {
   username: string; flipsDone: number; unitsDone: number; unitsSold: number;
   spent: number; received: number; realised: number; expected: number; realisedVsExpected: number | null;
@@ -58,8 +74,10 @@ export function registerLedgerRoutes(app: FastifyInstance, db: DB): void {
     if (!f) return reply.code(404).send({ error: 'No such flip.' });
     const d = JSON.parse(f.detail) as FlipDetailLite;
     const e = expectedFor(d, units);
-    const r = db.prepare(`INSERT INTO user_actions (action, flip_key, username, at, units, expected_cost, expected_profit, item_id, name, kind, house_id)
-      VALUES ('did', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(f.key, actor(req), Date.now(), units, e.cost, e.profit, f.item_id, d.name ?? null, f.kind, f.house_id);
+    const ev = req.headers[EVENT_HEADER];
+    const event = typeof ev === 'string' && eventOfRef(eventRef(ev)) === ev ? ev : null;
+    const r = db.prepare(`INSERT INTO user_actions (action, flip_key, username, at, units, expected_cost, expected_profit, item_id, name, kind, house_id, event)
+      VALUES ('did', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(f.key, actor(req), Date.now(), units, e.cost, e.profit, f.item_id, d.name ?? null, f.kind, f.house_id, event);
     return { ok: true, id: Number(r.lastInsertRowid), units, expectedCost: e.cost, expectedProfit: e.profit };
   });
 
@@ -67,8 +85,15 @@ export function registerLedgerRoutes(app: FastifyInstance, db: DB): void {
     const units = posInt(req.body?.units);
     const received = typeof req.body?.received === 'number' && Number.isFinite(req.body.received) && req.body.received >= 0 ? Math.round(req.body.received) : null;
     if (!units || received == null) return reply.code(400).send({ error: 'Units must be a whole number above 0 and gold received 0 or more.' });
-    const did = db.prepare(`SELECT * FROM user_actions WHERE id = ? AND action = 'did'`).get(Number(req.params.id)) as ActionRow | undefined;
-    if (!did) return reply.code(404).send({ error: 'No such "I did this".' });
+    const event = eventOfRef(req.params.id);
+    const did = (event ? db.prepare(`SELECT * FROM user_actions WHERE event = ? AND action = 'did'`).get(event)
+      : /^\d+$/.test(req.params.id) ? db.prepare(`SELECT * FROM user_actions WHERE id = ? AND action = 'did'`).get(Number(req.params.id)) : undefined) as ActionRow | undefined;
+    if (!did) {
+      let refused: { key: string; reason: string } | undefined;
+      try { refused = event ? (JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as Array<{ key: string; reason: string }>).find(x => x.key === event) : undefined; } catch { /* none */ }
+      if (refused) return reply.code(400).send({ error: `The "I did this" it sells from was not applied (${refused.reason}).` });
+      return reply.code(404).send({ error: 'No such "I did this".' });
+    }
     const who = actor(req);
     if (did.username !== who) return reply.code(403).send({ error: `Only ${did.username} can mark this sold.` });
     const sold = (db.prepare(`SELECT COALESCE(SUM(units), 0) n FROM user_actions WHERE did_id = ?`).get(did.id) as { n: number }).n;

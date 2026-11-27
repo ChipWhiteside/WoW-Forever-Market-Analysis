@@ -3,7 +3,7 @@ import type { DB } from '../store/db.ts';
 import { getKv, setKv } from '../store/db.ts';
 import { buildServer } from '../server/server.ts';
 import { makeAuth, COOKIE } from '../server/auth.ts';
-import { ledgerRows, type ActionRow } from '../server/ledger.ts';
+import { ledgerRows, EVENT_HEADER, REFUSED_KV, eventRef, type ActionRow } from '../server/ledger.ts';
 import type { BlobStore } from './store.ts';
 import { INBOX_PREFIX } from './githubStore.ts';
 
@@ -68,28 +68,32 @@ export async function applyEvents(db: DB, events: Array<{ key: string; ev: Inbox
       let reason: string | null = null;
       if (!ev) { reason = error ?? 'unreadable'; out.applied.push({ key, status: 0, error: reason }); }
       else {
-        const r = await app.inject(eventRequest(ev, sign.sign(ev.user)));
+        const r = await app.inject(eventRequest(key, ev, sign.sign(ev.user)));
         if (r.statusCode >= 400) reason = errorText(r.body, r.statusCode);
         out.applied.push({ key, status: r.statusCode, ...(reason ? { error: reason } : {}) });
       }
       if (reason) {
-        const [p] = ev ? pendingActions([{ key, ev }], [], nameIn(db)) : [];
+        const [p] = ev ? pendingActions([{ key, ev }], [], nameIn(db), flipOfIn(db, refused)) : [];
         refused.push({ ...(p ?? { key, at: Date.now(), username: 'unknown', action: 'other', flipKey: null, didId: null, units: null, received: null, name: null, what: 'A saved change' }), reason });
+        // Now, not at the end: a later Sold on this "I did this" reads it to say why it is refused too.
+        setKv(db, REFUSED_KV, JSON.stringify(refused.slice(-REFUSED_KEEP)));
       }
       done.push(key);
       setKv(db, APPLIED_KV, JSON.stringify(done.slice(-APPLIED_KEEP)));
     }
   } finally { await app.close(); }
-  setKv(db, REFUSED_KV, JSON.stringify(refused.slice(-REFUSED_KEEP)));
   const bad = out.applied.filter(a => a.status === 0 || a.status >= 400).length;
   log(`inbox: ${out.applied.length - bad} applied, ${bad} not applied${out.skipped ? `, ${out.skipped} already applied` : ''}`);
   return out;
 }
 
-/** An inbox event as an inject request, signed in as the person who saved it: the cycle and the site replay alike. */
-export const eventRequest = (ev: InboxEvent, token: string) => ({
+/**
+ * An inbox event as an inject request, signed in as the person who saved it, naming the event (an "I did this" keeps
+ * it, src/server/ledger.ts EVENT_HEADER): the cycle and the site replay alike.
+ */
+export const eventRequest = (key: string, ev: InboxEvent, token: string) => ({
   method: ev.method as 'POST', url: ev.url,
-  headers: { cookie: `${COOKIE}=${encodeURIComponent(token)}`, ...(ev.contentType ? { 'content-type': ev.contentType } : {}) },
+  headers: { cookie: `${COOKIE}=${encodeURIComponent(token)}`, [EVENT_HEADER]: key, ...(ev.contentType ? { 'content-type': ev.contentType } : {}) },
   ...(ev.body ? { payload: ev.body } : {}),
 });
 
@@ -109,9 +113,14 @@ const nameIn = (db: DB) => (flipKey: string | null, didId: number | null): strin
   return null;
 };
 
+/** The flip of an "I did this" named by its event: its row once applied, else its refusal. */
+const flipOfIn = (db: DB, refused: RefusedAction[]) => (event: string): string | null =>
+  (db.prepare(`SELECT flip_key FROM user_actions WHERE event = ? AND action = 'did'`).get(event) as { flip_key: string } | undefined)?.flip_key
+  ?? refused.find(r => r.key === event)?.flipKey ?? null;
+
 /** A saved write the cycle could not apply, with the reason. Newest last. */
 export interface RefusedAction extends PendingAction { reason: string }
-export const REFUSED_KV = 'inbox_refused';
+export { REFUSED_KV };
 const REFUSED_KEEP = 50;
 export const refusedActions = (db: DB): RefusedAction[] => { try { return JSON.parse(getKv(db, REFUSED_KV) ?? '[]') as RefusedAction[]; } catch { return []; } };
 
@@ -127,9 +136,15 @@ export interface PendingAction {
 
 const WHAT: Array<[RegExp, string]> = [[/^PUT \/api\/settings$/, 'Settings'], [/^POST \/api\/houses\/pin$/, 'House pins']];
 
-export function pendingActions(events: Array<{ key: string; ev: InboxEvent | null }>, applied: Iterable<string>, nameOf: (flipKey: string | null, didId: number | null) => string | null): PendingAction[] {
+/**
+ * `flipOf` finds the flip of an "I did this" a Sold names by its event, when that event is not in `events` (applied
+ * or refused already); a Sold so named shows under that flip, with didId null.
+ */
+export function pendingActions(events: Array<{ key: string; ev: InboxEvent | null }>, applied: Iterable<string>, nameOf: (flipKey: string | null, didId: number | null) => string | null,
+  flipOf: (event: string) => string | null = () => null): PendingAction[] {
   const skip = new Set(applied);
   const out: PendingAction[] = [];
+  const didFlip = new Map<string, string>();
   for (const { key, ev } of events) {
     if (!ev || skip.has(key)) continue;
     const path = ev.url.split('?')[0]!;
@@ -137,9 +152,11 @@ export function pendingActions(events: Array<{ key: string; ev: InboxEvent | nul
     try { body = ev.body ? JSON.parse(ev.body) as Record<string, unknown> : {}; } catch { /* not JSON */ }
     const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : null;
     const did = /^\/api\/flips\/([^/]+)\/did$/.exec(path);
-    const sold = /^\/api\/ledger\/(\d+)\/sold$/.exec(path);
-    const flipKey = did ? decodeURIComponent(did[1]!) : null;
-    const didId = sold ? Number(sold[1]) : null;
+    const sold = /^\/api\/ledger\/([^/]+)\/sold$/.exec(path);
+    const byEvent = sold && !/^\d+$/.test(sold[1]!) ? `${INBOX_PREFIX}${sold[1]}.json` : null;
+    const flipKey = did ? decodeURIComponent(did[1]!) : byEvent ? didFlip.get(byEvent) ?? flipOf(byEvent) : null;
+    const didId = sold && !byEvent ? Number(sold[1]) : null;
+    if (did) didFlip.set(key, flipKey!);
     const what = WHAT.find(([re]) => re.test(`${ev.method} ${path}`))?.[1] ?? `${ev.method} ${path}`;
     out.push({ key, at: ev.at, username: ev.user, action: did ? 'did' : sold ? 'sold' : 'other', flipKey, didId,
       units: num(body.units), received: sold ? num(body.received) : null, name: did || sold ? nameOf(flipKey, didId) : null, what: did ? 'I did this' : sold ? 'Sold' : what });

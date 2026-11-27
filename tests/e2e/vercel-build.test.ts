@@ -108,8 +108,8 @@ describe('the Vercel build output', () => {
   });
 
   /** Run the steps in a fresh plain Node process; each answer as status and parsed body. */
-  async function drive(steps: Array<{ path: string; method?: string; body?: unknown }>) {
-    const env = { PATH: process.env.PATH ?? '', DATA_KEY: KEY.toString('base64'), GITHUB_TOKEN: f.token, GITHUB_REPO: REPO, SITE_PASSWORD: 'pw', SESSION_SECRET: 'sec', TMPDIR: tempDir() };
+  async function drive(steps: Array<{ path: string; method?: string; body?: unknown }>, extra: Record<string, string | undefined> = {}) {
+    const env = { PATH: process.env.PATH ?? '', DATA_KEY: KEY.toString('base64'), GITHUB_TOKEN: f.token, GITHUB_REPO: REPO, SITE_PASSWORD: 'pw', SESSION_SECRET: 'sec', TMPDIR: tempDir(), ...extra };
     const driver = join(tempDir(), 'driver.mjs');
     writeFileSync(driver, DRIVER);
     const { stdout } = await run(process.execPath, [driver, pathToFileURL(built.bundle).href, fakeUrl, JSON.stringify(steps)], { env, timeout: 60_000 });
@@ -136,6 +136,16 @@ describe('the Vercel build output', () => {
     // Sold on the "I did this" saved a moment ago: judged after it, so it is accepted at once.
     expect(out[5]).toMatchObject({ status: 202, body: { pending: true } });
     expect(out[6]!.body.markdown.length).toBeGreaterThan(0);
-    expect((await readEvents(store)).map(e => [e.ev!.user, e.ev!.url])).toEqual([['Chip', '/api/flips/f1/did'], ['Chip', '/api/ledger/1/sold']]);
+    // The Sold names the "I did this" by its event, not by the row id guessed on the site copy.
+    const did = out[4]!.body.event as string;
+    expect((await readEvents(store)).map(e => [e.ev!.user, e.ev!.url])).toEqual([['Chip', '/api/flips/f1/did'], ['Chip', `/api/ledger/${did.slice(7, -5)}/sold`]]);
+  }, 90_000);
+
+  it('without DATA_KEY every call answers 500 with a plain message, and never crashes the function', async () => {
+    const before = f.calls.length;
+    const out = await drive([{ path: '/api/me' }, LOGIN, { path: '/api/flips' }], { DATA_KEY: '' });
+    expect(out.map(o => o.status)).toEqual([500, 500, 500]);
+    for (const o of out) expect(o.body).toEqual({ error: 'The site is missing DATA_KEY; see setup guide' });
+    expect(f.calls.length).toBe(before);
   }, 90_000);
 });

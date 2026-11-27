@@ -5,7 +5,7 @@
  * an evicted cache. Chip's houses are 111 and, once pinned through the inbox, Blackwater 116; 110 is tracked too and
  * must never be polled in the cloud.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -14,7 +14,7 @@ import { LocalStore } from '../../src/cloud/localStore.ts';
 import { GitHubStore } from '../../src/cloud/githubStore.ts';
 import { GitHub } from '../../src/cloud/githubApi.ts';
 import { SealedStore } from '../../src/cloud/crypto.ts';
-import { cloudRun, CLOUD_RETENTION, type CloudRunResult, type CloudRunOptions } from '../../src/cloud/run.ts';
+import { cloudRun, publicError, CLOUD_RETENTION, type CloudRunResult, type CloudRunOptions } from '../../src/cloud/run.ts';
 import { RESULTS_KEY, LEDGER_KEY, DB_PREFIX, newestDb, pullDb, pushDb, getJson } from '../../src/cloud/layout.ts';
 import { addEvent, APPLIED_KV, type LedgerFile } from '../../src/cloud/inbox.ts';
 import { buildServer } from '../../src/server/server.ts';
@@ -308,5 +308,60 @@ describe('cloud cycle on the GitHub API (fake), sealed', () => {
     expect(f.files.size).toBe(0);
     for (const bytes of f.allBytes()) for (const word of ['Chip', 'Linen Cloth', 'SQLite format']) expect(Buffer.from(bytes).includes(word)).toBe(false);
     expect(f.calls.some(c => c.startsWith('DELETE') && c.includes('/contents/events/'))).toBe(true);
+  });
+});
+
+describe('cloud cycle: health changes reach the dev channel', () => {
+  it('a 5 hour outage of the pinned Blackwater house posts one problem and one recovery; the log names no house', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Math.floor(Date.now() / H) * H;
+    let hour = 0;
+    const down = () => hour >= 2 && hour <= 6;
+    const pub = () => new Date(start + hour * H - 10 * 60_000).toUTCString();
+    const routes: Record<string, () => { body: unknown; lastModified?: string; status?: number }> = {
+      '/data/wow/ruleset/2/auctions/': () => ({ body: { auctions: [
+        { id: 110, name: 'Alliance Auction House' }, { id: 111, name: 'Alliance Auction House' }, { id: 116, name: 'Blackwater Auction House' }] } }),
+    };
+    for (const h of [110, 111, 116]) {
+      const fail = () => h === 116 && down();
+      routes[`/data/wow/ruleset/2/auctions/${h}`] = () => fail() ? { status: 500, body: {} } : { lastModified: pub(), body: { id: h, auctions: [{ id: h * 1e5 + hour, item: { id: GEAR }, buyout: 50_000 + hour, quantity: 1, time_left: 'VERY_LONG' }] } };
+      routes[`/data/wow/ruleset/2/auctions/${h}/commodities`] = () => fail() ? { status: 500, body: {} } : { lastModified: pub(), body: { auctions: [{ id: h * 1e5 + 50 + hour, item: { id: ITEM }, quantity: 20, unit_price: 100 + hour, time_left: 'VERY_LONG' }] } };
+    }
+    const blizz = fakeBlizzard(routes);
+    // No retries, so the 500s fail at once instead of after the client's backoff.
+    const get = blizz.client.get.bind(blizz.client);
+    blizz.client.get = ((url, schema, o = {}) => get(url, schema, { ...o, retries: 0 })) as typeof blizz.client.get;
+    const cacheDir = tempDir();
+    const remote = new SealedStore(new LocalStore(tempDir()), KEY);
+    const cache = new SealedStore(new LocalStore(join(cacheDir, 'db')), KEY);
+    const posts: Array<{ url: string; content: string }> = [];
+    const fetchFn = (async (u: string | URL, init?: RequestInit) => { posts.push({ url: String(u), content: JSON.parse(String(init?.body)).content }); return new Response(null, { status: 204 }); }) as typeof fetch;
+    const logs: string[] = [];
+    try {
+      await addEvent(remote, { at: Date.now(), user: 'Chip', method: 'POST', url: '/api/houses/pin', contentType: 'application/json', body: JSON.stringify({ blackwater: 116 }) });
+      const byHour: number[] = [];
+      for (; hour < 9; hour++) {
+        vi.setSystemTime(start + hour * H);
+        await cloudRun({ remote, cache, dataDir: join(cacheDir, 'data'), client: blizz.client, waitForPublishMin: 0, daily: fakeDaily, fills: fakeFills,
+          webhookUrl: 'https://discord.test/plays', devWebhookUrl: 'https://discord.test/dev', fetchFn, log: m => logs.push(m) });
+        byHour.push(posts.filter(p => p.url.endsWith('/dev')).length);
+      }
+      const dev = posts.filter(p => p.url.endsWith('/dev')).map(p => p.content);
+      // Hours 0 and 1 fine; the problem posts at hour 2 only, the recovery at hour 7 only.
+      expect(byHour).toEqual([0, 0, 1, 1, 1, 1, 1, 2, 2]);
+      expect(dev[0]).toMatch(/^\*\*Health problem\*\*\nBlackwater 116 failing/);
+      expect(dev[0]).not.toMatch(/\b11[01]\b/); // only Chip's houses: 110 is tracked but never polled online
+      expect(dev[1]).toBe('**Health recovered.** Every house is publishing again.');
+      expect(logs.some(l => /poll errors/.test(l))).toBe(true);
+      for (const l of logs) expect(l).not.toMatch(/\b11[016]\b|Blackwater|Linen|discord/i);
+    } finally { vi.useRealTimers(); }
+  }, 60_000);
+});
+
+describe('cloud cycle: an uncaught error in the public log', () => {
+  it('is one line with its class and a scrubbed message: no URL, key, quoted name or id', () => {
+    const e = new TypeError('fetch https://us.api.blizzard.com/data/wow/ruleset/2/auctions/116?namespace=dynamic-us failed for "Linen Cloth" item 2589 with token ghp_abcdefghijklmnopqrstuvwxyz0123\n    at stack line');
+    expect(publicError(e)).toBe('cloud cycle failed: TypeError: fetch a URL failed for "..." item N with token a key');
+    expect(publicError('boom')).toBe('cloud cycle failed: string: boom');
   });
 });

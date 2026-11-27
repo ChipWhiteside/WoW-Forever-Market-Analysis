@@ -278,6 +278,11 @@ const MIGRATIONS: string[] = [
   CREATE INDEX user_actions_user ON user_actions (username, at);
   CREATE INDEX user_actions_did ON user_actions (did_id);
   `,
+  // 18. The inbox event an "I did this" came from online, so a Sold saved before it applied finds it by that name
+  `
+  ALTER TABLE user_actions ADD COLUMN event TEXT; -- did: the inbox event name (events/<ms>-<hex>.json); null locally
+  CREATE INDEX user_actions_event ON user_actions (event);
+  `,
 ];
 
 export function openDb(dataDir: string, file = 'wowf.db'): DB {

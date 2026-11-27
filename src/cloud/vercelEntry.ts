@@ -3,7 +3,7 @@
  * into .vercel/output/functions/api/index.func/index.mjs with the Build Output API, and .vercel/output/config.json
  * sends every /api/* request here. Nothing relies on Vercel compiling TypeScript. The logic lives in
  * src/cloud/vercelHandler.ts so tests run it through a plain node http server. It needs DATA_KEY, GITHUB_TOKEN and
- * GITHUB_REPO, and refuses to start without DATA_KEY (everything stored is encrypted).
+ * GITHUB_REPO. Without DATA_KEY every call answers 500 with MISSING_DATA_KEY (everything stored is encrypted).
  *
  * Vercel limits this relies on. The Vercel docs could not be reached from the build session (November 27, 2026), so
  * these are assumptions to confirm on the first deploy (docs/verification.md P2D):
@@ -32,7 +32,14 @@ export function originalUrl(url: string): string {
   return `${path === '/api/index' ? `/api/${p.split('/').map(encodeURIComponent).join('/')}` : path}${rest ? `?${rest}` : ''}`;
 }
 
+/** What every call answers when DATA_KEY is not set: fail closed, but say why (docs/setup-online.md Troubleshooting). */
+export const MISSING_DATA_KEY = 'The site is missing DATA_KEY; see setup guide';
+
 export default async function vercel(req: IncomingMessage, res: ServerResponse) {
+  if (!process.env.DATA_KEY) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    return void res.end(JSON.stringify({ error: MISSING_DATA_KEY }));
+  }
   handler ??= makeHandler({ store: storeFromEnv(process.env), gh: process.env.STORE === 'local' ? null : githubFromEnv(process.env), env: process.env });
   req.url = originalUrl(req.url ?? '/');
   return handler(req, res);

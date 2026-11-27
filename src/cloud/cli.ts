@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { loadDotEnv } from '../config/env.ts';
 import { BlizzardClient } from '../blizzard/client.ts';
 import { storeFromEnv, cacheStore } from './layout.ts';
-import { cloudRun } from './run.ts';
+import { cloudRun, publicError } from './run.ts';
 
 /**
  * `npm run cloud:run`: one hourly cloud cycle (.github/workflows/collect.yml). Configured by the environment:
@@ -31,4 +31,5 @@ async function main() {
   console.log(JSON.stringify(summary));
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// The Actions log is public: an uncaught error prints as one scrubbed line, never its stack or a URL.
+main().catch(e => { console.error(publicError(e)); process.exit(1); });

@@ -5,9 +5,13 @@ import type { DB } from '../store/db.ts';
 export interface HouseHealth { id: number; name: string; lastPublish: number | null; ageMin: number | null; status: 'ok' | 'late' | 'missing'; lastError: string | null }
 export interface Health { at: number; status: 'ok' | 'warn' | 'error'; houses: HouseHealth[]; suspects: string[]; gapsToday: number; message: string }
 
-/** A house is late when its last publish is older than 75 minutes. Blizzard publishes about hourly (V17). */
-export function computeHealth(db: DB, now = Date.now(), suspects: string[] = []): Health {
-  const houses = db.prepare(`SELECT h.id, h.name, MAX(s.published_at) t FROM houses h LEFT JOIN snapshots s ON s.house_id = h.id WHERE h.tracked = 1 GROUP BY h.id ORDER BY h.id`).all() as Array<{ id: number; name: string; t: number | null }>;
+/**
+ * A house is late when its last publish is older than 75 minutes. Blizzard publishes about hourly (V17).
+ * Every tracked house, or only the houses in `only` (the cloud polls Chip's two houses, not every tracked one).
+ */
+export function computeHealth(db: DB, now = Date.now(), suspects: string[] = [], only?: number[]): Health {
+  const houses = (db.prepare(`SELECT h.id, h.name, MAX(s.published_at) t FROM houses h LEFT JOIN snapshots s ON s.house_id = h.id WHERE h.tracked = 1 GROUP BY h.id ORDER BY h.id`).all() as Array<{ id: number; name: string; t: number | null }>)
+    .filter(h => !only || only.includes(h.id));
   const err = db.prepare(`SELECT note FROM poll_log WHERE house_id = ? AND status < 0 AND at > ? ORDER BY at DESC LIMIT 1`);
   const hh: HouseHealth[] = houses.map(h => {
     const ageMin = h.t == null ? null : Math.round((now - h.t) / 60_000);

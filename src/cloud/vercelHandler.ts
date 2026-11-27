@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import Fastify, { type FastifyInstance, type InjectOptions } from 'fastify';
 import { buildServer } from '../server/server.ts';
 import { makeAuth, registerAuth, LOCAL_USER, type AuthConfig } from '../server/auth.ts';
-import { ledgerView, ledgerRows } from '../server/ledger.ts';
+import { ledgerView, ledgerRows, eventRef, EVENT_HEADER } from '../server/ledger.ts';
 import type { DB } from '../store/db.ts';
 import type { BlobStore } from './store.ts';
 import { useSiteDb, dryRun, cachedJson, type SiteDb } from './dbCache.ts';
@@ -88,15 +88,23 @@ export function makeHandler(o: HandlerOpts) {
   const apps = new WeakMap<DB, FastifyInstance>();
   const appFor = (db: DB) => { let a = apps.get(db); if (!a) { a = buildServer({ db, engine: null, client: null, port: 0, dataDir: o.dir ?? '/tmp', auth: authCfg }); apps.set(db, a); } return a; };
 
-  /** Replay the saved events the published database has not applied yet on a rolled back copy, then answer there. */
+  /**
+   * Replay the saved events the published database has not applied yet on a rolled back copy, then answer there.
+   * `didEvents` maps each row id a pending "I did this" got on that copy to its event name: such an id is a guess.
+   */
   const withPending = async (s: SiteDb, inject: InjectOptions) => {
     const applied = new Set(appliedKeys(s.ro));
     const pending = (await readEvents(o.store)).filter(e => e.ev && !applied.has(e.key));
-    if (!pending.length && (inject.method === 'GET' || inject.method === 'HEAD')) return appFor(s.ro).inject(inject);
+    const didEvents = new Map<number, string>();
+    if (!pending.length && (inject.method === 'GET' || inject.method === 'HEAD')) return { r: await appFor(s.ro).inject(inject), didEvents };
     return dryRun(s, async db => {
       const app = appFor(db);
-      for (const { ev } of pending) await app.inject(eventRequest(ev!, auth.sign(ev!.user)));
-      return app.inject(inject);
+      for (const { key, ev } of pending) {
+        const r = await app.inject(eventRequest(key, ev!, auth.sign(ev!.user)));
+        const id = /^\/api\/flips\/[^/]+\/did$/.test(ev!.url) && r.statusCode < 400 ? (r.json() as { id?: number }).id : undefined;
+        if (typeof id === 'number') didEvents.set(id, key);
+      }
+      return { r: await app.inject(inject), didEvents };
     });
   };
 
@@ -109,7 +117,9 @@ export function makeHandler(o: HandlerOpts) {
       // Vercel sends only /api/* here (.vercel/output/config.json); anything else is not this function's.
       if (!path.startsWith('/api/')) return json(res, 404, { error: 'Not found.' });
       const readBodyNow = async () => method === 'GET' || method === 'HEAD' ? undefined : await readBody(req);
-      const injectOf = (body: Buffer | undefined): InjectOptions => ({ method: method as InjectOptions['method'], url, headers: req.headers as Record<string, string>, ...(body?.length ? { payload: body } : {}) });
+      // The event header is the replay's own (src/server/ledger.ts EVENT_HEADER), never the caller's.
+      const { [EVENT_HEADER]: _ev, ...headers } = req.headers;
+      const injectOf = (body: Buffer | undefined): InjectOptions => ({ method: method as InjectOptions['method'], url, headers: headers as Record<string, string>, ...(body?.length ? { payload: body } : {}) });
 
       // 1. Login, logout and me: no data, no GitHub.
       if (AUTH_PATHS.has(path)) {
@@ -154,15 +164,20 @@ export function makeHandler(o: HandlerOpts) {
         const results = await cachedJson<{ flips: Array<{ key: string; detail: { name?: string } }> }>(o.store, listing, RESULTS_KEY);
         const flipName = new Map((results?.flips ?? []).map(f => [f.key, f.detail?.name ?? null]));
         const didName = new Map(file.rows.map(r => [r.id, r.name]));
-        const pending = pendingActions(await readEvents(o.store), file.applied, (k, id) => (k ? flipName.get(k) : didName.get(id!)) ?? null);
+        const flipOf = (ev: string) => file.rows.find(r => r.event === ev)?.flip_key ?? file.refused?.find(r => r.key === ev)?.flipKey ?? null;
+        const pending = pendingActions(await readEvents(o.store), file.applied, (k, id) => (k ? flipName.get(k) : didName.get(id!)) ?? null, flipOf);
         return json(res, 200, { ...ledgerView(file.rows, user ?? LOCAL_USER), pending, refused: file.refused ?? [] });
       }
 
       return await useSiteDb(o.store, listing, async s => {
-        const r = await withPending(s, inject);
+        const { r, didEvents } = await withPending(s, inject);
         if (method === 'GET' || method === 'HEAD' || r.statusCode >= 400) return send(res, r.statusCode, r.headers, r.rawPayload);
-        // A write the route accepted after every saved one: save it for the next cycle.
-        const event = await addEvent(o.store, { at: Date.now(), user: user ?? LOCAL_USER, method, url, contentType: String(req.headers['content-type'] ?? '') || null, body: body?.toString('utf8') ?? '' });
+        // A write the route accepted after every saved one: save it for the next cycle. A Sold on an "I did this" not
+        // applied yet names that event, not the row id guessed here, which shifts if an earlier saved write is refused.
+        const soldOn = /^\/api\/ledger\/(\d+)\/sold$/.exec(path);
+        const didEvent = soldOn ? didEvents.get(Number(soldOn[1])) : undefined;
+        const saved = didEvent ? `/api/ledger/${eventRef(didEvent)}/sold${qs ? `?${qs}` : ''}` : url;
+        const event = await addEvent(o.store, { at: Date.now(), user: user ?? LOCAL_USER, method, url: saved, contentType: String(req.headers['content-type'] ?? '') || null, body: body?.toString('utf8') ?? '' });
         // The route's own answer, kept as it is (the Houses page reads its list back); an object also says it is pending.
         let parsed: unknown = null;
         try { parsed = JSON.parse(r.body); } catch { /* not JSON */ }

@@ -6,13 +6,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { openDb } from '../../src/store/db.ts';
+import { openDb, type DB } from '../../src/store/db.ts';
 import { makeHandler } from '../../src/cloud/vercelHandler.ts';
 import { GitHubStore } from '../../src/cloud/githubStore.ts';
 import { GitHub } from '../../src/cloud/githubApi.ts';
 import { SealedStore } from '../../src/cloud/crypto.ts';
-import { pushDb, putJson, RESULTS_KEY, LEDGER_KEY, DB_PREFIX } from '../../src/cloud/layout.ts';
-import { readEvents, ledgerFile } from '../../src/cloud/inbox.ts';
+import { pushDb, pullDb, newestDb, putJson, RESULTS_KEY, LEDGER_KEY, DB_PREFIX } from '../../src/cloud/layout.ts';
+import { readEvents, ledgerFile, applyEvents } from '../../src/cloud/inbox.ts';
 import { useSiteDb } from '../../src/cloud/dbCache.ts';
 import { LocalStore } from '../../src/cloud/localStore.ts';
 import { existsSync } from 'node:fs';
@@ -24,7 +24,7 @@ const KEY = randomBytes(32);
 const noSleep = async () => {};
 
 /** A cloud as the hourly run leaves it: one flip, one setting, one "I did this" by Chip, all published. */
-async function setup(env: Record<string, string> = {}, opts: { publish?: boolean; now?: () => number } = {}) {
+async function setup(env: Record<string, string> = {}, opts: { publish?: boolean; now?: () => number; seed?: (db: DB) => void } = {}) {
   const f = fakeGitHub();
   const gh = new GitHub({ token: f.token, repo: REPO, fetchFn: f.fetchFn, sleep: noSleep });
   const store = new SealedStore(new GitHubStore(gh, { sleep: noSleep }), KEY);
@@ -35,6 +35,7 @@ async function setup(env: Record<string, string> = {}, opts: { publish?: boolean
   db.prepare(`INSERT INTO settings (key, value) VALUES ('alert_good_gold', '10')`).run();
   db.exec(`INSERT INTO houses (id, name, faction, cut, tracked, pinned) VALUES (111, 'Alliance Auction House', 'alliance', 0.05, 1, 1), (116, 'Blackwater Auction House', 'blackwater', 0.15, 1, 0)`);
   db.prepare(`INSERT INTO user_actions (action, flip_key, username, at, units, expected_cost, expected_profit, item_id, name, kind, house_id) VALUES ('did', 'f1', 'Chip', 1, 5, 1000, 1500, 100, 'Bandage', 'craft', 1)`).run();
+  opts.seed?.(db);
   if (opts.publish !== false) {
     await putJson(store, RESULTS_KEY, JSON.stringify({ flips: [{ key: 'f1', detail }], run: null, heldBack: [], fromResults: true }));
     await putJson(store, LEDGER_KEY, ledgerFile(db));
@@ -204,12 +205,14 @@ describe('Vercel handler on GitHub storage', () => {
     const { store, go } = await setup();
     const did = await go('/api/flips/f1/did', postJson({ units: 2 }));
     expect(did.status).toBe(202);
+    const { event } = await did.json() as { event: string };
     // The published database has "I did this" 1 by Chip; this one is 2 by local, saved, not yet applied.
     const sold = await go('/api/ledger/2/sold', postJson({ units: 2, received: 900 }));
     expect(sold.status).toBe(202);
     const over = await go('/api/ledger/2/sold', postJson({ units: 1, received: 400 }));
     expect(over.status).toBe(400);
-    expect((await readEvents(store)).map(e => e.ev!.url)).toEqual(['/api/flips/f1/did', '/api/ledger/2/sold']);
+    // Saved naming the "I did this" by its event, not by the guessed row 2.
+    expect((await readEvents(store)).map(e => e.ev!.url)).toEqual(['/api/flips/f1/did', `/api/ledger/${event.slice(7, -5)}/sold`]);
   });
 
   it('GET /api/flips says it is online; ?gone=1 adds at most the 200 most recently gone', async () => {
@@ -251,5 +254,37 @@ describe('Vercel handler on GitHub storage', () => {
     release();
     expect(await slow).toBe('old');
     expect(existsSync(oldPath)).toBe(false);
+  });
+
+  it('a Sold names its "I did this" by event, so a refused earlier write never shifts it onto another row', async () => {
+    // Chip saves "I did this" on f2 (row 2 on the site copy), then on f1 (row 3), then Sold on 2 and Sold on 3.
+    const f2 = { key: 'f2', name: 'Silk', itemId: 200, perItem: 100, best: { units: 4, cost: 400, expectedProfit: 400 }, options: [] };
+    const { store, go } = await setup({ SITE_PASSWORD: 'pw', SESSION_SECRET: 's' }, { seed: db => db.prepare(`INSERT INTO flips (key, kind, family, house_id, item_id, state, expected_profit, risk, detail, first_seen, last_seen, data_at) VALUES ('f2', 'craft', 'craft_auction', 1, 200, 'live', 400, 'low', ?, 1, 1, 1)`).run(JSON.stringify(f2)) });
+    const cookie = (await go('/api/login', postJson({ username: 'Chip', password: 'pw' }))).headers.get('set-cookie')!.split(';')[0]!;
+    const did2 = await (await go('/api/flips/f2/did', postJson({ units: 4 }, { cookie }))).json();
+    const did1 = await (await go('/api/flips/f1/did', postJson({ units: 2 }, { cookie }))).json();
+    expect([did2.id, did1.id]).toEqual([2, 3]); // the site's guesses
+    expect((await go('/api/ledger/2/sold', postJson({ units: 4, received: 900 }, { cookie }))).status).toBe(202);
+    expect((await go('/api/ledger/3/sold', postJson({ units: 1, received: 700 }, { cookie }))).status).toBe(202);
+    const saved = await readEvents(store);
+    const stem = (k: string) => k.slice('events/'.length, -'.json'.length);
+    expect(saved.map(e => e.ev!.url)).toEqual(['/api/flips/f2/did', '/api/flips/f1/did', `/api/ledger/${stem(did2.event)}/sold`, `/api/ledger/${stem(did1.event)}/sold`]);
+    // Before the cycle, f2 went (a newer database): its "I did this" is refused, so f1's becomes row 2, not 3.
+    const dir = tempDir();
+    await pullDb(store, newestDb(await store.list(DB_PREFIX))!.key, dir);
+    const db = openDb(dir);
+    db.prepare(`DELETE FROM flips WHERE key = 'f2'`).run();
+    const r = await applyEvents(db, saved, () => {});
+    expect(r.applied.map(a => a.status)).toEqual([404, 200, 400, 200]);
+    const rows = db.prepare('SELECT id, action, did_id, flip_key, units, received, event FROM user_actions ORDER BY id').all();
+    expect(rows).toEqual([
+      expect.objectContaining({ id: 1, action: 'did', flip_key: 'f1', units: 5, event: null }),
+      expect.objectContaining({ id: 2, action: 'did', flip_key: 'f1', units: 2, event: did1.event }),
+      expect.objectContaining({ id: 3, action: 'sold', did_id: 2, flip_key: 'f1', units: 1, received: 700 }),
+    ]);
+    // The Ledger shows both refusals; the Sold says why.
+    const refused = JSON.parse(ledgerFile(db)).refused as Array<{ action: string; flipKey: string; reason: string }>;
+    expect(refused.map(x => [x.action, x.flipKey, x.reason])).toEqual([['did', 'f2', 'No such flip.'], ['sold', 'f2', 'The "I did this" it sells from was not applied (No such flip.).']]);
+    db.close();
   });
 });

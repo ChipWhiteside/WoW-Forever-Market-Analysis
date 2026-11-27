@@ -36,25 +36,28 @@ The site needs its own key to read the data and start a refresh.
 2. At the bottom of the left menu, open **Developer settings**, then **Personal access tokens**, then **Fine grained tokens**.
 3. Press **Generate new token**.
 4. Name it `Gold Finder site`. Set the expiration as long as GitHub allows, and put a reminder in your calendar for that date.
-5. Under **Repository access**, choose **Only select repositories** and pick this repository only.
-6. Under **Permissions**, then **Repository permissions**, set:
+5. Under **Resource owner**, pick the account that owns this repository: you, or the organization if it lives under one. An organization may have to approve the token before it works.
+6. Under **Repository access**, choose **Only select repositories** and pick this repository only.
+7. Under **Permissions**, then **Repository permissions**, set:
    - **Contents**: Read and write.
    - **Actions**: Read and write.
    You do not need **Workflows**. The site keeps its saved changes on a branch called `data-inbox`, which it makes on the first save. That branch holds only a short README and the encrypted changes, no workflow files, so Contents is enough.
-7. Press **Generate token** and copy it. GitHub shows it only once.
+8. Press **Generate token** and copy it. GitHub shows it only once.
 
 ## 5. Import into Vercel
 1. Go to vercel.com and sign in with GitHub.
 2. Press **Add New**, then **Project**, and pick this repository. Press **Import**.
 3. Leave the build settings as they are. The repository already tells Vercel what to do (`npm run build:vercel`).
-4. Open **Environment Variables**. For each one below, tick **Production** only and untick **Preview** and **Development**. A preview of another branch then cannot read or change your live data. Add:
+4. Open **Environment Variables** and add each one below. This screen puts them in every environment; step 7 limits them to Production.
    - `SITE_PASSWORD`: the password your group types to sign in.
    - `SESSION_SECRET`: any long random text. You can run the command from step 1 again and use its output.
    - `DATA_KEY`: the same key as in step 1. Exactly the same.
    - `GITHUB_TOKEN`: the token from step 4.
    - `GITHUB_REPO`: the repository as owner and name, for example `chipwhiteside/wow-forever-market-analysis`.
 5. Press **Deploy**.
-6. When it is done, open the project, then **Settings**, then **Node.js Version**, and pick **22.x** if it shows something else. Then redeploy.
+6. When it is done, open the project, then **Settings**, then **Node.js Version**, and pick **22.x** if it shows something else.
+7. Still in **Settings**, open **Environment Variables**. For each of the five, press the three dots, then **Edit**, tick **Production** only, untick **Preview** and **Development**, and press **Save**. A preview of another branch then cannot read or change your live data.
+8. Open **Deployments**, press the three dots on the newest one, then **Redeploy**. The site only sees changed variables after a redeploy.
 
 ## 6. Add gold.chipwhiteside.com
 1. In the Vercel project, open **Settings**, then **Domains**.
@@ -84,6 +87,13 @@ Nothing.
 - **The run fails at the start with "DATA_KEY is missing"**: the secret is not set, or is named differently. Check step 2.
 - **The site says "could not decrypt"**: the DATA_KEY in Vercel is not the same as the one in GitHub. Paste the same value in both and redeploy.
 - **Refresh says it needs GITHUB_TOKEN**: add the token in Vercel (step 5) and redeploy.
+- **The run fails with "cloud cycle failed: ..."**: the last line of **One cycle** names the kind of error. Names, ids and links are left out on purpose, because anyone can read the log.
 - **The site shows nothing after a day**: open Actions on GitHub and look for a red run. Open it and read the last lines of **One cycle**.
 - **Flips says "Hourly updates have not run since ..."**: the newest results are over 2 hours old. Open the **Actions** tab on GitHub. GitHub turns off the schedule of a public repository after 60 days with no activity in it, and emails you first. If **collect** shows a banner that it was disabled, press **Enable workflow**. Then press **Run workflow** once, so the list is fresh at once. Any commit to the repository also counts as activity.
 - **Sign in says "Too many wrong passwords"**: after 5 wrong tries in 10 minutes, the site waits 30 seconds before the next try.
+
+## Troubleshooting
+- **Every page says "The site is missing DATA_KEY; see setup guide"**: Vercel has no `DATA_KEY`, or it is not ticked for Production. Add it (step 5.4 and 5.7), then redeploy (step 5.8).
+- **Every page fails and the Vercel function log shows `ERR_UNKNOWN_BUILTIN_MODULE` with `node:sqlite`**: Vercel runs a Node too old for the database. Open **Settings**, then **Node.js Version**, pick 22.x (it must be 22.13 or later), and redeploy.
+- **The hourly runs stopped**: GitHub turns off the schedule of a public repository after 60 days with no activity. Open **Actions**, press **collect**, then **Enable workflow**, then **Run workflow** once.
+- **A save fails with "answered 409", or Refresh says "Busy" (409)**: two saves or updates landed at the same moment. Wait a minute and try again. Nothing is lost: a refused save was never stored.

@@ -128,7 +128,7 @@ const removeDb = (dir: string) => { for (const s of ['', '-wal', '-shm']) rmSync
  * 1. Restore the database: the sealed copy in the Actions cache, else the newest release asset (or the release when
  *    it is newer than the cache), else a fresh one.
  * 2. Wait for Blizzard's publish (not for Refresh), apply the site's inbox events, poll, collect, count sales, run
- *    the flips and their alerts: Engine.refresh.
+ *    the flips and their alerts, and post health changes of Chip's houses to the dev channel: Engine.refresh.
  * 3. Publish: the database (new asset first, then the old deleted, newest 2 kept), results.json and ledger.json,
  *    and the sealed copy in the cache. Then delete the applied events.
  * 4. The daily refresh when due, with cloud retention, then publish again.
@@ -170,7 +170,7 @@ export async function cloudRun(opts: CloudRunOptions): Promise<CloudRunResult> {
     }
     result.waitedMs = Date.now() - t0;
     const engine = new Engine(opts.client, db, { dataDir: dir, webhookUrl: opts.webhookUrl ?? null, devWebhookUrl: opts.devWebhookUrl ?? null,
-      appUrl: opts.appUrl ?? null, log, fetchFn: opts.fetchFn });
+      appUrl: opts.appUrl ?? null, log, fetchFn: opts.fetchFn, healthHouses: 'chip' });
     await engine.init(); // the house index first, so a house pin from the inbox finds its house on a fresh database
     const events = await readEvents(remote);
     const applied = await applyEvents(db, events, log);
@@ -233,6 +233,21 @@ function publicLog(log: (m: string) => void, db: () => DB | null): (m: string) =
     try { ids = (db()?.prepare('SELECT id FROM houses WHERE tracked = 1 OR pinned = 1').all() as Array<{ id: number }> | undefined ?? []).map(h => h.id); } catch { /* not open yet */ }
     log(ids.length ? m.replace(new RegExp(`\\b(${ids.join('|')})\\b`, 'g'), 'a house') : m);
   };
+}
+
+/**
+ * An uncaught error as one line for the public Actions log: its class and a safe message. URLs, quoted text (an item
+ * or house name), long tokens (keys) and numbers of three digits or more (house and item ids) are taken out.
+ */
+export function publicError(e: unknown): string {
+  const cls = e instanceof Error ? e.constructor.name : typeof e;
+  const msg = (e instanceof Error ? e.message : String(e)).split('\n')[0]!
+    .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, 'a URL')
+    .replace(/(["'`]).*?\1/g, '"..."')
+    .replace(/[A-Za-z0-9_+/=-]{24,}/g, 'a key')
+    .replace(/\d{3,}/g, 'N')
+    .slice(0, 160);
+  return `cloud cycle failed: ${cls}: ${msg}`;
 }
 
 function countRaw(dir: string): number {
