@@ -7,6 +7,7 @@ import { syncRecipes, summarizeRecipes, checkItemsAfterRefresh } from '../datase
 import { dailyMaintenance } from './daily.ts';
 import { startServer } from '../server/server.ts';
 import { rebuildIfRulesChanged } from './rebuild.ts';
+import { takeInstanceLock } from './instanceLock.ts';
 
 const POLL_MS = 2 * 60_000;
 let lastDailyFailure = 0;
@@ -17,8 +18,12 @@ async function main() {
   const noServer = process.argv.includes('--no-server');
   const log = (m: string) => console.log(`[${new Date().toISOString()}] ${m}`);
   const db = openDb(cfg.dataDir);
+  // One engine per data folder sends alerts. A second one (npm run once, a second --no-server run) still collects.
+  const lock = takeInstanceLock(cfg.dataDir);
+  if (lock.held) { process.on('exit', lock.release); for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { lock.release(); process.exit(0); }); }
+  else log(`WARNING: another engine${lock.ownerPid ? ` (process ${lock.ownerPid})` : ''} already runs on this data folder. This one collects but sends no Discord alerts.`);
   const client = new BlizzardClient(cfg.clientId, cfg.clientSecret, cfg.region);
-  const engine = new Engine(client, db, { dataDir: cfg.dataDir, webhookUrl: cfg.discordWebhookUrl, devWebhookUrl: cfg.discordDevWebhookUrl, appUrl: `http://localhost:${cfg.port}`, log });
+  const engine = new Engine(client, db, { dataDir: cfg.dataDir, webhookUrl: lock.held ? cfg.discordWebhookUrl : null, devWebhookUrl: lock.held ? cfg.discordDevWebhookUrl : null, appUrl: `http://localhost:${cfg.port}`, log });
   log(`data in ${cfg.dataDir}`);
 
   if (!noServer && !once) await startServer({ db, engine, client, port: cfg.port, dataDir: cfg.dataDir, log });

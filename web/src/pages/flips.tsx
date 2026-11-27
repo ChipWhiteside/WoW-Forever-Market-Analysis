@@ -57,6 +57,7 @@ export function FlipsPage() {
         </> : <span className="text-muted">No flip run yet. The first one happens at the next publish, about 25 past the hour.</span>}
         {/* Refresh (Chip, November 26), added beside the run status; nothing above is moved. */}
         <RefreshButton />
+        <DiscordLine />
       </Card>
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
@@ -107,6 +108,13 @@ export function dataTimeLine(dataAt: number, now = Date.now()): string {
   while (next <= now) next += 3600_000;
   const hhmm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   return `Data from ${ago(dataAt)}; Blizzard publishes about ${minute} past each hour, next one about ${hhmm}`;
+}
+
+/** Which flips go to Discord, with the live bars from settings (Chip, November 27). */
+function DiscordLine() {
+  const { data } = useQuery({ queryKey: ['settings'], queryFn: () => api<Record<string, string>>('/api/settings') });
+  const gold = (k: string, d: number) => { const v = data?.[k]; const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n >= 0 ? n : d; };
+  return <span className="basis-full text-xs text-muted">Discord gets Good ({gold('alert_good_gold', 10)}g or more) and Amazing ({gold('alert_amazing_gold', 20)}g or more) flips that are low or medium risk with solid evidence.</span>;
 }
 
 /** Pull the newest publish for Chip's houses now, count sales, rerun the flips (POST /api/flips/refresh). */

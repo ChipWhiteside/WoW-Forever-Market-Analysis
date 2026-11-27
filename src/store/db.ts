@@ -253,7 +253,12 @@ const MIGRATIONS: string[] = [
   // 15. Claim before send (refresh round 1 finding A): a row is written pending in the same transaction as the repeat
   // check, then marked sent or failed, so two overlapping runs never send one flip twice and a failed post is retried
   `
-  ALTER TABLE flip_alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'; -- pending | sent | failed
+  ALTER TABLE flip_alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'; -- pending | sent | failed | resent
+  `,
+  // 16. Who owns a pending claim, so a second process never mistakes the first's in flight rows for orphans
+  `
+  ALTER TABLE flip_alerts ADD COLUMN owner TEXT;   -- "pid:token" of the process sending it; null on old rows
+  ALTER TABLE flip_alerts ADD COLUMN beat INTEGER; -- last heartbeat of that process, ms
   `,
 ];
 

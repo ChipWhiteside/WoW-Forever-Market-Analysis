@@ -50,6 +50,13 @@ describe('page contracts', () => {
     expect(btn).toContain('animate-spin');
     expect(src('pages/flips.tsx')).toContain('Blizzard publishes about ${minute} past each hour, next one about ${hhmm}');
   });
+  it('flips page says which flips go to Discord, live bars from settings, after Refresh before the filters (Chip, November 27)', () => {
+    const page = section(src('pages/flips.tsx'), 'export function FlipsPage', '\nfunction ');
+    inOrder(page, ['<RefreshButton />', '<DiscordLine />', '>Crafting (']);
+    const line = section(src('pages/flips.tsx'), 'function DiscordLine', '\n}\n');
+    expect(line).toContain("'/api/settings'");
+    inOrder(line, ['Discord gets Good (', "alert_good_gold", 'g or more) and Amazing (', "alert_amazing_gold", 'g or more) flips that are low or medium risk with solid evidence']);
+  });
   it('settings keep every field, with the flip alert bars and the play alerts checkbox below (Chip, November 26)', () => {
     inOrder(section(src('pages/misc.tsx'), 'export function SettingsPage', '\nexport function '), ["'Gold on hand'", "'Alert bar, in silver'", "'Quiet from (hour)'", 'Your professions',
       "'Crafting session, in minutes'", 'Only craft sub steps in my professions', "'Good flip alert, in gold'", "'Amazing flip alert, in gold'", 'Also send the old play alerts', "'Saved' : 'Save'"]);

@@ -55,6 +55,8 @@ describe('crash mid send', () => {
     const before = status(d1);
     expect(before.find(r => r.status === 'sent')!.n).toBeGreaterThan(0); // post 1 already marked
     expect(before.find(r => r.status === 'pending')!.n).toBeGreaterThan(0);
+    // The first process dies: its pid is gone (the owner rule, tests/unit/alert-owner.test.ts).
+    d1.prepare(`UPDATE flip_alerts SET owner = '999999999:dead'`).run();
     const d2 = openDb(dir);
     const after: string[] = [];
     const fetchFn = (async (_u: string, init: RequestInit) => { after.push(JSON.parse(String(init.body)).content); return new Response(null, { status: 204 }); }) as unknown as typeof fetch;

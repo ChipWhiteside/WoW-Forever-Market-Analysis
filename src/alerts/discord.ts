@@ -59,12 +59,22 @@ export function formatAlert(plays: Play[], appUrl: string | null): string {
   return lines.join('\n').slice(0, 1990);
 }
 
-export async function sendDiscord(webhookUrl: string, content: string, fetchFn: typeof fetch = fetch): Promise<boolean> {
+/** A hung webhook must not hold the engine lock: after this long the post counts as failed and is retried next run. */
+export const DISCORD_TIMEOUT_MS = 15_000;
+
+export async function sendDiscord(webhookUrl: string, content: string, fetchFn: typeof fetch = fetch, timeoutMs = DISCORD_TIMEOUT_MS): Promise<boolean> {
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>(resolve => { timer = setTimeout(() => { ctl.abort(); resolve(false); }, timeoutMs); });
   try {
-    const res = await fetchFn(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) });
-    return res.ok;
+    const post = fetchFn(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, allowed_mentions: { parse: [] } }), signal: ctl.signal })
+      .then(res => res.ok, () => false);
+    // Raced, so a fetch that ignores the abort signal still ends at the timeout.
+    return await Promise.race([post, timeout]);
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -12,7 +12,7 @@ const days = Number(process.argv[2] ?? 7) || 7;
 const db = openDb(loadConfig().dataDir);
 const rows = reviewAlerts(db, { since: Date.now() - days * 24 * 3600_000 });
 const count = (st: string) => rows.filter(r => r.status === st).length;
-console.log(`\n${rows.length} flip alert${rows.length === 1 ? '' : 's'} in the last ${days} days: ${count('sent')} sent, ${count('pending')} pending, ${count('failed')} failed.`);
+console.log(`\n${rows.length} flip alert${rows.length === 1 ? '' : 's'} in the last ${days} days: ${count('sent')} sent, ${count('pending')} pending, ${count('failed')} failed${count('resent') ? `, ${count('resent')} resent after a restart` : ''}.`);
 for (const r of rows) {
   console.log(`\n${new Date(r.at).toLocaleString()}  ${r.tier.toUpperCase()}  ${r.name}`);
   console.log(`  claimed ${money(r.expectedProfit)} overnight, ${money(r.perItem)} each on ${r.units}`);

@@ -36,6 +36,8 @@ Run status (data time, items and recipes checked, complete or incomplete), filte
 
 Refresh button (November 26): sits in the run status card after the existing status, before the filters. It says "Checking Blizzard..." with a spinner while it works, then the result and the data time ("Data from 12 min ago; Blizzard publishes about 25 past each hour, next one about 13:25"). Nothing in the status card moved.
 
+Discord line (November 27): a short line in the run status card, after the Refresh button and before the filters: "Discord gets Good (10g or more) and Amazing (20g or more) flips that are low or medium risk with solid evidence". The gold numbers are the live Good and Amazing flip alert settings from /api/settings. Nothing else moved.
+
 Buy lists only what is bought (auction or vendor); craft steps go on Make ("Make first ..."); the product is never its own input (clarified November 26, nothing removed).
 
 Make first steps sit before the Make line. When a card has more than 3 Buy lines or more than 3 Make first lines, the first 3 show and a "show N more" toggle opens the rest; nothing is removed (system review round 2, November 26). On phones the card lines use the full card width.
