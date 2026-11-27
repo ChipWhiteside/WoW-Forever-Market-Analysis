@@ -10,3 +10,4 @@ web/dist/
 scripts/run-engine.cmd
 scripts/run-engine-hidden.vbs
 .claude/worktrees/
+.vercel/

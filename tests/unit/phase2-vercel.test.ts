@@ -21,7 +21,7 @@ const KEY = randomBytes(32);
 const noSleep = async () => {};
 
 /** A cloud as the hourly run leaves it: one flip, one setting, one "I did this" by Chip, all published. */
-async function setup(env: Record<string, string> = {}, opts: { publish?: boolean } = {}) {
+async function setup(env: Record<string, string> = {}, opts: { publish?: boolean; now?: () => number } = {}) {
   const f = fakeGitHub();
   const gh = new GitHub({ token: f.token, repo: REPO, fetchFn: f.fetchFn, sleep: noSleep });
   const store = new SealedStore(new GitHubStore(gh, { sleep: noSleep }), KEY);
@@ -38,7 +38,7 @@ async function setup(env: Record<string, string> = {}, opts: { publish?: boolean
   }
   db.close();
   if (opts.publish !== false) await pushDb([{ store, keep: 2 }], dir);
-  const go = await serve(makeHandler({ store, gh, env, dir: tempDir(), dispatch: { findTries: 2, findEveryMs: 1 } }));
+  const go = await serve(makeHandler({ store, gh, env, dir: tempDir(), dispatch: { findTries: 2, findEveryMs: 1 }, now: opts.now }));
   return { f, store, go };
 }
 
@@ -153,5 +153,79 @@ describe('Vercel handler on GitHub storage', () => {
     expect((await go('/api/login', postJson({ username: 'Chip', password: 'bad' }))).status).toBe(401);
     const login = await go('/api/login', postJson({ username: 'Chip', password: 'pw' }, { 'x-forwarded-proto': 'https' }));
     expect(login.headers.get('set-cookie')).toMatch(new RegExp(`^${COOKIE}=.*HttpOnly.*Secure`));
+  });
+
+  it('signed out, nothing touches GitHub: not me, login, logout, nor any other route; a malformed cookie is a 401', async () => {
+    const { f, go } = await setup({ SITE_PASSWORD: 'pw', SESSION_SECRET: 's' }, { publish: false });
+    const before = f.calls.length;
+    expect((await (await go('/api/me')).json())).toEqual({ authRequired: true, username: null });
+    expect((await go('/api/logout', { method: 'POST' })).status).toBe(401);
+    expect((await go('/api/login', postJson({ username: 'Chip', password: 'bad' }))).status).toBe(401);
+    for (const path of ['/api/flips', '/api/settings', '/api/houses', '/api/ledger', '/api/flips?gone=1']) expect((await go(path)).status, path).toBe(401);
+    expect((await go('/api/settings', { headers: { cookie: `${COOKIE}=%E0%A4%A` } })).status).toBe(401);
+    expect((await go('/api/me', { headers: { cookie: `${COOKIE}=%zz` } })).status).toBe(200);
+    expect((await go('/', {})).status).toBe(404);
+    expect(f.calls.length).toBe(before);
+    expect(f.releases).toHaveLength(0);
+    // Signed in: login and me still answer without GitHub.
+    const login = await go('/api/login', postJson({ username: 'Chip', password: 'pw' }));
+    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    expect((await (await go('/api/me', { headers: { cookie } })).json()).username).toBe('Chip');
+    expect(f.calls.length).toBe(before);
+  });
+
+  it('after 5 wrong passwords from one address in 10 minutes, that address waits 30 s; others do not', async () => {
+    let t = 1_000_000;
+    const { go } = await setup({ SITE_PASSWORD: 'pw', SESSION_SECRET: 's' }, { now: () => t });
+    const from = (ip: string, password: string) => go('/api/login', postJson({ username: 'Chip', password }, { 'x-real-ip': ip }));
+    for (let i = 0; i < 5; i++) { t += 60_000; expect((await from('1.1.1.1', 'bad')).status).toBe(401); }
+    const r = await from('1.1.1.1', 'pw');
+    expect(r.status).toBe(429);
+    expect(r.headers.get('retry-after')).toBe('30');
+    expect((await from('2.2.2.2', 'pw')).status).toBe(200);
+    t += 10_000;
+    const w = await from('1.1.1.1', 'pw');
+    expect(w.status).toBe(429);
+    expect((await w.json()).error).toBe('Too many wrong passwords. Wait 20 s and try again.');
+    t += 20_000;
+    expect((await from('1.1.1.1', 'pw')).status).toBe(200);
+    // Failures older than 10 minutes do not count.
+    for (let i = 0; i < 4; i++) { t += 4 * 60_000; expect((await from('3.3.3.3', 'bad')).status).toBe(401); }
+    t += 1000;
+    expect((await from('3.3.3.3', 'bad')).status).toBe(401);
+    // A good login cleared the count.
+    expect((await from('1.1.1.1', 'bad')).status).toBe(401);
+  });
+
+  it('a write is judged after the saved ones: Sold works right after I did this, and a second Sold over the units left is refused at once', async () => {
+    const { store, go } = await setup();
+    const did = await go('/api/flips/f1/did', postJson({ units: 2 }));
+    expect(did.status).toBe(202);
+    // The published database has "I did this" 1 by Chip; this one is 2 by local, saved, not yet applied.
+    const sold = await go('/api/ledger/2/sold', postJson({ units: 2, received: 900 }));
+    expect(sold.status).toBe(202);
+    const over = await go('/api/ledger/2/sold', postJson({ units: 1, received: 400 }));
+    expect(over.status).toBe(400);
+    expect((await readEvents(store)).map(e => e.ev!.url)).toEqual(['/api/flips/f1/did', '/api/ledger/2/sold']);
+  });
+
+  it('GET /api/flips says it is online; ?gone=1 adds at most the 200 most recently gone', async () => {
+    const f = fakeGitHub();
+    const gh = new GitHub({ token: f.token, repo: REPO, fetchFn: f.fetchFn, sleep: noSleep });
+    const store = new SealedStore(new GitHubStore(gh, { sleep: noSleep }), KEY);
+    const dir = tempDir();
+    const db = openDb(dir);
+    const ins = db.prepare(`INSERT INTO flips (key, kind, family, house_id, item_id, state, expected_profit, risk, detail, first_seen, last_seen, data_at, gone_at) VALUES (?, 'craft', 'craft_auction', 1, 100, ?, 10, 'low', '{"name":"x"}', 1, 1, 1, ?)`);
+    ins.run('live', 'live', null);
+    for (let i = 0; i < 250; i++) ins.run(`g${i}`, 'gone', i);
+    db.close();
+    await putJson(store, RESULTS_KEY, JSON.stringify({ flips: [], run: null, heldBack: [] }));
+    await pushDb([{ store, keep: 2 }], dir);
+    const go = await serve(makeHandler({ store, gh, env: {}, dir: tempDir() }));
+    expect(await (await go('/api/flips')).json()).toEqual({ flips: [], run: null, heldBack: [], online: true });
+    const keys = (await (await go('/api/flips?gone=1')).json()).flips.map((x: { key: string }) => x.key);
+    expect(keys).toHaveLength(201);
+    expect(keys.slice(0, 3)).toEqual(['live', 'g249', 'g248']);
+    expect(keys.at(-1)).toBe('g50');
   });
 });

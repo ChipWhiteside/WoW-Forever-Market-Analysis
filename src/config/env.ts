@@ -3,7 +3,11 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+/**
+ * The project folder. In the Vercel bundle (scripts/build-vercel.ts sets WOWF_BUNDLED at build time) it is the
+ * bundle's own folder, which holds docs/CHANGELOG.md beside index.mjs.
+ */
+export const PROJECT_ROOT = process.env.WOWF_BUNDLED === '1' ? dirname(fileURLToPath(import.meta.url)) : join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Load .env from the project root into process.env without overwriting real env vars. */
 export function loadDotEnv(path = join(PROJECT_ROOT, '.env')): void {
