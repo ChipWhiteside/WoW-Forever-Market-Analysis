@@ -1,157 +1,219 @@
 /**
- * The blob store (src/cloud/store.ts): the same contract run on the local folder and on Supabase Storage, the latter
- * against a fake Storage server behind a mocked fetch. The fake follows the REST API as read from storage-js
- * (src/cloud/supabaseStore.ts header) and answers errors in both the old style (400 with statusCode in the body) and
- * the new one (404, 409), so the store is proven against either until it runs against a real project.
+ * The cloud store (brief item 3): one contract run on the local folder and on GitHub (a fake REST API behind a mocked
+ * fetch, tests/fakeGitHub.ts), then GitHub's own paths (replace by upload then delete, inbox conflicts, rate limits,
+ * branch creation) and the seal (src/cloud/crypto.ts).
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import { LocalStore } from '../../src/cloud/localStore.ts';
-import { SupabaseStore } from '../../src/cloud/supabaseStore.ts';
-import { lockKey, type BlobStore } from '../../src/cloud/store.ts';
+import { GitHubStore } from '../../src/cloud/githubStore.ts';
+import { GitHub, GitHubApiError, dispatchOrJoin, runStatus } from '../../src/cloud/githubApi.ts';
+import { SealedStore, seal, unseal, dataKey } from '../../src/cloud/crypto.ts';
+import { storeFromEnv } from '../../src/cloud/layout.ts';
+import type { BlobStore } from '../../src/cloud/store.ts';
 import { tempDir } from '../helpers.ts';
-
-import { fakeSupabase, SUPABASE_URL as URL0, SUPABASE_KEY as KEY } from '../fakeSupabase.ts';
+import { fakeGitHub, REPO } from '../fakeGitHub.ts';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+const noSleep = async () => {};
+const gh = (f = fakeGitHub()) => ({ f, api: new GitHub({ token: f.token, repo: REPO, fetchFn: f.fetchFn, sleep: noSleep }) });
+const ghStore = (f = fakeGitHub()) => { const g = gh(f); return { f, store: new GitHubStore(g.api, { sleep: noSleep }) }; };
+const KEY = randomBytes(32);
 
 const impls: Array<[string, () => BlobStore]> = [
   ['local folder', () => new LocalStore(tempDir())],
-  ['supabase (new errors)', () => new SupabaseStore({ url: URL0, key: KEY, bucket: 'gold-finder', fetchFn: fakeSupabase().fetchFn })],
-  ['supabase (old 400 errors)', () => new SupabaseStore({ url: URL0, key: KEY, bucket: 'gold-finder', fetchFn: fakeSupabase({ oldErrors: true }).fetchFn })],
+  ['github', () => ghStore().store],
+  ['github, sealed', () => new SealedStore(ghStore().store, KEY)],
 ];
 
-afterEach(() => { vi.useRealTimers(); });
-
 describe.each(impls)('blob store contract: %s', (_name, make) => {
-  it('put, get, head and delete round trip; a missing key is null, not an error', async () => {
+  it('put, get and delete round trip; a missing key is null, not an error', async () => {
     const s = make();
-    expect(await s.get('wowf.db.gz')).toBeNull();
-    expect(await s.head('wowf.db.gz')).toBeNull();
-    await s.put('wowf.db.gz', enc('one'));
-    const a = await s.get('wowf.db.gz');
+    expect(await s.get('results.json')).toBeNull();
+    await s.put('results.json', enc('one'));
+    const a = await s.get('results.json');
     expect(dec(a!.body)).toBe('one');
-    const h = await s.head('wowf.db.gz');
-    expect(h!.size).toBe(3);
-    expect(h!.etag).toBe(a!.etag);
-    // Overwrite changes the ETag.
-    await s.put('wowf.db.gz', enc('two!'));
-    const b = await s.get('wowf.db.gz');
+    await s.put('results.json', enc('two!'));
+    const b = await s.get('results.json');
     expect(dec(b!.body)).toBe('two!');
     expect(b!.etag).not.toBe(a!.etag);
-    await s.delete('wowf.db.gz');
-    expect(await s.get('wowf.db.gz')).toBeNull();
-    await s.delete('wowf.db.gz'); // deleting a missing key is fine
+    expect((await s.list('')).map(o => o.key)).toEqual(['results.json']);
+    await s.delete('results.json');
+    expect(await s.get('results.json')).toBeNull();
+    await s.delete('results.json'); // deleting a missing key is fine
   });
 
-  it('list returns every key under a prefix, through folders, and a partial name prefix', async () => {
+  it('list by prefix, sorted; inbox events listed apart from the assets', async () => {
     const s = make();
-    for (const k of ['raw/2026-11-25/111-auctions-1.json.gz', 'raw/2026-11-26/111-auctions-2.json.gz', 'raw/2026-11-26/116-commodities-3.json.gz', 'results.json', 'datasets/wago/1.6/Item.csv.gz'])
-      await s.put(k, enc(k));
-    expect((await s.list('raw/')).map(o => o.key)).toEqual(['raw/2026-11-25/111-auctions-1.json.gz', 'raw/2026-11-26/111-auctions-2.json.gz', 'raw/2026-11-26/116-commodities-3.json.gz']);
-    expect((await s.list('raw/2026-11-26/116')).map(o => o.key)).toEqual(['raw/2026-11-26/116-commodities-3.json.gz']);
-    expect((await s.list('datasets/')).map(o => o.key)).toEqual(['datasets/wago/1.6/Item.csv.gz']);
-    expect((await s.list('')).length).toBe(5);
-    expect((await s.list('raw/2026-11-25/'))[0]!.size).toBe('raw/2026-11-25/111-auctions-1.json.gz'.length);
-    expect(await s.list('nothing/')).toEqual([]);
-  });
-
-  it('lock: one holder at a time; release frees it', async () => {
-    const s = make();
-    const r1 = await s.lock('engine', 60_000, 'hourly job');
-    expect(r1).toBeTypeOf('function');
-    expect(await s.lock('engine', 60_000, 'site')).toBeNull();
-    expect((await s.lockHolder!('engine'))!.owner).toBe('hourly job');
-    // A different name is a different lock.
-    const other = await s.lock('other', 60_000, 'site');
-    expect(other).toBeTypeOf('function');
-    await r1!();
-    expect(await s.lockHolder!('engine')).toBeNull();
-    const r2 = await s.lock('engine', 60_000, 'site');
-    expect(r2).toBeTypeOf('function');
-    await r2!(); await other!();
-  });
-
-  it('lock: an expired lock is taken over, and the old holder releasing it later does not free the new one', async () => {
-    const s = make();
-    const old = await s.lock('engine', 1_000, 'crashed run');
-    expect(old).toBeTypeOf('function');
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(Date.now() + 5_000);
-    const fresh = await s.lock('engine', 60_000, 'next run');
-    expect(fresh).toBeTypeOf('function');
-    await old!(); // the crashed run wakes up and releases: must not touch the next run's lock
-    expect((await s.lockHolder!('engine'))!.owner).toBe('next run');
-    expect(await s.lock('engine', 60_000, 'third')).toBeNull();
-    await fresh!();
-    expect(await s.lockHolder!('engine')).toBeNull();
-  });
-
-  it('lock: an unreadable lock object counts as expired', async () => {
-    const s = make();
-    await s.put(lockKey('engine'), enc('not json'));
-    const r = await s.lock('engine', 60_000, 'next run');
-    expect(r).toBeTypeOf('function');
-    await r!();
+    for (const k of ['wowf-2.db.gz', 'wowf-1.db.gz', 'ledger.json', 'events/0002-b.json', 'events/0001-a.json']) await s.put(k, enc(k));
+    expect((await s.list('wowf-')).map(o => o.key)).toEqual(['wowf-1.db.gz', 'wowf-2.db.gz']);
+    expect((await s.list('events/')).map(o => o.key)).toEqual(['events/0001-a.json', 'events/0002-b.json']);
+    expect(dec((await s.get('events/0002-b.json'))!.body)).toBe('events/0002-b.json');
+    await s.delete('events/0001-a.json');
+    expect((await s.list('events/')).map(o => o.key)).toEqual(['events/0002-b.json']);
+    expect(await s.list('nothing')).toEqual([]);
   });
 });
 
-describe('Supabase Storage REST calls', () => {
-  it('sends the key as apikey and Bearer, upserts with x-upsert true, creates the lock with x-upsert false, and uses the documented paths', async () => {
-    const f = fakeSupabase();
-    const s = new SupabaseStore({ url: `${URL0}/`, key: KEY, bucket: 'gold-finder', fetchFn: f.fetchFn });
-    await s.put('raw/2026-11-26/a b.json.gz', enc('x'), 'application/gzip');
-    await s.get('raw/2026-11-26/a b.json.gz');
-    await s.head('raw/2026-11-26/a b.json.gz');
-    await s.list('raw/');
-    await s.delete('raw/2026-11-26/a b.json.gz');
-    const release = await s.lock('engine', 60_000, 'job');
-    await release!();
-    for (const c of f.calls) { expect(c.headers.apikey).toBe(KEY); expect(c.headers.authorization).toBe(`Bearer ${KEY}`); }
-    expect(f.calls.map(c => `${c.method} ${c.path}`).slice(0, 6)).toEqual([
-      'POST /storage/v1/object/gold-finder/raw/2026-11-26/a%20b.json.gz',
-      'GET /storage/v1/object/gold-finder/raw/2026-11-26/a%20b.json.gz',
-      'HEAD /storage/v1/object/gold-finder/raw/2026-11-26/a%20b.json.gz',
-      'POST /storage/v1/object/list/gold-finder', // the raw folder
-      'POST /storage/v1/object/list/gold-finder', // its day folder
-      'DELETE /storage/v1/object/gold-finder',
-    ]);
-    expect(f.calls[0]!.headers['x-upsert']).toBe('true');
-    expect(f.calls[0]!.headers['content-type']).toBe('application/gzip');
-    expect(f.calls.find(c => c.method === 'DELETE')!.path).toBe('/storage/v1/object/gold-finder');
-    const lockCreate = f.calls.find(c => c.method === 'POST' && c.path.endsWith('/locks/engine.json'))!;
-    expect(lockCreate.headers['x-upsert']).toBe('false');
+describe('GitHub store paths', () => {
+  it('makes the data release on first use and the data-inbox branch on the first event', async () => {
+    const { f, store } = ghStore();
+    expect(await store.list('')).toEqual([]);
+    expect(f.releases.map(r => r.tag)).toEqual(['data']);
+    expect(f.branches.has('data-inbox')).toBe(false);
+    await store.put('events/0001-a.json', enc('x'));
+    expect(f.branches.has('data-inbox')).toBe(true);
+    expect(f.calls.filter(c => c.startsWith('POST') && c.includes('/git/refs'))).toHaveLength(1);
   });
 
-  it('a failed call throws with the status, never reads as missing', async () => {
-    const fetchFn = (async () => new Response('boom', { status: 500 })) as unknown as typeof fetch;
-    const s = new SupabaseStore({ url: URL0, key: KEY, bucket: 'b', fetchFn });
-    await expect(s.get('x')).rejects.toThrow(/500/);
-    await expect(s.head('x')).rejects.toThrow(/500/);
-    await expect(s.put('x', enc('1'))).rejects.toThrow(/500/);
-    await expect(s.lock('engine', 1000, 'me')).rejects.toThrow(/500/);
-    await expect(s.list('raw/')).rejects.toThrow(/500/);
+  it('uploads to uploads.github.com; replacing an asset uploads the new one first, then deletes the old and renames', async () => {
+    const { f, store } = ghStore();
+    await store.put('results.json', enc('old'));
+    const oldId = f.assets()[0]!.id;
+    f.calls.length = 0;
+    await store.put('results.json', enc('new'));
+    const upload = f.calls.findIndex(c => c.startsWith('POST uploads:') && c.includes('name=results.json.'));
+    const del = f.calls.findIndex(c => c === `DELETE /repos/${REPO}/releases/assets/${oldId}`);
+    const rename = f.calls.findIndex(c => c.startsWith('PATCH'));
+    expect(upload).toBeGreaterThanOrEqual(0);
+    expect(del).toBeGreaterThan(upload);
+    expect(rename).toBeGreaterThan(del);
+    expect(f.assets().map(a => a.name)).toEqual(['results.json']);
+    expect(dec((await store.get('results.json'))!.body)).toBe('new');
   });
 
-  it('a wrong key (400 unauthorized) on get is an error, not a missing object', async () => {
-    const f = fakeSupabase();
-    const s = new SupabaseStore({ url: URL0, key: 'wrong', bucket: 'gold-finder', fetchFn: f.fetchFn });
-    await expect(s.get('x')).rejects.toThrow(/400/);
+  it('an upload that meets an existing name (422) replaces it instead of failing', async () => {
+    const f = fakeGitHub();
+    const a = ghStore(f).store, b = ghStore(f).store;
+    await a.list(''); await b.list(''); // both listed before either uploaded
+    await a.put('ledger.json', enc('a'));
+    await b.put('ledger.json', enc('b'));
+    expect(f.assets().map(x => x.name)).toEqual(['ledger.json']);
+    expect(dec((await a.get('ledger.json'))!.body)).toBe('b');
   });
 
-  it('list pages past 1000 entries in one folder; deleteMany sends chunks of at most 500', async () => {
-    const f = fakeSupabase();
-    const s = new SupabaseStore({ url: URL0, key: KEY, bucket: 'gold-finder', fetchFn: f.fetchFn });
-    for (let i = 0; i < 1203; i++) f.objects.set(`raw/2026-11-26/111-auctions-${i}.json.gz`, { body: enc('x'), etag: 'e', type: 'application/gzip', at: 0 });
-    const all = await s.list('raw/');
-    expect(all.length).toBe(1203);
-    await s.deleteMany(all.map(o => o.key));
-    expect(f.objects.size).toBe(0);
-    expect(f.calls.filter(c => c.method === 'DELETE').length).toBe(3);
+  it('get re-lists when the asset was replaced since the listing', async () => {
+    const f = fakeGitHub();
+    const reader = ghStore(f).store, writer = ghStore(f).store;
+    await writer.put('results.json', enc('v1'));
+    expect(dec((await reader.get('results.json'))!.body)).toBe('v1');
+    await writer.put('results.json', enc('v2'));
+    expect(dec((await reader.get('results.json'))!.body)).toBe('v2');
   });
 
-  it('refuses to start without a URL, key or bucket', () => {
-    expect(() => new SupabaseStore({ url: '', key: KEY, bucket: 'b' })).toThrow(/SUPABASE_URL/);
-    expect(() => new SupabaseStore({ url: URL0, key: '', bucket: 'b' })).toThrow();
+  it('inbox writes retry on 409 conflicts and give up with a clear error after five', async () => {
+    const { f, store } = ghStore();
+    f.branches.add('data-inbox');
+    f.knobs.conflicts = 3;
+    await store.put('events/0001-a.json', enc('x'));
+    expect(f.files.has('events/0001-a.json')).toBe(true);
+    f.knobs.conflicts = 9;
+    await expect(store.put('events/0002-b.json', enc('y'))).rejects.toThrow(/409/);
+  });
+
+  it('deleting an inbox file uses the sha from the listing; a missing one is fine', async () => {
+    const { f, store } = ghStore();
+    await store.put('events/0001-a.json', enc('x'));
+    await store.list('events/');
+    f.calls.length = 0;
+    await store.delete('events/0001-a.json');
+    expect(f.calls.filter(c => c.startsWith('GET'))).toEqual([]);
+    expect(f.files.size).toBe(0);
+    await store.delete('events/0001-a.json');
+  });
+
+  it('a short rate limit is waited out; a long one is an error that says when', async () => {
+    const f = fakeGitHub();
+    const waits: number[] = [];
+    const api = new GitHub({ token: f.token, repo: REPO, fetchFn: f.fetchFn, sleep: async ms => { waits.push(ms); } });
+    const store = new GitHubStore(api, { sleep: noSleep });
+    f.knobs.before.push({ status: 403, headers: { 'retry-after': '2' } }, { status: 429, headers: { 'retry-after': '1' } });
+    expect(await store.list('')).toEqual([]);
+    expect(waits).toEqual([2000, 1000]);
+    f.knobs.before.push({ status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600) } });
+    const err = await store.put('results.json', enc('x')).catch(e => e);
+    expect(err).toBeInstanceOf(GitHubApiError);
+    expect(err.rateLimited).toBe(true);
+    expect(err.message).toMatch(/rate limit.*try again after \d\d:\d\d UTC/);
+  });
+
+  it('a 5xx is retried twice; a 403 that is not a rate limit fails at once', async () => {
+    const f = fakeGitHub();
+    const { api } = gh(f);
+    f.knobs.before.push({ status: 502 }, { status: 503 });
+    expect((await api.json('GET', '~')).body).toEqual({ default_branch: 'main' });
+    f.knobs.before.push({ status: 403, body: JSON.stringify({ message: 'Resource not accessible by personal access token' }) });
+    await expect(api.json('GET', '~')).rejects.toThrow(/403.*not accessible/);
+  });
+
+  it('sends the token as a Bearer header; a wrong token is refused', async () => {
+    const f = fakeGitHub();
+    const bad = new GitHubStore(new GitHub({ token: 'nope', repo: REPO, fetchFn: f.fetchFn, sleep: noSleep }));
+    await expect(bad.list('')).rejects.toThrow(/401/);
+  });
+});
+
+describe('Refresh on GitHub Actions', () => {
+  it('dispatches the collect workflow and finds the new run', async () => {
+    const { f, api } = gh();
+    f.addRun('completed');
+    const r = await dispatchOrJoin(api, { ref: 'main', sleep: noSleep });
+    expect(r.joined).toBe(false);
+    expect(r.run?.status).toBe('queued');
+    expect(f.calls).toContain(`POST /repos/${REPO}/actions/workflows/collect.yml/dispatches`);
+    f.runs.at(-1)!.status = 'completed';
+    expect((await runStatus(api, { run: r.run!.id }))?.status).toBe('completed');
+  });
+
+  it('joins a run already queued or in progress instead of starting another', async () => {
+    const { f, api } = gh();
+    const running = f.addRun('in_progress');
+    const r = await dispatchOrJoin(api, { ref: 'main', sleep: noSleep });
+    expect(r).toMatchObject({ joined: true, run: { id: running.id } });
+    expect(f.calls.some(c => c.includes('/dispatches'))).toBe(false);
+  });
+
+  it('a dispatch whose run has not appeared yet answers with no run; status by time finds it later', async () => {
+    const { f, api } = gh();
+    f.knobs.onDispatch = () => {};
+    const r = await dispatchOrJoin(api, { ref: 'main', sleep: noSleep, findTries: 2 });
+    expect(r.run).toBeNull();
+    f.addRun('in_progress', 'workflow_dispatch');
+    expect((await runStatus(api, { since: r.since }))?.status).toBe('in_progress');
+  });
+});
+
+describe('the seal', () => {
+  const secret = enc('Chip did 5 Runecloth Bandage');
+  it('round trips, and every seal of the same bytes differs', () => {
+    const a = seal(secret, KEY), b = seal(secret, KEY);
+    expect(dec(unseal(a, KEY))).toBe(dec(secret));
+    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
+  });
+  it('a wrong key fails', () => {
+    expect(() => unseal(seal(secret, KEY), randomBytes(32))).toThrow(/could not decrypt/);
+  });
+  it('a changed byte fails, anywhere in the file', () => {
+    const s = seal(secret, KEY);
+    for (const i of [5, 20, s.length - 1]) { const t = new Uint8Array(s); t[i]! ^= 1; expect(() => unseal(t, KEY)).toThrow(); }
+    expect(() => unseal(enc('plain text, never sealed'), KEY)).toThrow(/not a sealed/);
+  });
+  it('DATA_KEY: missing or the wrong length refuses to start (fail closed)', () => {
+    expect(() => dataKey({})).toThrow(/DATA_KEY is missing/);
+    expect(() => dataKey({ DATA_KEY: Buffer.alloc(16).toString('base64') })).toThrow(/32 bytes/);
+    expect(dataKey({ DATA_KEY: KEY.toString('base64') }).equals(KEY)).toBe(true);
+    expect(() => storeFromEnv({ GITHUB_TOKEN: 't', GITHUB_REPO: REPO })).toThrow(/DATA_KEY/);
+    expect(() => storeFromEnv({ STORE: 'local', STORE_DIR: tempDir() })).toThrow(/DATA_KEY/);
+  });
+  it('nothing reaches GitHub in clear: a name and an item never appear in the stored bytes', async () => {
+    const f = fakeGitHub();
+    const store = new SealedStore(ghStore(f).store, KEY);
+    await store.put('ledger.json', secret);
+    await store.put('events/0001-a.json', secret);
+    const all = f.allBytes();
+    expect(all).toHaveLength(2);
+    for (const b of all) for (const word of ['Chip', 'Runecloth']) expect(Buffer.from(b).includes(word)).toBe(false);
+    expect(dec((await store.get('events/0001-a.json'))!.body)).toBe(dec(secret));
   });
 });
