@@ -69,3 +69,6 @@ Refresh button on the Flips page, quiet hourly collection, Discord alerts only f
 - Design: docs/phase2-plan.md (GitHub release assets plus Actions cache, all sealed with DATA_KEY because the repo is public; Vercel via Build Output API v3; shared password, usernames, ledger). Setup: docs/setup-online.md.
 - Done and merged at 4885cbe: build, round 1 test, round 1 fixes (brief-phase2-r1.md). 490 tests pass; build:vercel writes a 0.97 MB function bundle.
 - Next: phase 2 test round 2 (rerun the prompt that checks round 1 fixes, the Build Output folder, the workflow file, a 30 cycle simulation and the setup guide; round 1 probe in scratchpad p2T1/), then round 3, then whole system rounds, then the final report with test counts.
+
+## Phase 2 complete, November 27
+Built, three independent test rounds, a final whole system round (online simulation and local mode in a browser) and a polish pass. 497 tests pass. Deploy steps: docs/setup-online.md. Use: docs/flips-tutorial.md.
