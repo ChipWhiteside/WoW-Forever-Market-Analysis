@@ -18,7 +18,7 @@ export function LedgerPage() {
       {isLoading ? <p className="text-muted">Loading.</p> : !data?.people.length ? (
         <Empty title="Nothing done yet">Press I did this on a flip card when you do one. Press Sold when it sells.</Empty>
       ) : <>
-        <Card className="mb-6 overflow-x-auto p-4">
+        <Card className="mb-6 hidden overflow-x-auto p-4 sm:block">
           <table className="w-full whitespace-nowrap text-sm">
             <thead><tr className="text-left text-[11px] uppercase tracking-wide text-muted">
               <th className="py-1 pr-3">Person</th><th className="pr-3">Flips done</th><th className="pr-3">Gold spent</th><th className="pr-3">Gold received</th><th className="pr-3">Realised minus spent</th><th className="pr-3">Expected</th><th>Realised against expected</th>
@@ -36,6 +36,20 @@ export function LedgerPage() {
             ))}</tbody>
           </table>
         </Card>
+
+        {/* Phones: the same per person numbers, stacked, so nothing hides behind a sideways scroll. */}
+        <div className="mb-6 space-y-2 sm:hidden">{data.people.map(p => (
+          <Card key={p.username} className="p-3 text-sm">
+            <p className="font-semibold">{p.username}{p.username === data.me && <span className="ml-1 text-xs font-normal text-muted">(you)</span>} <span className="text-xs font-normal text-muted">{p.flipsDone} flip{p.flipsDone === 1 ? '' : 's'}, {p.unitsSold} of {p.unitsDone} units sold</span></p>
+            <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+              <dt className="text-muted">Gold spent</dt><dd><Money c={p.spent} size="sm" /></dd>
+              <dt className="text-muted">Gold received</dt><dd><Money c={p.received} size="sm" /></dd>
+              <dt className="text-muted">Realised minus spent</dt><dd className={p.realised >= 0 ? 'text-good' : 'text-bad'}><Money c={p.realised} size="sm" /></dd>
+              <dt className="text-muted">Expected</dt><dd><Money c={p.expected} size="sm" /></dd>
+              <dt className="text-muted">Realised against expected</dt><dd>{pct(p.realisedVsExpected)}</dd>
+            </dl>
+          </Card>
+        ))}</div>
 
         <Card className="p-4">
           <h2 className="font-display text-lg font-semibold">History</h2>
