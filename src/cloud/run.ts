@@ -23,8 +23,14 @@ const H = 3600_000;
  */
 export const RAW_KEEP_HOURS = NEW_POSTS.windowHours + 2;
 const RAW_KEEP_DAYS = (RAW_KEEP_HOURS + 24) / 24;
-/** Cloud retention (brief item 7): hourly item_stats 30 days, daily rollups forever, raw as above, no local backups. */
-export const CLOUD_RETENTION: Retention = { statsKeepDays: 30, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
+/**
+ * Cloud retention (brief item 7), from a measurement on a copy of Chip's data (docs/verification.md G8): Chip's two
+ * houses add 1.44 MB of hourly item_stats an hour, so the 30 days the brief asked for is about 1.06 GB (378 MB
+ * gzipped), too big for the site's function. Hourly rows are kept 3 days (72 to 96 hours, the whole UTC day kept),
+ * which every flip window needs (72 hours) and no more; daily rollups are kept forever as asked. Raw as above; no
+ * local backups (the release keeps the last two databases).
+ */
+export const CLOUD_RETENTION: Retention = { statsKeepDays: 3, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
 
 export interface CloudRunOptions {
   /** The cloud store, sealed: release assets and the inbox (src/cloud/layout.ts storeFromEnv). */

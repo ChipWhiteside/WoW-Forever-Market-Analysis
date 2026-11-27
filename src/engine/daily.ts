@@ -4,9 +4,13 @@ import type { DB } from '../store/db.ts';
 import { tx } from '../store/db.ts';
 import { pruneRaw } from './rawstore.ts';
 
-/** Roll hourly item stats older than `keepDays` into one row per item per day, then delete the hourly rows. */
+/**
+ * Roll hourly item stats older than `keepDays` into one row per item per day, then delete the hourly rows. The cutoff
+ * is the UTC midnight at or before now minus keepDays, so a day is always rolled up whole: a cutoff inside a day used
+ * to roll up its first part, and the next run's REPLACE kept only the rest (found November 27, verification G9).
+ */
 export function rollup(db: DB, keepDays = 90, now = Date.now()): number {
-  const cutoff = now - keepDays * 86_400_000;
+  const cutoff = Math.floor((now - keepDays * 86_400_000) / 86_400_000) * 86_400_000;
   return tx(db, () => {
     db.prepare(`INSERT OR REPLACE INTO item_daily (house_id, item_id, day, floor_min, floor_median, floor_max, units_avg, sold_est, readings)
       SELECT house_id, item_id, date(published_at / 1000, 'unixepoch') d, MIN(floor), CAST(AVG(floor) AS INTEGER), MAX(floor), AVG(total_units),

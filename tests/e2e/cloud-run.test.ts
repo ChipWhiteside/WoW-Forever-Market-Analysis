@@ -166,7 +166,7 @@ describe('cloud cycle: restore from nothing, the inbox, and what it publishes', 
     expect(R[0]!.daily).toBe('ok');
     expect(R[1]!.daily).toBe('not due');
     expect(fillCalls).toBeGreaterThanOrEqual(1);
-    expect(CLOUD_RETENTION).toMatchObject({ statsKeepDays: 30, backups: false });
+    expect(CLOUD_RETENTION).toMatchObject({ statsKeepDays: 3, backups: false });
     expect(CLOUD_RETENTION.rawKeepDays * 24).toBeGreaterThanOrEqual(72 + 24);
   });
 
