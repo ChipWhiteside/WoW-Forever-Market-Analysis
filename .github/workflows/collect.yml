@@ -1,4 +1,10 @@
-# The hourly collector (docs/phase2-plan.md, item 3). Scheduled workflows run on the default branch only.
+# The hourly collector (docs/phase2-plan.md). GitHub runs scheduled workflows from the default branch only, so this
+# runs once it is merged to main. Refresh on the site starts it with workflow_dispatch.
+#
+# Between runs the engine's files live in the Actions cache (.cloud-cache): the sealed database copy, the raw
+# snapshots for the 72 hour windows and the datasets. Each run saves a new cache entry and restores the newest by
+# prefix; GitHub evicts the oldest entries past its cache size limit. The durable copy is the sealed database on the
+# release named "data" (src/cloud/layout.ts). Everything stored is encrypted with DATA_KEY.
 name: collect
 on:
   schedule:
@@ -7,6 +13,9 @@ on:
 concurrency:
   group: collect
   cancel-in-progress: false
+permissions:
+  contents: write   # the data release and the data-inbox branch
+  actions: read
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -18,14 +27,28 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run cloud:run
+      - name: Restore the engine files
+        uses: actions/cache/restore@v4
+        with:
+          path: .cloud-cache
+          key: wowf-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: wowf-data-
+      - name: One cycle
+        run: npm run cloud:run
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          SUPABASE_BUCKET: gold-finder
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_DEV_WEBHOOK_URL: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
-          APP_URL: ${{ secrets.APP_URL }}
-          WAIT_FOR_PUBLISH_MIN: '15'
+          APP_URL: ${{ vars.APP_URL }}
+          CLOUD_CACHE_DIR: .cloud-cache
+          # The hourly run waits up to 15 minutes for Blizzard's publish; a Refresh from the site does not wait.
+          WAIT_FOR_PUBLISH_MIN: ${{ github.event_name == 'workflow_dispatch' && '0' || '15' }}
+      # Only after a good cycle: a failed one leaves the last good cache in place.
+      - name: Save the engine files
+        uses: actions/cache/save@v4
+        with:
+          path: .cloud-cache
+          key: wowf-data-${{ github.run_id }}-${{ github.run_attempt }}

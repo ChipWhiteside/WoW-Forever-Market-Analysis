@@ -86,6 +86,17 @@ describe('page contracts', () => {
     inOrder(src('App.tsx'), ["id: 'positions'", "id: 'watchlist'", "id: 'ledger', label: 'Ledger', group: 'Mine', el: LedgerPage", "id: 'market'"]);
     inOrder(src('pages/ledger.tsx'), ["'/api/ledger'", '>Person<', '>Flips done<', '>Gold spent<', '>Gold received<', '>Realised minus spent<', '>Expected<', '>Realised against expected<', '>History<']);
   });
+  it('Refresh online says it is running on GitHub with the same spinner, then the result, beside the run status (phase 2 on GitHub, November 27)', () => {
+    const page = section(src('pages/flips.tsx'), 'export function FlipsPage', '\nfunction ');
+    inOrder(page, ['Data from', '<RefreshButton />', '<DiscordLine />', '>Crafting (']);
+    const btn = section(src('pages/flips.tsx'), 'function RefreshButton', '\nfunction ');
+    inOrder(btn, ["'/api/flips/refresh'", 'res.status === 202', "'Running on GitHub, usually 1 to 2 minutes.'", '/api/flips/refresh/status', 'Updated on GitHub.', 'animate-spin', "'Running on GitHub...' : 'Checking Blizzard...'"]);
+  });
+  it('saved writes show as pending, below everything agreed, on the flip card and the Ledger (phase 2 on GitHub, November 27)', () => {
+    const actions = section(src('pages/flips.tsx'), 'function FlipActions', '\nfunction ');
+    inOrder(actions, ['>I did this<', '<SoldLine', 'pending.map', 'saved, counts at the next update.']);
+    inOrder(src('pages/ledger.tsx'), ['>Person<', '>Realised against expected<', '>History<', 'data.history.map', 'Saved, counts at the next update', 'data.pending.map', 'saved, counts at the next update']);
+  });
   it('login page asks for a name and the password, and the menu keeps its items above Signed in as (phase 2, November 27)', () => {
     inOrder(src('pages/login.tsx'), ["'/api/login'", 'Your name', 'Password', "'Sign in'"]);
     inOrder(src('App.tsx'), ['Search anywhere: Ctrl K', "'Dark'} mode", 'Signed in as', 'Sign out']);

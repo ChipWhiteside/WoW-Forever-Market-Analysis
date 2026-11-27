@@ -14,7 +14,7 @@ import { SealedStore, dataKey } from './crypto.ts';
  * Objects, in the cloud store (release `data`) and, for the database, also in the Actions cache folder:
  * - `wowf-<publish time ms>.db.gz`  the engine database, gzipped, sealed. A new name each publish; the newest 2 kept.
  * - `results.json`  the /api/flips payload, exactly what GET /api/flips answers. Overwritten each run.
- * - `ledger.json`   every user action row and the inbox events already applied (src/server/ledger.ts ledgerFile).
+ * - `ledger.json`   every user action row and the inbox events already applied (src/cloud/inbox.ts ledgerFile).
  * - `events/<time>-<random>.json`  the site's writes waiting for the next cycle (src/cloud/inbox.ts).
  * Raw snapshots and datasets never leave the Actions cache folder.
  */

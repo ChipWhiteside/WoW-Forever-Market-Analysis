@@ -68,6 +68,27 @@ export function LedgerPage() {
           </ul>
         </Card>
       </>}
+
+      {/* Online (phase 2 on GitHub): writes saved since the last hourly update, below everything agreed. */}
+      {!!data?.pending?.length && (
+        <Card className="mt-6 p-4">
+          <h2 className="font-display text-lg font-semibold">Saved, counts at the next update</h2>
+          <ul className="mt-2 divide-y divide-line/60 text-sm">
+            {data.pending.map(p => (
+              <li key={p.key} className="flex flex-wrap items-baseline gap-x-2 py-1.5">
+                <span className="w-24 shrink-0 text-xs text-muted">{ago(p.at)}</span>
+                <span className="font-semibold">{p.username}</span>
+                {p.action === 'other' ? <span className="text-muted">saved {p.what}</span> : <>
+                  <span className="text-muted">{p.action === 'did' ? 'did' : 'sold'}</span>
+                  <span><b>{p.units}</b> {p.name ?? p.flipKey ?? 'a flip'}</span>
+                  {p.action === 'sold' && <span className="text-muted">for <Money c={p.received} size="sm" /></span>}
+                </>}
+                <Chip tone="muted">saved, counts at the next update</Chip>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   );
 }

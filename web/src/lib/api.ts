@@ -26,4 +26,9 @@ export interface LedgerAction {
   soldUnits?: number; soldReceived?: number;
 }
 export interface LedgerPerson { username: string; flipsDone: number; unitsDone: number; unitsSold: number; spent: number; received: number; realised: number; expected: number; realisedVsExpected: number | null }
-export interface Ledger { me: string; people: LedgerPerson[]; mine: LedgerAction[]; history: LedgerAction[] }
+/** Online only: a write saved on GitHub that counts at the next hourly update (src/cloud/inbox.ts PendingAction). */
+export interface PendingAction {
+  key: string; at: number; username: string; action: 'did' | 'sold' | 'other';
+  flipKey: string | null; didId: number | null; units: number | null; received: number | null; name: string | null; what: string;
+}
+export interface Ledger { me: string; people: LedgerPerson[]; mine: LedgerAction[]; history: LedgerAction[]; pending?: PendingAction[] }

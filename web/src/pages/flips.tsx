@@ -120,13 +120,15 @@ function DiscordLine() {
 /** Pull the newest publish for Chip's houses now, count sales, rerun the flips (POST /api/flips/refresh). */
 function RefreshButton() {
   const qc = useQueryClient();
-  const [state, setState] = useState<{ busy: boolean; text: string | null; bad: boolean }>({ busy: false, text: null, bad: false });
+  const [state, setState] = useState<{ busy: boolean; text: string | null; bad: boolean; github?: boolean }>({ busy: false, text: null, bad: false });
   const go = async () => {
     setState({ busy: true, text: null, bad: false });
     try {
       const res = await fetch('/api/flips/refresh', { method: 'POST' });
-      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; status?: string; errors?: string[]; run?: { data_at: number } | null };
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; status?: string; errors?: string[]; run?: { data_at: number } | null; runId?: number | null; since?: number };
       if (!res.ok) { setState({ busy: false, text: body.error ?? `Refresh failed (${res.status}).`, bad: true }); return; }
+      // Online (phase 2): the update runs on GitHub. 202 means it started or joined a run; follow it, then reload.
+      if (res.status === 202) { await followRun(body); return; }
       await qc.invalidateQueries({ queryKey: ['flips'] });
       // A poll that failed is shown in red with Blizzard's answer, never as "nothing new" (refresh round 1 finding D).
       setState({ busy: false, text: `${body.message ?? ''}${body.run ? ` ${dataTimeLine(body.run.data_at)}.` : ''}`.trim(), bad: body.status === 'failed' || !!body.errors?.length });
@@ -134,11 +136,30 @@ function RefreshButton() {
       setState({ busy: false, text: `Refresh failed: ${(e as Error).message}`, bad: true });
     }
   };
+  /** Poll the GitHub run every 5 seconds until it completes, for up to 15 minutes. */
+  const followRun = async (b: { message?: string; runId?: number | null; since?: number }) => {
+    setState({ busy: true, github: true, text: b.message ?? 'Running on GitHub, usually 1 to 2 minutes.', bad: false });
+    let run = b.runId ?? null;
+    for (const until = Date.now() + 15 * 60_000; Date.now() < until;) {
+      await new Promise(r => setTimeout(r, 5000));
+      const s = await fetch(`/api/flips/refresh/status?${run ? `run=${run}` : `since=${b.since ?? 0}`}`).then(r => r.ok ? r.json() : null).catch(() => null) as { runId: number | null; state: string; conclusion: string | null } | null;
+      if (!s) continue;
+      run = s.runId ?? run;
+      if (s.state !== 'completed') { setState({ busy: true, github: true, text: `Running on GitHub (${s.state === 'in_progress' ? 'running' : 'waiting to start'}), usually 1 to 2 minutes.`, bad: false }); continue; }
+      await qc.invalidateQueries({ queryKey: ['flips'] });
+      await qc.invalidateQueries({ queryKey: ['ledger'] });
+      const fresh = qc.getQueryData<Resp>(['flips']);
+      const ok = s.conclusion === 'success';
+      setState({ busy: false, bad: !ok, text: ok ? `Updated on GitHub.${fresh?.run ? ` ${dataTimeLine(fresh.run.data_at)}.` : ''}` : `The update on GitHub ended: ${s.conclusion ?? 'unknown'}. The list is from the last good data.` });
+      return;
+    }
+    setState({ busy: false, bad: true, text: 'Still running on GitHub after 15 minutes. The list updates on its own when it is done.' });
+  };
   return (
     <span className="flex basis-full flex-wrap items-center gap-2 sm:ml-auto sm:basis-auto">
       <button onClick={go} disabled={state.busy} className="inline-flex items-center gap-2 rounded-md bg-ink px-3 py-1 text-xs font-semibold text-page disabled:opacity-70">
         {state.busy && <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-page border-t-transparent" aria-hidden />}
-        {state.busy ? 'Checking Blizzard...' : 'Refresh'}
+        {state.busy ? (state.github ? 'Running on GitHub...' : 'Checking Blizzard...') : 'Refresh'}
       </button>
       {state.text && <span className={`text-xs ${state.bad ? 'text-bad' : 'text-muted'}`}>{state.text}</span>}
     </span>
@@ -276,6 +297,8 @@ function FlipActions({ f }: { f: Row }) {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['ledger'], queryFn: () => api<Ledger>('/api/ledger') });
   const mine = (data?.mine ?? []).filter(a => a.flip_key === f.key);
+  // Online: saved writes count at the next hourly update; shown here until then (phase 2 on GitHub).
+  const pending = (data?.pending ?? []).filter(p => p.username === data?.me && (p.flipKey === f.key || (p.didId != null && mine.some(m => m.id === p.didId))));
   const [open, setOpen] = useState(false);
   const [n, setN] = useState(String(f.detail.best.units));
   const [state, setState] = useState<{ busy: boolean; text: string | null; bad: boolean }>({ busy: false, text: null, bad: false });
@@ -302,6 +325,7 @@ function FlipActions({ f }: { f: Row }) {
         {state.text && <span className={`text-xs ${state.bad ? 'text-bad' : 'text-muted'}`}>{state.text}</span>}
       </div>
       {mine.map(a => <SoldLine key={a.id} a={a} />)}
+      {pending.map(p => <p key={p.key} className="text-xs text-muted">You {p.action === 'sold' ? 'sold' : 'did'} <b className="text-ink">{units(p.units ?? 0)}</b> {ago(p.at)}: saved, counts at the next update.</p>)}
     </div>
   );
 }

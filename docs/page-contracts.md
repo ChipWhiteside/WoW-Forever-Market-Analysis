@@ -36,6 +36,8 @@ Run status (data time, items and recipes checked, complete or incomplete), filte
 
 Refresh button (November 26): sits in the run status card after the existing status, before the filters. It says "Checking Blizzard..." with a spinner while it works, then the result and the data time ("Data from 12 min ago; Blizzard publishes about 25 past each hour, next one about 13:25"). Nothing in the status card moved.
 
+Refresh running on GitHub (phase 2 on GitHub storage, November 27): online, Refresh starts the hourly job on GitHub, or joins the one already running. The same button then says "Running on GitHub..." with the same spinner, and the line beside it says "Running on GitHub, usually 1 to 2 minutes" until the run ends, then "Updated on GitHub." with the data time. A run that fails says so in red. Local mode is unchanged ("Checking Blizzard..."). Nothing in the status card moved.
+
 Discord line (November 27): a short line in the run status card, after the Refresh button and before the filters: "Discord gets Good (10g or more) and Amazing (20g or more) flips that are low or medium risk with solid evidence". The gold numbers are the live Good and Amazing flip alert settings from /api/settings. Nothing else moved.
 
 Buy lists only what is bought (auction or vendor); craft steps go on Make ("Make first ..."); the product is never its own input (clarified November 26, nothing removed).
@@ -46,11 +48,15 @@ Flip card, in this order: rank, Crafting (green) or Flipping (blue) badge, item,
 
 Who did what (phase 2, November 27): below everything on the flip card, after the notes, an "I did this" button that asks for units, and for each time the signed in person did this flip a line with units, expected cost and profit, what sold so far, and a "Sold" button that asks for units and gold received. Nothing above it moved.
 
+Saved, not counted yet (phase 2 on GitHub storage, November 27): online, below the Sold lines on the flip card, one line for each of your writes saved since the last hourly update: "You did 3 units 2 min ago: saved, counts at the next update." Nothing above it moved.
+
 ## Settings (`web/src/pages/misc.tsx`), flip alerts added November 26
 Every existing field stays in place. Below them: Good flip alert in gold (default 10), Amazing flip alert in gold (default 20), and a checkbox "Also send the old play alerts" (off by default). Then Save.
 
 ## Ledger (`web/src/pages/ledger.tsx`), phase 2, November 27
 In the menu under Mine, after Watchlist. Per person table: Person, Flips done, Gold spent, Gold received, Realised minus spent, Expected, Realised against expected. Then History: every "I did this" and "Sold", newest first, with who and when.
+
+Saved, counts at the next update (phase 2 on GitHub storage, November 27): online, below History, a list of the writes saved since the last hourly update (I did this, Sold, settings, house pins), with who and when, each marked "saved, counts at the next update". The totals above count only what the hourly update applied. Nothing above it moved.
 
 ## Login (`web/src/pages/login.tsx`), phase 2, November 27
 Only when SITE_PASSWORD is set. Your name, Password, Sign in; remembered for 90 days. The menu says who is signed in, below the existing items, with Sign out.
