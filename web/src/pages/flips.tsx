@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { api, type Ledger, type LedgerAction } from '../lib/api';
 import { ago } from '../lib/format';
 import { mapHref, type Place } from '../lib/zones';
 import { useNav } from '../nav';
@@ -247,9 +247,96 @@ export function FlipCard({ f, place, onOpenItem }: { f: Row; place: number; onOp
             </div>
           )}
           {d.notes.length > 0 && <p className="-ml-20 mt-2 break-words text-xs text-muted sm:ml-0">{d.notes.map(n => n.trim().replace(/[.;,\s]+$/, '')).filter(Boolean).join('. ')}.</p>}
+          {/* Who did what (phase 2), added below everything on the card; nothing above moved. */}
+          <FlipActions f={f} />
         </div>
       </div>
     </Card>
+  );
+}
+
+/** Post JSON and return the error text, or null when it worked. */
+async function send(path: string, body: unknown): Promise<string | null> {
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (res.ok) return null;
+    if (res.status === 401) dispatchEvent(new Event('wowf-signed-out'));
+    const b = await res.json().catch(() => ({})) as { error?: string };
+    return b.error ?? `Failed (${res.status}).`;
+  } catch (e) { return `Failed: ${(e as Error).message}`; }
+}
+const smallBtn = 'rounded-md border border-line px-3 py-1 text-xs font-semibold hover:bg-line/40';
+const smallIn = 'w-20 rounded-md border border-line bg-page px-2 py-1 text-sm';
+
+/**
+ * "I did this" records units with the expected cost and profit the card shows now; "Sold" (only on flips you did)
+ * records units and gold received. Both feed the Ledger page.
+ */
+function FlipActions({ f }: { f: Row }) {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['ledger'], queryFn: () => api<Ledger>('/api/ledger') });
+  const mine = (data?.mine ?? []).filter(a => a.flip_key === f.key);
+  const [open, setOpen] = useState(false);
+  const [n, setN] = useState(String(f.detail.best.units));
+  const [state, setState] = useState<{ busy: boolean; text: string | null; bad: boolean }>({ busy: false, text: null, bad: false });
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setState({ busy: true, text: null, bad: false });
+    const err = await send(`/api/flips/${encodeURIComponent(f.key)}/did`, { units: Number(n) });
+    if (err) { setState({ busy: false, text: err, bad: true }); return; }
+    await qc.invalidateQueries({ queryKey: ['ledger'] });
+    setOpen(false);
+    setState({ busy: false, text: `Saved: you did ${units(Number(n))}.`, bad: false });
+  };
+  return (
+    <div className="-ml-20 mt-2 space-y-1.5 border-t border-line/70 pt-2.5 text-sm sm:ml-0">
+      <div className="flex flex-wrap items-center gap-2">
+        {!open ? <button className={smallBtn} onClick={() => { setOpen(true); setState({ busy: false, text: null, bad: false }); }}>I did this</button> : (
+          <form onSubmit={save} className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold">I did this:</span>
+            <label className="text-xs text-muted">units <input type="number" min={1} step={1} value={n} onChange={e => setN(e.target.value)} className={smallIn} /></label>
+            <button type="submit" disabled={state.busy || !(Number(n) > 0)} className="rounded-md bg-ink px-3 py-1 text-xs font-semibold text-page disabled:opacity-50">Save</button>
+            <button type="button" className="text-xs text-muted underline" onClick={() => setOpen(false)}>Cancel</button>
+          </form>
+        )}
+        {state.text && <span className={`text-xs ${state.bad ? 'text-bad' : 'text-muted'}`}>{state.text}</span>}
+      </div>
+      {mine.map(a => <SoldLine key={a.id} a={a} />)}
+    </div>
+  );
+}
+
+/** One of your "I did this" on this flip, with what sold so far and the Sold control while units are left. */
+function SoldLine({ a }: { a: LedgerAction }) {
+  const qc = useQueryClient();
+  const left = a.units - (a.soldUnits ?? 0);
+  const [open, setOpen] = useState(false);
+  const [n, setN] = useState(String(left));
+  const [gold, setGold] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const e2 = await send(`/api/ledger/${a.id}/sold`, { units: Number(n), received: Math.round(Number(gold) * 10000) });
+    if (e2) { setErr(e2); return; }
+    setErr(null); setOpen(false); setGold('');
+    await qc.invalidateQueries({ queryKey: ['ledger'] });
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <span className="text-muted">You did <b className="text-ink">{units(a.units)}</b> {ago(a.at)}, expected cost <Money c={a.expected_cost} size="sm" /> and profit <Money c={a.expected_profit} size="sm" />.</span>
+      {!!a.soldUnits && <span className="text-muted">{a.soldUnits} sold for <Money c={a.soldReceived} size="sm" />.</span>}
+      {left > 0 && (!open ? <button className={smallBtn} onClick={() => { setN(String(left)); setOpen(true); }}>Sold</button> : (
+        <form onSubmit={save} className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold">Sold:</span>
+          <label className="text-muted">units <input type="number" min={1} max={left} step={1} value={n} onChange={e => setN(e.target.value)} className={smallIn} /></label>
+          <label className="text-muted">gold received <input type="number" min={0} step="any" value={gold} onChange={e => setGold(e.target.value)} placeholder="after the cut" className="w-28 rounded-md border border-line bg-page px-2 py-1 text-sm" /></label>
+          <button type="submit" disabled={!(Number(n) > 0) || gold === '' || !(Number(gold) >= 0)} className="rounded-md bg-ink px-3 py-1 text-xs font-semibold text-page disabled:opacity-50">Save</button>
+          <button type="button" className="text-muted underline" onClick={() => setOpen(false)}>Cancel</button>
+        </form>
+      ))}
+      {left <= 0 && <Chip tone="good">all sold</Chip>}
+      {err && <span className="text-bad">{err}</span>}
+    </div>
   );
 }
 

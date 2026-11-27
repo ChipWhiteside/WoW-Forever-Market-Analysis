@@ -1,5 +1,7 @@
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } });
+  // Phase 2 login: a 401 means the cookie is missing or old; the app shows the login page.
+  if (res.status === 401 && path !== '/api/login') dispatchEvent(new Event('wowf-signed-out'));
   if (!res.ok) throw new Error(`${path} ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -14,3 +16,14 @@ export interface Play {
 }
 export interface HouseHealth { id: number; name: string; lastPublish: number | null; ageMin: number | null; status: 'ok' | 'late' | 'missing'; lastError: string | null }
 export interface Health { at: number; status: 'ok' | 'warn' | 'error'; houses: HouseHealth[]; suspects: string[]; gapsToday: number; message: string }
+
+/** Phase 2: who is signed in. authRequired is false in local mode unless SITE_PASSWORD is set. */
+export interface Me { authRequired: boolean; username: string | null }
+/** One "I did this" or "Sold" row (GET /api/ledger). Money in copper. */
+export interface LedgerAction {
+  id: number; action: 'did' | 'sold'; did_id: number | null; flip_key: string; username: string; at: number; units: number;
+  expected_cost: number | null; expected_profit: number | null; received: number | null; item_id: number | null; name: string | null; kind: string | null; house_id: number | null;
+  soldUnits?: number; soldReceived?: number;
+}
+export interface LedgerPerson { username: string; flipsDone: number; unitsDone: number; unitsSold: number; spent: number; received: number; realised: number; expected: number; realisedVsExpected: number | null }
+export interface Ledger { me: string; people: LedgerPerson[]; mine: LedgerAction[]; history: LedgerAction[] }

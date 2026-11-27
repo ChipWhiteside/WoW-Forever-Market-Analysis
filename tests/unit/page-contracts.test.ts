@@ -73,4 +73,21 @@ describe('page contracts', () => {
     expect(card).toContain('allBuy ? bought : bought.slice(0, LINES_SHOWN)');
     expect(card).toContain('allSteps ? steps : steps.slice(0, LINES_SHOWN)');
   });
+  it('flip card ends with I did this and, for flips you did, Sold, after everything agreed before (phase 2, November 27)', () => {
+    const page = src('pages/flips.tsx');
+    const card = section(page, 'export function FlipCard', '\nfunction ');
+    inOrder(card, ['>Bad case<', 'd.notes.length > 0', '<FlipActions f={f} />']);
+    const actions = section(page, 'function FlipActions', '\nfunction ');
+    inOrder(actions, ["'/api/ledger'", '/did`', '>I did this<', '<SoldLine']);
+    const sold = section(page, 'function SoldLine', '\nfunction ');
+    inOrder(sold, ['/sold`', 'You did', '>Sold<', 'units <input', 'gold received <input']);
+  });
+  it('Ledger page is in the menu under Mine after Watchlist, with per person totals then history (phase 2, November 27)', () => {
+    inOrder(src('App.tsx'), ["id: 'positions'", "id: 'watchlist'", "id: 'ledger', label: 'Ledger', group: 'Mine', el: LedgerPage", "id: 'market'"]);
+    inOrder(src('pages/ledger.tsx'), ["'/api/ledger'", '>Person<', '>Flips done<', '>Gold spent<', '>Gold received<', '>Realised minus spent<', '>Expected<', '>Realised against expected<', '>History<']);
+  });
+  it('login page asks for a name and the password, and the menu keeps its items above Signed in as (phase 2, November 27)', () => {
+    inOrder(src('pages/login.tsx'), ["'/api/login'", 'Your name', 'Password', "'Sign in'"]);
+    inOrder(src('App.tsx'), ['Search anywhere: Ctrl K', "'Dark'} mode", 'Signed in as', 'Sign out']);
+  });
 });

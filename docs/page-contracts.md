@@ -44,5 +44,13 @@ Make first steps sit before the Make line. When a card has more than 3 Buy lines
 
 Flip card, in this order: rank, Crafting (green) or Flipping (blue) badge, item, family and opening line (new or rising, hours open of the last 72, repeatable or one opening), expected profit overnight (big) with units and profit per item, Buy, Make (crafts only), Sell, Price, Volume, Risk, Setup (crafts that need training), Shares, strength chip, gold per hour, amounts table (small, best, most with units, cost, sells overnight, expected profit, per hour, risk, bad case).
 
+Who did what (phase 2, November 27): below everything on the flip card, after the notes, an "I did this" button that asks for units, and for each time the signed in person did this flip a line with units, expected cost and profit, what sold so far, and a "Sold" button that asks for units and gold received. Nothing above it moved.
+
 ## Settings (`web/src/pages/misc.tsx`), flip alerts added November 26
 Every existing field stays in place. Below them: Good flip alert in gold (default 10), Amazing flip alert in gold (default 20), and a checkbox "Also send the old play alerts" (off by default). Then Save.
+
+## Ledger (`web/src/pages/ledger.tsx`), phase 2, November 27
+In the menu under Mine, after Watchlist. Per person table: Person, Flips done, Gold spent, Gold received, Realised minus spent, Expected, Realised against expected. Then History: every "I did this" and "Sold", newest first, with who and when.
+
+## Login (`web/src/pages/login.tsx`), phase 2, November 27
+Only when SITE_PASSWORD is set. Your name, Password, Sign in; remembered for 90 days. The menu says who is signed in, below the existing items, with Sign out.
