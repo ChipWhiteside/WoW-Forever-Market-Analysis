@@ -22,7 +22,8 @@
     "publish-times": "tsx scripts/publish-times.ts",
     "ladder": "tsx scripts/ladder.ts",
     "compare-houses": "tsx scripts/compare-houses.ts",
-    "plays": "tsx scripts/plays.ts"
+    "plays": "tsx scripts/plays.ts",
+    "cloud:run": "tsx src/cloud/cli.ts"
   },
   "dependencies": {
     "@fastify/static": "^8.3.0",

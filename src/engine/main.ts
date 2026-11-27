@@ -2,9 +2,7 @@ import { loadConfig } from '../config/env.ts';
 import { openDb } from '../store/db.ts';
 import { BlizzardClient, sleep } from '../blizzard/client.ts';
 import { Engine } from './engine.ts';
-import { syncEgLink } from '../datasets/eglink.ts';
-import { syncRecipes, summarizeRecipes, checkItemsAfterRefresh } from '../datasets/recipes.ts';
-import { dailyMaintenance } from './daily.ts';
+import { runDailySteps, startupFills } from './dailySteps.ts';
 import { startServer } from '../server/server.ts';
 import { rebuildIfRulesChanged } from './rebuild.ts';
 import { takeInstanceLock } from './instanceLock.ts';
@@ -38,35 +36,15 @@ async function main() {
   // empty until the next hourly publish.
   try { await engine.detect(); } catch (e) { log(`startup detect failed: ${(e as Error).message}`); }
 
-  // Each daily step stands alone, so one failing source never blocks the others or the backup.
+  // Each daily step stands alone, so one failing source never blocks the others or the backup (src/engine/dailySteps.ts).
   const daily = async () => {
     if (!engine.dailyDue()) return;
-    const step = async (name: string, fn: () => Promise<string>) => {
-      try { log(`${name}: ${await fn()}`); return true; } catch (e) { log(`${name} failed, will retry next round: ${(e as Error).message}`); return false; }
-    };
-    const results = [
-      await step('eglink', async () => { const r = await syncEgLink(db, cfg.dataDir); return `${r.vendors} vendor rows, ${r.loot} loot rows, ${r.names} names, ${r.questItems} quest items from ${r.builds} builds`; }),
-      await step('recipes', async () => summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))),
-      await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
-      // After the price refresh, so a server hotfix to binding or sell price shows against ItemSparse the same day.
-      await step('item check', async () => checkItemsAfterRefresh(db, cfg.dataDir, log, client)),
-      await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, cfg.dataDir))),
-    ];
     // Mark done only when every step worked, otherwise the next round retries the whole set.
-    if (results.every(Boolean)) engine.markDaily();
+    if (await runDailySteps(engine, db, client, cfg.dataDir, log)) engine.markDaily();
     else lastDailyFailure = Date.now();
   };
-  // A dataset added by an update (trainers on November 20) fills on the first start, not up to a day later.
-  const trainers = db.prepare('SELECT COUNT(*) AS n FROM trainer_spells').get() as { n: number };
-  if (trainers.n === 0) {
-    try { const r = await syncEgLink(db, cfg.dataDir); log(`eglink on start: ${r.trainerSpells} trainer recipes`); } catch (e) { log(`eglink on start failed: ${(e as Error).message}`); }
-  }
-  // The game tables and the rebuilt recipes (flip plan section 4) fill on the first start after the update too.
-  // When the daily refresh is due anyway, it does this itself right below.
-  const gamedata = db.prepare(`SELECT 1 AS ok FROM datasets WHERE name = 'gamedata'`).get();
-  if (!gamedata && !engine.dailyDue()) {
-    try { log(`recipes on start: ${summarizeRecipes(await syncRecipes(client, db, cfg.dataDir, log))}`); } catch (e) { log(`recipes on start failed: ${(e as Error).message}`); }
-  }
+  // Datasets added by an update fill on the first start, not up to a day later.
+  await startupFills(engine, db, client, cfg.dataDir, log);
   await daily();
   for (;;) {
     const started = Date.now();

@@ -18,4 +18,14 @@ export interface BlobStore {
    * Holders must release; an expired lock may be taken over.
    */
   lock(name: string, ttlMs: number, owner: string): Promise<(() => Promise<void>) | null>;
+  /** Added for the cloud cycle: delete many keys in one call where the backend can. Optional; falls back to delete. */
+  deleteMany?(keys: string[]): Promise<void>;
+  /** Added for the cloud cycle: who holds the named lock and until when, null when free. Optional, for messages only. */
+  lockHolder?(name: string): Promise<LockRecord | null>;
 }
+
+/** What a lock object holds. `token` is unique per acquisition, so a release never frees a lock taken over since. */
+export interface LockRecord { owner: string; token: string; expiresAt: number }
+
+/** Where lock objects live in the store. Both implementations use it. */
+export const lockKey = (name: string) => `locks/${name}.json`;
