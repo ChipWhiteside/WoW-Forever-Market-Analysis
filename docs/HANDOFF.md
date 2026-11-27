@@ -64,3 +64,8 @@ Every piece passed at least three independent test rounds, and the whole system 
 
 ## Refresh button and alerts, November 27
 Refresh button on the Flips page, quiet hourly collection, Discord alerts only for Good (10g) and Amazing (20g) flips that pass every evidence gate, no cap per hour, a 24 hour repeat rule with a 25% growth exception, old play alerts off by default. Three test rounds and a live recheck passed: exactly one post per alert under every race, at most the in flight post doubles after a crash, a second engine on the same data sends nothing, a hung webhook costs one 15 second wait per run. 413 tests pass. Phase 2 (Vercel, GitHub Actions, Supabase) is next when Chip says go.
+
+## Phase 2 state (November 27, limit stop)
+- Design: docs/phase2-plan.md (GitHub release assets plus Actions cache, all sealed with DATA_KEY because the repo is public; Vercel via Build Output API v3; shared password, usernames, ledger). Setup: docs/setup-online.md.
+- Done and merged at 4885cbe: build, round 1 test, round 1 fixes (brief-phase2-r1.md). 490 tests pass; build:vercel writes a 0.97 MB function bundle.
+- Next: phase 2 test round 2 (rerun the prompt that checks round 1 fixes, the Build Output folder, the workflow file, a 30 cycle simulation and the setup guide; round 1 probe in scratchpad p2T1/), then round 3, then whole system rounds, then the final report with test counts.
