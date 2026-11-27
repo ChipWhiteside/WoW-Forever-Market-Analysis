@@ -1,42 +1,99 @@
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BlobStore } from './store.ts';
+import type { BlobInfo, BlobStore } from './store.ts';
+import { LocalStore } from './localStore.ts';
+import { GitHubStore } from './githubStore.ts';
+import { GitHub } from './githubApi.ts';
+import { SealedStore, dataKey } from './crypto.ts';
 
 /**
- * Where the engine's files live in the blob store (docs/phase2-plan.md). The cloud cycle (src/cloud/run.ts) writes
- * them; the site reads them.
+ * The one owner of where the cloud's files live and how they move (brief item 6). The cycle (src/cloud/run.ts)
+ * writes them; the site (src/cloud/vercelHandler.ts) reads them.
  *
- * - `wowf.db.gz`   the engine database, gzipped. Gzipped because the raw file is over 100 MB and Supabase's free plan
- *                  is believed to cap one upload at 50 MB; gzip brings Chip's database to about 33 MB.
- * - `results.json` the /api/flips payload, exactly what GET /api/flips answers.
- * - `raw/<day>/<house>-<kind>-<publishedAt>.json.gz`  raw snapshots, the same layout as DATA_DIR/raw.
- * - `datasets/<path>.gz`  the static dataset caches (wago, EG Link), the same layout as DATA_DIR/datasets.
- * - `locks/<name>.json`   lock objects (src/cloud/store.ts).
+ * Objects, in the cloud store (release `data`) and, for the database, also in the Actions cache folder:
+ * - `wowf-<publish time ms>.db.gz`  the engine database, gzipped, sealed. A new name each publish; the newest 2 kept.
+ * - `results.json`  the /api/flips payload, exactly what GET /api/flips answers. Overwritten each run.
+ * - `ledger.json`   every user action row and the inbox events already applied (src/server/ledger.ts ledgerFile).
+ * - `events/<time>-<random>.json`  the site's writes waiting for the next cycle (src/cloud/inbox.ts).
+ * Raw snapshots and datasets never leave the Actions cache folder.
  */
-export const DB_KEY = 'wowf.db.gz';
+export const DB_PREFIX = 'wowf-';
 export const RESULTS_KEY = 'results.json';
-export const RAW_PREFIX = 'raw/';
-export const DATASETS_PREFIX = 'datasets/';
-/** The one lock every writer takes: the hourly cycle and the site's writes. */
-export const ENGINE_LOCK = 'engine';
+export const LEDGER_KEY = 'ledger.json';
+export const DB_KEEP_REMOTE = 2;
+export const DB_KEEP_CACHE = 1;
 
-/** Download the database into dir/wowf.db. Returns its ETag, or null when the store has none yet (nothing written). */
-export async function pullDb(store: BlobStore, dir: string): Promise<{ etag: string | null; bytes: number } | null> {
-  const got = await store.get(DB_KEY);
+export const dbKey = (publishedAt: number) => `${DB_PREFIX}${publishedAt}.db.gz`;
+/** The publish time in a database key, or null for any other key. */
+export function dbTime(key: string): number | null {
+  const m = /^wowf-(\d+)\.db\.gz$/.exec(key);
+  return m ? Number(m[1]) : null;
+}
+
+/** The newest database object in a listing, or null. */
+export function newestDb(listing: BlobInfo[]): (BlobInfo & { at: number }) | null {
+  let best: (BlobInfo & { at: number }) | null = null;
+  for (const o of listing) { const at = dbTime(o.key); if (at !== null && (!best || at > best.at)) best = { ...o, at }; }
+  return best;
+}
+
+/** Download a database object into dir/file (default wowf.db), removing any WAL left there. Returns its gzipped size. */
+export async function pullDb(store: BlobStore, key: string, dir: string, file = 'wowf.db'): Promise<number | null> {
+  const got = await store.get(key);
   if (!got) return null;
   mkdirSync(dir, { recursive: true });
-  for (const f of ['wowf.db', 'wowf.db-wal', 'wowf.db-shm']) rmSync(join(dir, f), { force: true });
-  writeFileSync(join(dir, 'wowf.db'), gunzipSync(got.body));
-  return { etag: got.etag, bytes: got.body.length };
+  for (const s of ['', '-wal', '-shm']) rmSync(join(dir, file + s), { force: true });
+  writeFileSync(join(dir, file), gunzipSync(got.body));
+  return got.body.length;
 }
 
 /**
- * Upload dir/wowf.db. The caller must have closed the database (or checkpointed it) so the file holds every write.
- * Returns the bytes sent.
+ * Upload dir/wowf.db under a new name to each store, then delete the older names beyond `keep`: new first, old after,
+ * so a reader always finds a whole database. The caller must have checkpointed the WAL. Returns the gzipped size.
  */
-export async function pushDb(store: BlobStore, dir: string): Promise<number> {
+export async function pushDb(targets: Array<{ store: BlobStore; keep: number }>, dir: string, opts: { at?: number; replaces?: string | null } = {}): Promise<{ key: string; bytes: number }> {
   const body = gzipSync(readFileSync(join(dir, 'wowf.db')), { level: 6 });
-  await store.put(DB_KEY, body, 'application/gzip');
-  return body.length;
+  const key = dbKey(opts.at ?? Date.now());
+  for (const t of targets) {
+    await t.store.put(key, body, 'application/gzip');
+    // `replaces`: an earlier copy from the same cycle, so a second publish in one run never pushes out the last run's.
+    if (opts.replaces && opts.replaces !== key) await t.store.delete(opts.replaces);
+    const old = (await t.store.list(DB_PREFIX)).filter(o => dbTime(o.key) !== null).sort((a, b) => dbTime(b.key)! - dbTime(a.key)!).slice(t.keep);
+    for (const o of old) await t.store.delete(o.key);
+  }
+  return { key, bytes: body.length };
 }
+
+export const putJson = (store: BlobStore, key: string, body: string) => store.put(key, new TextEncoder().encode(body), 'application/json');
+export async function getJson<T>(store: BlobStore, key: string): Promise<T | null> {
+  const got = await store.get(key);
+  return got ? JSON.parse(new TextDecoder().decode(got.body)) as T : null;
+}
+
+export interface CloudEnv {
+  DATA_KEY?: string; GITHUB_TOKEN?: string; GITHUB_REPO?: string; GITHUB_REPOSITORY?: string; GITHUB_BRANCH?: string;
+  STORE?: string; STORE_DIR?: string; SITE_PASSWORD?: string; SESSION_SECRET?: string;
+  [k: string]: string | undefined;
+}
+
+/**
+ * The cloud store from the environment, always sealed with DATA_KEY (it throws without one: fail closed).
+ * GitHub with GITHUB_TOKEN and GITHUB_REPO (Vercel) or GITHUB_REPOSITORY (set by Actions). STORE=local with STORE_DIR
+ * runs against a folder instead, for trying the cloud path on a laptop.
+ */
+export function storeFromEnv(env: CloudEnv = process.env, fetchFn?: typeof fetch): SealedStore {
+  const key = dataKey(env);
+  if (env.STORE === 'local') {
+    if (!env.STORE_DIR) throw new Error('STORE=local needs STORE_DIR');
+    return new SealedStore(new LocalStore(env.STORE_DIR), key);
+  }
+  return new SealedStore(new GitHubStore(githubFromEnv(env, fetchFn)), key);
+}
+
+export function githubFromEnv(env: CloudEnv = process.env, fetchFn?: typeof fetch): GitHub {
+  return new GitHub({ token: env.GITHUB_TOKEN ?? '', repo: env.GITHUB_REPO || env.GITHUB_REPOSITORY || '', fetchFn });
+}
+
+/** The sealed copy of the database kept in the Actions cache folder, for the restore that skips a download. */
+export const cacheStore = (cacheDir: string, env: CloudEnv = process.env) => new SealedStore(new LocalStore(join(cacheDir, 'db')), dataKey(env));

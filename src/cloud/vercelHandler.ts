@@ -1,25 +1,36 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, InjectOptions } from 'fastify';
 import { buildServer } from '../server/server.ts';
-import { makeAuth } from '../server/auth.ts';
+import { makeAuth, LOCAL_USER, type AuthConfig } from '../server/auth.ts';
+import { ledgerView, ledgerRows } from '../server/ledger.ts';
 import type { DB } from '../store/db.ts';
-import type { BlobStore } from './store.ts';
-import { getDb, invalidateDb, withWriteDb, DbLockHeldError } from './dbCache.ts';
-import { runCloudCycle, type CloudEnv } from './run.ts';
+import type { BlobInfo, BlobStore } from './store.ts';
+import { siteDb, dryRun, cachedJson } from './dbCache.ts';
+import { RESULTS_KEY, LEDGER_KEY } from './layout.ts';
+import { addEvent, readEvents, pendingActions, isSettingsWrite, appliedKeys, type LedgerFile } from './inbox.ts';
+import { dispatchOrJoin, runStatus, type GitHub } from './githubApi.ts';
 
 /**
- * The site's one Vercel function (docs/phase2-plan.md item 4): every /api request goes through the existing Fastify
- * server by inject, so each route works unchanged.
- * - GET and HEAD read the cached, read only database.
- * - Login and logout touch no data, so they also use the read copy and never wait for the lock.
- * - Every other write runs under the store lock on a fresh copy, which is uploaded when the route answers below 400.
- * - Refresh runs the cloud cycle inline. A held lock answers 409.
+ * The site's one Vercel function (brief item 6). Every /api request goes through the existing Fastify server by inject,
+ * so each route works unchanged. The site never writes the database:
+ * - GET /api/flips is results.json and GET /api/ledger is ledger.json plus the inbox, so the common pages never wait
+ *   for the database; every other GET reads the newest database asset, cached in /tmp by asset id.
+ * - A write is tried on the site's copy and rolled back (dbCache dryRun). A refusal answers as the route does; a
+ *   success is saved as an inbox event and answers 202 with `pending: true`. GET /api/settings lays pending settings over.
+ * - Refresh starts the collect workflow, or joins the run already queued or running, and answers 202.
+ * - Login, logout and me touch no data.
  */
-export interface HandlerOpts { store: BlobStore; env: CloudEnv; dir?: string; runCycle?: typeof runCloudCycle }
+export interface HandlerOpts {
+  store: BlobStore;
+  /** For Refresh; null when the site runs on a folder store. */
+  gh: GitHub | null;
+  env: { SITE_PASSWORD?: string; SESSION_SECRET?: string; GITHUB_BRANCH?: string };
+  dir?: string;
+  /** Workflow dispatch timing, for tests. */
+  dispatch?: { findTries?: number; findEveryMs?: number };
+}
 
-const NO_LOCK = new Set(['/api/login', '/api/logout']);
-const HOP = new Set(['connection', 'transfer-encoding', 'keep-alive']);
+const HOP = new Set(['connection', 'transfer-encoding', 'keep-alive', 'content-length']);
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -32,62 +43,84 @@ function send(res: ServerResponse, status: number, headers: Record<string, unkno
   res.statusCode = status;
   res.end(body);
 }
-const json = (res: ServerResponse, status: number, body: unknown) => send(res, status, { 'content-type': 'application/json; charset=utf-8' }, JSON.stringify(body));
-const isLockError = (e: unknown) => e instanceof DbLockHeldError || /\block\b/i.test(String((e as Error)?.message ?? ''));
+const json = (res: ServerResponse, status: number, body: unknown) => send(res, status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, JSON.stringify(body));
+const runView = (r: { id: number; status: string; conclusion: string | null; html_url: string } | null) =>
+  r ? { runId: r.id, state: r.status, conclusion: r.conclusion, url: r.html_url } : { runId: null, state: 'starting', conclusion: null, url: null };
 
 export function makeHandler(o: HandlerOpts) {
-  const authCfg = { password: o.env.SITE_PASSWORD, secret: o.env.SESSION_SECRET };
+  const authCfg: AuthConfig = { password: o.env.SITE_PASSWORD, secret: o.env.SESSION_SECRET };
   const auth = makeAuth(authCfg);
-  const runCycle = o.runCycle ?? runCloudCycle;
   const apps = new WeakMap<DB, FastifyInstance>();
-  const build = (db: DB) => buildServer({ db, engine: null, client: null, port: 0, dataDir: o.dir ?? '/tmp', auth: authCfg });
-  const readApp = async () => {
-    const { db } = await getDb(o.store, { dir: o.dir });
-    let app = apps.get(db);
-    if (!app) { app = build(db); apps.set(db, app); }
-    return app;
-  };
+  const appFor = (db: DB) => { let a = apps.get(db); if (!a) { a = buildServer({ db, engine: null, client: null, port: 0, dataDir: o.dir ?? '/tmp', auth: authCfg }); apps.set(db, a); } return a; };
 
   return async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const method = (req.method ?? 'GET').toUpperCase();
       const url = req.url ?? '/';
-      const path = url.split('?')[0]!;
+      const [path, qs] = url.split('?') as [string, string | undefined];
+      const query = new URLSearchParams(qs ?? '');
+      const user = auth.userOf(req.headers.cookie);
+      const signedOut = auth.required && !user;
       const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(req);
       const inject: InjectOptions = { method: method as InjectOptions['method'], url, headers: req.headers as Record<string, string>, ...(body?.length ? { payload: body } : {}) };
+      const isApi = path.startsWith('/api/') && !['/api/login', '/api/logout', '/api/me'].includes(path);
+      if (signedOut && isApi) return json(res, 401, { error: 'Sign in first.', login: true });
 
+      // Refresh: start the hourly workflow now, or join the run already going.
       if (method === 'POST' && path === '/api/flips/refresh') {
-        if (auth.required && !auth.userOf(req.headers.cookie)) return json(res, 401, { error: 'Sign in first.', login: true });
-        let r: Awaited<ReturnType<typeof runCloudCycle>>;
-        try { r = await runCycle(o.store, o.env); } catch (e) {
-          if (isLockError(e)) return json(res, 409, { error: 'Busy: the hourly run holds the lock. Try again in a minute.' });
-          throw e;
-        }
-        invalidateDb(o.store);
-        const { db } = await getDb(o.store, { dir: o.dir });
-        const run = db.prepare('SELECT at, data_at, ms, complete, report FROM flip_runs ORDER BY at DESC LIMIT 1').get() as { at: number; data_at: number; ms: number; complete: number; report: string } | undefined;
-        return json(res, 200, {
-          status: r?.status ?? 'new', message: r?.message ?? 'Cloud run done: sales counted and flips rerun.', errors: r?.errors ?? [], publishes: [],
-          run: run ? { ...run, complete: !!run.complete, report: JSON.parse(run.report) } : null,
-        });
+        if (!o.gh) return json(res, 503, { error: 'Refresh needs GITHUB_TOKEN and GITHUB_REPO on the site.' });
+        const r = await dispatchOrJoin(o.gh, { ref: o.env.GITHUB_BRANCH || 'main', ...o.dispatch });
+        return json(res, 202, { status: 'running', joined: r.joined, since: r.since, ...runView(r.run),
+          message: r.joined ? 'An update is already running on GitHub; waiting for it. Usually 1 to 2 minutes.' : 'Running on GitHub, usually 1 to 2 minutes.' });
+      }
+      if (method === 'GET' && path === '/api/flips/refresh/status') {
+        if (!o.gh) return json(res, 503, { error: 'Refresh needs GITHUB_TOKEN and GITHUB_REPO on the site.' });
+        const run = Number(query.get('run')) || undefined;
+        return json(res, 200, runView(await runStatus(o.gh, { run, since: Number(query.get('since')) || undefined })));
       }
 
-      if (method === 'GET' || method === 'HEAD' || NO_LOCK.has(path)) {
-        const r = await (await readApp()).inject(inject);
+      const listing: BlobInfo[] = await o.store.list('');
+      if (method === 'GET' && path === '/api/flips' && query.get('gone') !== '1') {
+        const results = await cachedJson<unknown>(o.store, listing, RESULTS_KEY);
+        if (results) return json(res, 200, results);
+      }
+      if (method === 'GET' && path === '/api/ledger') {
+        let file = await cachedJson<LedgerFile>(o.store, listing, LEDGER_KEY);
+        // Before the first cycle publishes ledger.json: the same rows from the database.
+        if (!file) { const s = await siteDb(o.store, listing, { dir: o.dir }); file = { rows: ledgerRows(s.ro), applied: appliedKeys(s.ro) }; }
+        const results = await cachedJson<{ flips: Array<{ key: string; detail: { name?: string } }> }>(o.store, listing, RESULTS_KEY);
+        const flipName = new Map((results?.flips ?? []).map(f => [f.key, f.detail?.name ?? null]));
+        const didName = new Map(file.rows.map(r => [r.id, r.name]));
+        const pending = pendingActions(await readEvents(o.store), file.applied, (k, id) => (k ? flipName.get(k) : didName.get(id!)) ?? null);
+        return json(res, 200, { ...ledgerView(file.rows, user ?? LOCAL_USER), pending });
+      }
+
+      const s = await siteDb(o.store, listing, { dir: o.dir });
+      if (method === 'GET' && path === '/api/settings') {
+        // Saved settings count at the next update, but the page shows them now: replay the pending ones on a rolled back copy.
+        const writes = (await readEvents(o.store)).filter(e => e.ev && isSettingsWrite(e.ev));
+        if (writes.length) {
+          const r = await dryRun(s, async db => {
+            const app = appFor(db);
+            for (const { ev } of writes) await app.inject({ method: 'PUT', url: ev!.url, headers: { ...(req.headers as Record<string, string>), 'content-type': ev!.contentType ?? 'application/json' }, payload: ev!.body });
+            return app.inject(inject);
+          });
+          return send(res, r.statusCode, r.headers, r.rawPayload);
+        }
+      }
+      if (method === 'GET' || method === 'HEAD' || !isApi) {
+        const r = await appFor(s.ro).inject(inject);
         return send(res, r.statusCode, r.headers, r.rawPayload);
       }
 
-      const owner = `vercel:${randomBytes(4).toString('hex')}`;
-      const r = await withWriteDb(o.store, owner, async db => {
-        const app = build(db);
-        try {
-          const out = await app.inject(inject);
-          return { commit: out.statusCode < 400, value: out };
-        } finally { await app.close(); }
-      }, { dir: o.dir });
-      return send(res, r.statusCode, r.headers, r.rawPayload);
+      // A write: try it on a rolled back copy, then save it for the next cycle.
+      const tried = await dryRun(s, db => appFor(db).inject(inject));
+      if (tried.statusCode >= 400) return send(res, tried.statusCode, tried.headers, tried.rawPayload);
+      const event = await addEvent(o.store, { at: Date.now(), user: user ?? LOCAL_USER, method, url, contentType: String(req.headers['content-type'] ?? '') || null, body: body?.toString('utf8') ?? '' });
+      let answer: Record<string, unknown> = {};
+      try { const j = JSON.parse(tried.body) as unknown; answer = j && typeof j === 'object' && !Array.isArray(j) ? j as Record<string, unknown> : { result: j }; } catch { /* not JSON */ }
+      return json(res, 202, { ...answer, pending: true, event, message: 'Saved, counts at the next update.' });
     } catch (e) {
-      if (isLockError(e)) return json(res, 409, { error: 'Busy: the hourly run holds the lock. Try again in a minute.' });
       return json(res, 500, { error: (e as Error).message });
     }
   };

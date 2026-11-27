@@ -40,12 +40,19 @@ export function pruneLogs(db: DB, now = Date.now()): void {
   db.prepare('DELETE FROM poll_log WHERE at < ?').run(now - 14 * 86_400_000);
 }
 
-export function dailyMaintenance(db: DB, dataDir: string, now = Date.now()): Record<string, unknown> {
+/**
+ * How long things are kept. Local mode keeps the defaults; the cloud keeps less (src/cloud/run.ts CLOUD_RETENTION),
+ * so its database stays small, and takes no local backups (the release keeps the last two databases).
+ */
+export interface Retention { statsKeepDays: number; rawKeepDays: number; rawKeepDaysPinned: number; backups: boolean }
+export const LOCAL_RETENTION: Retention = { statsKeepDays: 90, rawKeepDays: 2, rawKeepDaysPinned: 14, backups: true };
+
+export function dailyMaintenance(db: DB, dataDir: string, now = Date.now(), keep: Retention = LOCAL_RETENTION): Record<string, unknown> {
   const pinned = new Set((db.prepare('SELECT id FROM houses WHERE pinned = 1').all() as Array<{ id: number }>).map(r => r.id));
-  const rawRemoved = pruneRaw(dataDir, 2, 14, pinned);
-  const rolled = rollup(db, 90, now);
+  const rawRemoved = pruneRaw(dataDir, keep.rawKeepDays, keep.rawKeepDaysPinned, pinned);
+  const rolled = rollup(db, keep.statsKeepDays, now);
   const trimmed = trimUnpinned(db, now);
   pruneLogs(db, now);
-  const file = backup(db, dataDir);
+  const file = keep.backups ? backup(db, dataDir) : null;
   return { rawRemoved, rolled, trimmed, backup: file };
 }

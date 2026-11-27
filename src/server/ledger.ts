@@ -78,21 +78,27 @@ export function registerLedgerRoutes(app: FastifyInstance, db: DB): void {
     return { ok: true, id: Number(r.lastInsertRowid) };
   });
 
-  app.get('/api/ledger', async req => {
-    const rows = db.prepare('SELECT * FROM user_actions ORDER BY at DESC, id DESC').all() as unknown as ActionRow[];
-    const soldBy = new Map<number, { units: number; received: number }>();
-    for (const r of rows) if (r.action === 'sold' && r.did_id != null) {
-      const s = soldBy.get(r.did_id) ?? { units: 0, received: 0 };
-      s.units += r.units; s.received += r.received ?? 0; soldBy.set(r.did_id, s);
-    }
-    const withSold = (r: ActionRow) => r.action === 'did' ? { ...r, soldUnits: soldBy.get(r.id)?.units ?? 0, soldReceived: soldBy.get(r.id)?.received ?? 0 } : r;
-    const me = actor(req);
-    return {
-      me,
-      people: ledgerTotals(rows),
-      // Every "I did this" of the person asking, for the Sold control on the flip card.
-      mine: rows.filter(r => r.action === 'did' && r.username === me).map(withSold),
-      history: rows.slice(0, 500).map(withSold),
-    };
-  });
+  app.get('/api/ledger', async req => ledgerView(ledgerRows(db), actor(req)));
+}
+
+export const ledgerRows = (db: DB) => db.prepare('SELECT * FROM user_actions ORDER BY at DESC, id DESC').all() as unknown as ActionRow[];
+
+/**
+ * What GET /api/ledger answers for `me`, from every action row newest first. The cloud site computes it from the
+ * published ledger.json (src/cloud/vercelHandler.ts), so both paths answer the same.
+ */
+export function ledgerView(rows: ActionRow[], me: string) {
+  const soldBy = new Map<number, { units: number; received: number }>();
+  for (const r of rows) if (r.action === 'sold' && r.did_id != null) {
+    const s = soldBy.get(r.did_id) ?? { units: 0, received: 0 };
+    s.units += r.units; s.received += r.received ?? 0; soldBy.set(r.did_id, s);
+  }
+  const withSold = (r: ActionRow) => r.action === 'did' ? { ...r, soldUnits: soldBy.get(r.id)?.units ?? 0, soldReceived: soldBy.get(r.id)?.received ?? 0 } : r;
+  return {
+    me,
+    people: ledgerTotals(rows),
+    // Every "I did this" of the person asking, for the Sold control on the flip card.
+    mine: rows.filter(r => r.action === 'did' && r.username === me).map(withSold),
+    history: rows.slice(0, 500).map(withSold),
+  };
 }

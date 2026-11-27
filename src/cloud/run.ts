@@ -1,8 +1,5 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir, hostname } from 'node:os';
-import { join, dirname, relative, sep } from 'node:path';
-import { createHash } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import Fastify from 'fastify';
 import { openDb, type DB } from '../store/db.ts';
@@ -10,77 +7,73 @@ import { sleep, type BlizzardClient } from '../blizzard/client.ts';
 import { Engine, type RefreshResult } from '../engine/engine.ts';
 import { RULESET } from '../engine/houses.ts';
 import { KINDS } from '../engine/collector.ts';
-import { rawPath } from '../engine/rawstore.ts';
+import { rawPath, pruneRaw } from '../engine/rawstore.ts';
 import { chipHouses } from '../flips/houses.ts';
+import { NEW_POSTS } from '../rules/flips.ts';
 import { registerFlipRoutes } from '../server/flips.ts';
-import { runDailySteps, startupFills, startupFillsNeeded } from '../engine/dailySteps.ts';
-import type { BlobInfo, BlobStore } from './store.ts';
-import { DB_KEY, RESULTS_KEY, RAW_PREFIX, DATASETS_PREFIX, ENGINE_LOCK, pullDb, pushDb } from './layout.ts';
+import { runDailySteps, startupFills, startupFillsNeeded, type Retention } from '../engine/dailySteps.ts';
+import type { BlobStore } from './store.ts';
+import { RESULTS_KEY, LEDGER_KEY, DB_PREFIX, DB_KEEP_CACHE, DB_KEEP_REMOTE, newestDb, pullDb, pushDb, putJson } from './layout.ts';
+import { readEvents, applyEvents, ledgerFile } from './inbox.ts';
 
 const H = 3600_000;
-/** Raw snapshots pulled for the cycle: the flips read up to 24 hours of new posts, plus slack. */
-export const RAW_PULL_HOURS = 26;
+/**
+ * Raw snapshots kept in the Actions cache folder: the flips read new posts over 72 hours (NEW_POSTS.windowHours) plus
+ * one publish before the window. Pruning works by day folder, so a day goes once its newest file is older than that.
+ */
+export const RAW_KEEP_HOURS = NEW_POSTS.windowHours + 2;
+const RAW_KEEP_DAYS = (RAW_KEEP_HOURS + 24) / 24;
+/** Cloud retention (brief item 7): hourly item_stats 30 days, daily rollups forever, raw as above, no local backups. */
+export const CLOUD_RETENTION: Retention = { statsKeepDays: 30, rawKeepDays: RAW_KEEP_DAYS, rawKeepDaysPinned: RAW_KEEP_DAYS, backups: false };
 
 export interface CloudRunOptions {
-  store: BlobStore;
+  /** The cloud store, sealed: release assets and the inbox (src/cloud/layout.ts storeFromEnv). */
+  remote: BlobStore;
+  /** The sealed database copy in the Actions cache folder (layout.ts cacheStore). */
+  cache: BlobStore;
+  /** The engine's data folder in the Actions cache: raw snapshots and datasets stay here between runs. */
+  dataDir: string;
   client: BlizzardClient;
   webhookUrl?: string | null;
   devWebhookUrl?: string | null;
   appUrl?: string | null;
-  /** How long to wait for Blizzard's next publish before running on the stored data. Default 15. */
+  /** How long to wait for Blizzard's next publish before running on the stored data. Default 15; 0 for Refresh. */
   waitForPublishMin?: number;
   /** Gap between publish probes. Default 60 s. */
   probeEveryMs?: number;
-  rawKeepDays?: number;
-  /** Lock lifetime; a crashed run frees the lock after this. Default 60 min. */
-  lockTtlMs?: number;
-  owner?: string;
   log?: (m: string) => void;
   /** Discord's fetch, for tests. */
   fetchFn?: typeof fetch;
   /** The daily dataset refresh; tests swap it. Default runDailySteps. Returns true when every step worked. */
-  daily?: (engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void) => Promise<boolean>;
+  daily?: (engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void, retention: Retention) => Promise<boolean>;
   /** The start up fills for datasets an update added (trainers, game tables); tests swap it. Default startupFills. */
   fills?: (engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void) => Promise<void>;
-  /** Keep the work folder (for measuring); default removes it. */
-  keepWorkDir?: boolean;
 }
 
 export interface CloudRunResult {
-  status: 'locked' | 'done';
-  message: string;
+  restoredFrom: 'cache' | 'release' | 'fresh';
   refresh: RefreshResult['status'] | null;
   publishes: RefreshResult['publishes'];
+  events: { applied: number; refused: number; skipped: number };
   waitedMs: number;
   ms: number;
   bytesDown: number;
   bytesUp: number;
-  rawPulled: number;
-  rawPushed: number;
-  rawPruned: number;
   daily: 'not due' | 'ok' | 'failed';
   dbBytes: number;
-  workDir: string;
+  dbGzBytes: number;
+  rawFiles: number;
+  message: string;
 }
 
-/** Counts the bytes that cross the store, so each cycle can say what it cost. */
+/** Counts the bytes that cross the cloud store, so each cycle can say what it cost. */
 class Counted implements BlobStore {
   down = 0; up = 0;
   constructor(private s: BlobStore) {}
   async get(key: string) { const r = await this.s.get(key); if (r) this.down += r.body.length; return r; }
-  head(key: string) { return this.s.head(key); }
   async put(key: string, body: Uint8Array, contentType?: string) { await this.s.put(key, body, contentType); this.up += body.length; }
   delete(key: string) { return this.s.delete(key); }
-  async deleteMany(keys: string[]) { if (this.s.deleteMany) await this.s.deleteMany(keys); else for (const k of keys) await this.s.delete(k); }
   list(prefix: string) { return this.s.list(prefix); }
-  lock(name: string, ttlMs: number, owner: string) { return this.s.lock(name, ttlMs, owner); }
-  async lockHolder(name: string) { return this.s.lockHolder ? this.s.lockHolder(name) : null; }
-}
-
-/** `raw/2026-11-26/111-auctions-1795703173000.json.gz` to its parts; null for anything else. */
-export function parseRawKey(key: string): { day: string; house: number; kind: string; publishedAt: number; file: string } | null {
-  const m = /^raw\/(\d{4}-\d{2}-\d{2})\/((\d+)-(auctions|commodities)-(\d+)\.json\.gz)$/.exec(key);
-  return m ? { day: m[1]!, file: m[2]!, house: Number(m[3]), kind: m[4]!, publishedAt: Number(m[5]) } : null;
 }
 
 /** Chip's houses and the Last-Modified of their newest stored publish per kind. */
@@ -93,10 +86,7 @@ function lastPublishes(db: DB): Array<{ house: number; kind: string; lastModifie
   return out;
 }
 
-/**
- * Wait for Blizzard's next publish with If-Modified-Since, before taking the lock, so the site's writes are never
- * blocked by the wait. Returns as soon as any of Chip's houses has a publish newer than the stored one.
- */
+/** Wait for Blizzard's next publish with If-Modified-Since. True as soon as any of Chip's houses has a newer one. */
 async function waitForPublish(client: BlizzardClient, last: Array<{ house: number; kind: string; lastModified: string | null }>, waitMs: number, everyMs: number, log: (m: string) => void): Promise<boolean> {
   const until = Date.now() + waitMs;
   if (last.some(l => !l.lastModified)) return true;
@@ -113,57 +103,6 @@ async function waitForPublish(client: BlizzardClient, last: Array<{ house: numbe
   }
 }
 
-const md5 = (b: Uint8Array) => createHash('md5').update(b).digest('hex');
-function walkFiles(root: string): string[] {
-  if (!existsSync(root)) return [];
-  const out: string[] = [];
-  for (const name of readdirSync(root)) {
-    const p = join(root, name);
-    if (statSync(p).isDirectory()) out.push(...walkFiles(p)); else out.push(p);
-  }
-  return out;
-}
-const toKey = (root: string, file: string) => relative(root, file).split(sep).join('/');
-
-/** Pull every cached dataset file into dataDir/datasets. Returns the MD5 of each, by key, to see what changed. */
-async function pullDatasets(store: BlobStore, dataDir: string): Promise<Map<string, string>> {
-  const seen = new Map<string, string>();
-  for (const o of await store.list(DATASETS_PREFIX)) {
-    if (!o.key.endsWith('.gz')) continue;
-    const got = await store.get(o.key);
-    if (!got) continue;
-    const body = gunzipSync(got.body);
-    const rel = o.key.slice(0, -3);
-    const file = join(dataDir, ...rel.split('/'));
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, body);
-    seen.set(rel, md5(body));
-  }
-  return seen;
-}
-
-/** Push dataset files that are new or changed, and remove from the store any the refresh removed. */
-async function pushDatasets(store: BlobStore, dataDir: string, before: Map<string, string>): Promise<number> {
-  let pushed = 0;
-  const now = new Set<string>();
-  for (const file of walkFiles(join(dataDir, 'datasets'))) {
-    const rel = toKey(dataDir, file);
-    now.add(rel);
-    const body = readFileSync(file);
-    if (before.get(rel) === md5(body)) continue;
-    await store.put(`${rel}.gz`, gzipSync(body, { level: 6 }), 'application/gzip');
-    pushed++;
-  }
-  const gone = [...before.keys()].filter(k => !now.has(k)).map(k => `${k}.gz`);
-  if (gone.length) await deleteKeys(store, gone);
-  return pushed;
-}
-
-async function deleteKeys(store: BlobStore, keys: string[]): Promise<void> {
-  if (!keys.length) return;
-  if (store.deleteMany) await store.deleteMany(keys); else for (const k of keys) await store.delete(k);
-}
-
 /** What GET /api/flips answers, from the same route, so the site's static copy can never drift from it. */
 export async function flipsPayload(db: DB): Promise<string> {
   const app = Fastify();
@@ -175,128 +114,109 @@ export async function flipsPayload(db: DB): Promise<string> {
   } finally { await app.close(); }
 }
 
+const removeDb = (dir: string) => { for (const s of ['', '-wal', '-shm']) rmSync(join(dir, `wowf.db${s}`), { force: true }); };
+
 /**
- * One hourly cloud cycle (docs/phase2-plan.md, item 2), through the existing Engine. Safe to rerun: a second run with
- * nothing new polls a 304, reruns the flips on the stored data and rewrites the same files. Safe when the lock is
- * held: it says who holds it and returns status 'locked' without touching anything.
+ * One hourly cloud cycle (docs/phase2-plan.md), through the existing Engine:
+ * 1. Restore the database: the sealed copy in the Actions cache, else the newest release asset (or the release when
+ *    it is newer than the cache), else a fresh one.
+ * 2. Wait for Blizzard's publish (not for Refresh), apply the site's inbox events, poll, collect, count sales, run
+ *    the flips and their alerts: Engine.refresh.
+ * 3. Publish: the database (new asset first, then the old deleted, newest 2 kept), results.json and ledger.json,
+ *    and the sealed copy in the cache. Then delete the applied events.
+ * 4. The daily refresh when due, with cloud retention, then publish again.
+ * The plain database never stays in the cache folder: it is removed whatever happens.
+ * Safe to rerun: a second run with nothing new polls a 304, reruns the flips on the stored data and publishes again.
  */
 export async function cloudRun(opts: CloudRunOptions): Promise<CloudRunResult> {
   const started = Date.now();
   const log = opts.log ?? ((m: string) => console.log(`[${new Date().toISOString()}] ${m}`));
-  const store = new Counted(opts.store);
-  const owner = opts.owner ?? `${hostname()}:${process.pid}`;
-  const workDir = mkdtempSync(join(tmpdir(), 'wowf-cloud-'));
-  for (const sub of ['raw', 'datasets', 'reports', 'backups']) mkdirSync(join(workDir, sub), { recursive: true });
-  const result: CloudRunResult = { status: 'done', message: '', refresh: null, publishes: [], waitedMs: 0, ms: 0, bytesDown: 0, bytesUp: 0,
-    rawPulled: 0, rawPushed: 0, rawPruned: 0, daily: 'not due', dbBytes: 0, workDir };
-  const finish = () => { result.ms = Date.now() - started; result.bytesDown = store.down; result.bytesUp = store.up; if (!opts.keepWorkDir) rmSync(workDir, { recursive: true, force: true }); return result; };
+  const remote = new Counted(opts.remote);
+  const dir = opts.dataDir;
+  for (const sub of ['raw', 'datasets', 'reports']) mkdirSync(join(dir, sub), { recursive: true });
+  const result: CloudRunResult = { restoredFrom: 'fresh', refresh: null, publishes: [], events: { applied: 0, refused: 0, skipped: 0 }, waitedMs: 0, ms: 0,
+    bytesDown: 0, bytesUp: 0, daily: 'not due', dbBytes: 0, dbGzBytes: 0, rawFiles: 0, message: '' };
 
-  // 0. Wait for the publish, outside the lock. The database is pulled read only to learn the last Last-Modified.
-  const t0 = Date.now();
-  let pulled = await pullDb(store, workDir);
-  if (pulled) {
-    const peek = openDb(workDir);
-    const last = lastPublishes(peek);
-    peek.close();
-    const fresh = await waitForPublish(opts.client, last, (opts.waitForPublishMin ?? 15) * 60_000, opts.probeEveryMs ?? 60_000, log);
-    if (!fresh) log(`no new publish within ${opts.waitForPublishMin ?? 15} min, running on the stored data`);
-  }
-  result.waitedMs = Date.now() - t0;
-
-  // 1. Take the lock.
-  const release = await store.lock(ENGINE_LOCK, opts.lockTtlMs ?? 60 * 60_000, owner);
-  if (!release) {
-    const h = await store.lockHolder(ENGINE_LOCK);
-    result.status = 'locked';
-    result.message = `The engine lock is held${h ? ` by ${h.owner} until ${new Date(h.expiresAt).toISOString()}` : ''}. Nothing done; the next run tries again.`;
-    log(result.message);
-    return finish();
-  }
   let db: DB | null = null;
   try {
-    // 2. The database again if it changed while waiting, then the last 26 hours of raw snapshots for Chip's houses.
-    const head = await store.head(DB_KEY);
-    if (!pulled || (head && head.etag !== pulled.etag)) pulled = await pullDb(store, workDir);
-    db = openDb(workDir);
-    const houses = new Set(chipHouses(db).map(h => h.id));
-    const rawListing: BlobInfo[] = await store.list(RAW_PREFIX);
-    const stored = new Set(rawListing.map(o => o.key));
-    const since = Date.now() - RAW_PULL_HOURS * H;
-    for (const o of rawListing) {
-      const k = parseRawKey(o.key);
-      if (!k || !houses.has(k.house) || k.publishedAt < since) continue;
-      const got = await store.get(o.key);
-      if (!got) continue;
-      const file = rawPath(workDir, k.house, k.kind, k.publishedAt);
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, got.body);
-      result.rawPulled++;
-    }
-    // Stored raw paths point at the folder of the run that wrote them; point them at this run's copies.
+    // 1. Restore.
+    removeDb(dir);
+    const inCache = newestDb(await opts.cache.list(DB_PREFIX));
+    const inRelease = newestDb(await remote.list(DB_PREFIX));
+    if (inCache && (!inRelease || inCache.at >= inRelease.at) && await pullDb(opts.cache, inCache.key, dir)) result.restoredFrom = 'cache';
+    else if (inRelease && await pullDb(remote, inRelease.key, dir)) result.restoredFrom = 'release';
+    log(`database restored from ${result.restoredFrom}`);
+    db = openDb(dir);
+
+    // Stored raw paths point at the folder of the run that wrote them; point them at this folder's copies.
     const fix = db.prepare('UPDATE snapshots SET raw_path = ? WHERE id = ?');
-    for (const s of db.prepare('SELECT id, house_id, kind, published_at FROM snapshots WHERE published_at >= ?').all(since) as Array<{ id: number; house_id: number; kind: string; published_at: number }>) {
-      const file = rawPath(workDir, s.house_id, s.kind, s.published_at);
+    for (const s of db.prepare('SELECT id, house_id, kind, published_at FROM snapshots WHERE published_at >= ?').all(Date.now() - RAW_KEEP_HOURS * H - 24 * H) as Array<{ id: number; house_id: number; kind: string; published_at: number }>) {
+      const file = rawPath(dir, s.house_id, s.kind, s.published_at);
       if (existsSync(file)) fix.run(file, s.id);
     }
 
-    // 3. Poll Blizzard for Chip's houses, collect, count sales, run the flips and their alerts: the Engine's refresh.
-    const engine = new Engine(opts.client, db, { dataDir: workDir, webhookUrl: opts.webhookUrl ?? null, devWebhookUrl: opts.devWebhookUrl ?? null,
+    // 2. Wait, apply the inbox, refresh.
+    const t0 = Date.now();
+    if (result.restoredFrom !== 'fresh' && (opts.waitForPublishMin ?? 15) > 0) {
+      const fresh = await waitForPublish(opts.client, lastPublishes(db), (opts.waitForPublishMin ?? 15) * 60_000, opts.probeEveryMs ?? 60_000, log);
+      if (!fresh) log(`no new publish within ${opts.waitForPublishMin ?? 15} min, running on the stored data`);
+    }
+    result.waitedMs = Date.now() - t0;
+    const engine = new Engine(opts.client, db, { dataDir: dir, webhookUrl: opts.webhookUrl ?? null, devWebhookUrl: opts.devWebhookUrl ?? null,
       appUrl: opts.appUrl ?? null, log, fetchFn: opts.fetchFn });
-    await engine.init();
+    await engine.init(); // the house index first, so a house pin from the inbox finds its house on a fresh database
+    const events = await readEvents(remote);
+    const applied = await applyEvents(db, events, log);
+    result.events = { applied: applied.applied.filter(a => a.status > 0 && a.status < 400).length, refused: applied.applied.filter(a => a.status === 0 || a.status >= 400).length, skipped: applied.skipped };
     const r = await engine.refresh({ waitMs: 0 });
     result.refresh = r.status;
     result.publishes = r.publishes;
     if (r.errors.length) log(`poll errors: ${r.errors.join(' | ')}`);
 
-    // 4 and 5. Push the new raw snapshots, then the database, then results.json.
-    const pushRaw = async () => {
-      for (const file of walkFiles(join(workDir, 'raw'))) {
-        const key = toKey(workDir, file);
-        if (stored.has(key) || !parseRawKey(key)) continue;
-        await store.put(key, readFileSync(file), 'application/gzip');
-        stored.add(key);
-        result.rawPushed++;
-      }
-    };
-    const pushAll = async () => {
-      await pushRaw();
+    // 3. Publish, then drop the applied events (ledger.json lists them, so the site never shows one twice meanwhile).
+    let lastKey: string | null = null;
+    const publish = async () => {
       const payload = await flipsPayload(db!);
       db!.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-      result.dbBytes = await pushDb(store, workDir);
-      await store.put(RESULTS_KEY, new TextEncoder().encode(payload), 'application/json');
+      const pushed = await pushDb([{ store: remote, keep: DB_KEEP_REMOTE }, { store: opts.cache, keep: DB_KEEP_CACHE }], dir, { replaces: lastKey });
+      lastKey = pushed.key;
+      result.dbGzBytes = pushed.bytes;
+      await putJson(remote, RESULTS_KEY, payload);
+      await putJson(remote, LEDGER_KEY, ledgerFile(db!));
     };
-    await pushAll();
+    await publish();
+    for (const e of events) await remote.delete(e.key);
 
-    // The static datasets, daily, in the same cycle, after this hour's results are out. Their files are cached in the store.
+    // 4. The static datasets, daily, after this hour's results are out. Their files stay in the cache folder.
     const need = startupFillsNeeded(engine, db);
     if (engine.dailyDue() || need.trainers || need.gamedata) {
-      const before = await pullDatasets(store, workDir);
-      await (opts.fills ?? startupFills)(engine, db, opts.client, workDir, log);
+      await (opts.fills ?? startupFills)(engine, db, opts.client, dir, log);
       if (engine.dailyDue()) {
-        const ok = await (opts.daily ?? runDailySteps)(engine, db, opts.client, workDir, log);
+        const ok = await (opts.daily ?? runDailySteps)(engine, db, opts.client, dir, log, CLOUD_RETENTION);
         result.daily = ok ? 'ok' : 'failed';
         if (ok) engine.markDaily();
       }
-      const n = await pushDatasets(store, workDir, before);
-      log(`datasets: ${n} files pushed`);
-      await pushAll();
+      await publish();
     }
-
-    // 6. Prune raw snapshots older than the window.
-    const cutoff = Date.now() - (opts.rawKeepDays ?? 14) * 86_400_000;
-    const old = [...stored].filter(k => { const p = parseRawKey(k); return p && p.publishedAt < cutoff; });
-    await deleteKeys(store, old);
-    result.rawPruned = old.length;
-
-    result.message = `cycle ${r.status}: ${r.publishes.length} publishes, ${r.flips?.flips.length ?? 0} flips, ${r.alerts?.sent ?? 0} alerted; raw ${result.rawPulled} pulled, ${result.rawPushed} pushed, ${result.rawPruned} pruned`;
+    // Raw beyond the window goes every cycle, not only with the daily maintenance, so the cache stays small.
+    pruneRaw(dir, RAW_KEEP_DAYS, RAW_KEEP_DAYS, new Set());
+    result.rawFiles = countRaw(dir);
+    result.dbBytes = (db.prepare('SELECT page_count * page_size n FROM pragma_page_count(), pragma_page_size()').get() as { n: number }).n;
+    result.message = `cycle ${r.status}: ${r.publishes.length} publishes, ${r.flips?.flips.length ?? 0} flips, ${r.alerts?.sent ?? 0} alerted; `
+      + `${result.events.applied} inbox events applied, ${result.events.refused} refused; database ${(result.dbBytes / 1e6).toFixed(1)} MB, ${(result.dbGzBytes / 1e6).toFixed(1)} MB sealed`;
     log(result.message);
-  } catch (e) {
-    if (!opts.keepWorkDir) rmSync(workDir, { recursive: true, force: true });
-    throw e;
   } finally {
     try { db?.close(); } catch { /* already closed */ }
-    // 7. Release the lock, whatever happened.
-    await release();
+    removeDb(dir);
+    result.ms = Date.now() - started;
+    result.bytesDown = remote.down;
+    result.bytesUp = remote.up;
   }
-  return finish();
+  return result;
+}
+
+function countRaw(dir: string): number {
+  const root = join(dir, 'raw');
+  if (!existsSync(root)) return 0;
+  return readdirSync(root).reduce((n, day) => n + readdirSync(join(root, day)).length, 0);
 }

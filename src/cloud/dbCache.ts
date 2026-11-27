@@ -1,89 +1,69 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDb, type DB } from '../store/db.ts';
-import type { BlobStore } from './store.ts';
+import type { BlobInfo, BlobStore } from './store.ts';
+import { newestDb, pullDb } from './layout.ts';
 
 const { DatabaseSync } = await import('node:sqlite');
 
 /**
- * The site's database on Vercel (docs/phase2-plan.md item 4). The engine's wowf.db lives in the BlobStore. Reads use
- * a copy in the function's temp folder, downloaded again only when the stored ETag changes, opened read only.
- * Writes take the store lock, download the newest copy, apply, upload and release.
+ * The site's copies on Vercel (brief item 6). The newest database asset is downloaded into the function's temp folder
+ * once per asset (its id is the ETag), so warm calls reuse it, and opened twice:
+ * - `ro`, read only, for every GET;
+ * - `rw`, only for dry runs: a write is tried inside a transaction that is always rolled back, so the site answers a
+ *   refusal at once without ever changing its copy (src/cloud/inbox.ts). Dry runs are serialised.
+ * The small JSON assets (results.json, ledger.json) are cached by ETag the same way.
  */
-export const DB_KEY = 'wowf.db';
-/** The lock the hourly cloud run also takes, so a write never lands in the middle of a cycle. */
-export const DB_LOCK = 'wowf';
-export const WRITE_LOCK_TTL_MS = 120_000;
+export interface SiteDb { key: string | null; etag: string | null; path: string; ro: DB; rw: DB }
 
-export class DbLockHeldError extends Error {
-  constructor() { super('the hourly run or another write holds the lock; try again in a minute'); this.name = 'DbLockHeldError'; }
-}
+const dbs = new WeakMap<BlobStore, SiteDb>();
+const jsons = new WeakMap<BlobStore, Map<string, { etag: string | null; value: unknown }>>();
+const queue = new WeakMap<SiteDb, Promise<unknown>>();
 
-interface Cached { etag: string | null; db: DB; path: string }
-const cache = new WeakMap<BlobStore, Cached>();
-const dirOf = (dir?: string) => { const d = dir ?? join(tmpdir(), 'wowf-db'); mkdirSync(d, { recursive: true }); return d; };
-const tmpName = (dir: string, tag: string) => join(dir, `${tag}-${Date.now()}-${randomBytes(4).toString('hex')}.db`);
 const removeDb = (p: string) => { for (const s of ['', '-wal', '-shm']) rmSync(p + s, { force: true }); };
 
-/**
- * Write the stored bytes (or nothing, for a new database) to `path` and bring the schema up to date there. The
- * migration runs on this temp copy only; a read never uploads.
- */
-function materialise(path: string, body: Uint8Array | null): void {
-  if (body) writeFileSync(path, body);
-  const parts = path.split('/'); const file = parts.pop()!;
-  openDb(parts.join('/'), file).close();
+/** The site's database for this listing; downloads only when the newest database asset changed. */
+export async function siteDb(store: BlobStore, listing: BlobInfo[], opts: { dir?: string } = {}): Promise<SiteDb> {
+  const newest = newestDb(listing);
+  const c = dbs.get(store);
+  if (c && c.key === (newest?.key ?? null) && c.etag === (newest?.etag ?? null)) return c;
+  const dir = opts.dir ?? join(tmpdir(), 'wowf-db');
+  mkdirSync(dir, { recursive: true });
+  const file = `site-${Date.now()}-${randomBytes(4).toString('hex')}.db`;
+  // No database yet (before the first cycle): the empty schema.
+  if (newest) await pullDb(store, newest.key, dir, file);
+  openDb(dir, file).close(); // brings an older schema up to date, on this copy only
+  const path = join(dir, file);
+  const next: SiteDb = { key: newest?.key ?? null, etag: newest?.etag ?? null, path, ro: new DatabaseSync(path, { readOnly: true }), rw: new DatabaseSync(path) };
+  if (c) { for (const d of [c.ro, c.rw]) { try { d.close(); } catch { /* closed */ } } removeDb(c.path); }
+  dbs.set(store, next);
+  return next;
 }
 
-/** The read only database for GETs. Downloads only when the stored ETag differs from the cached copy's. */
-export async function getDb(store: BlobStore, opts: { dir?: string } = {}): Promise<{ db: DB; etag: string | null; fresh: boolean }> {
-  const head = await store.head(DB_KEY);
-  const etag = head?.etag ?? null;
-  const c = cache.get(store);
-  // A store without ETags always downloads; a missing database is the empty schema until the first cloud run.
-  if (c && etag !== null && c.etag === etag) return { db: c.db, etag, fresh: false };
-  const got = head ? await store.get(DB_KEY) : null;
-  const path = tmpName(dirOf(opts.dir), 'read');
-  materialise(path, got?.body ?? null);
-  const db = new DatabaseSync(path, { readOnly: true });
-  if (c) { try { c.db.close(); } catch { /* already closed */ } removeDb(c.path); }
-  cache.set(store, { etag: got?.etag ?? etag, db, path });
-  return { db, etag: got?.etag ?? etag, fresh: true };
+/** Run fn on the writable connection inside a transaction that is always rolled back. One at a time. */
+export function dryRun<T>(s: SiteDb, fn: (db: DB) => Promise<T>): Promise<T> {
+  const prev = queue.get(s) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(async () => {
+    s.rw.exec('BEGIN');
+    try { return await fn(s.rw); } finally { s.rw.exec('ROLLBACK'); }
+  });
+  queue.set(s, run);
+  return run;
 }
 
-/** Forget the cached read copy, so the next GET downloads. */
-export function invalidateDb(store: BlobStore): void {
-  const c = cache.get(store);
-  if (!c) return;
-  cache.delete(store);
-  try { c.db.close(); } catch { /* fine */ }
-  removeDb(c.path);
-}
-
-/**
- * Run `fn` on a writable copy of the newest database under the store lock. When it returns commit true the database
- * goes back to the store. Throws DbLockHeldError when someone else holds the lock.
- */
-export async function withWriteDb<T>(store: BlobStore, owner: string, fn: (db: DB) => Promise<{ commit: boolean; value: T }>, opts: { dir?: string } = {}): Promise<T> {
-  const release = await store.lock(DB_LOCK, WRITE_LOCK_TTL_MS, owner);
-  if (!release) throw new DbLockHeldError();
-  const path = tmpName(dirOf(opts.dir), 'write');
-  try {
-    const got = await store.get(DB_KEY);
-    materialise(path, got?.body ?? null);
-    const parts = path.split('/'); const file = parts.pop()!;
-    const db = openDb(parts.join('/'), file);
-    let r: { commit: boolean; value: T };
-    try { r = await fn(db); } finally { db.close(); } // close checkpoints the WAL into the main file
-    if (r.commit) {
-      await store.put(DB_KEY, new Uint8Array(readFileSync(path)), 'application/vnd.sqlite3');
-      invalidateDb(store);
-    }
-    return r.value;
-  } finally {
-    removeDb(path);
-    await release();
-  }
+/** A small JSON asset, downloaded again only when its ETag in the listing changed; null when it is not there. */
+export async function cachedJson<T>(store: BlobStore, listing: BlobInfo[], key: string): Promise<T | null> {
+  const o = listing.find(x => x.key === key);
+  if (!o) return null;
+  let m = jsons.get(store);
+  if (!m) jsons.set(store, (m = new Map()));
+  const hit = m.get(key);
+  if (hit && o.etag !== null && hit.etag === o.etag) return hit.value as T;
+  const got = await store.get(key);
+  if (!got) return null;
+  const value = JSON.parse(new TextDecoder().decode(got.body)) as T;
+  m.set(key, { etag: o.etag, value });
+  return value;
 }

@@ -3,14 +3,16 @@ import type { BlizzardClient } from '../blizzard/client.ts';
 import type { Engine } from './engine.ts';
 import { syncEgLink } from '../datasets/eglink.ts';
 import { syncRecipes, summarizeRecipes, checkItemsAfterRefresh } from '../datasets/recipes.ts';
-import { dailyMaintenance } from './daily.ts';
+import { dailyMaintenance, LOCAL_RETENTION, type Retention } from './daily.ts';
+
+export type { Retention };
 
 /**
  * The daily refresh, shared by the local engine (src/engine/main.ts) and the cloud cycle (src/cloud/run.ts).
  * Each step stands alone, so one failing source never blocks the others or the backup. Returns true only when every
  * step worked; the caller marks the day done (engine.markDaily) only then, so a failure retries the whole set.
  */
-export async function runDailySteps(engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void): Promise<boolean> {
+export async function runDailySteps(engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void, keep: Retention = LOCAL_RETENTION): Promise<boolean> {
   const step = async (name: string, fn: () => Promise<string>) => {
     try { log(`${name}: ${await fn()}`); return true; } catch (e) { log(`${name} failed, will retry next round: ${(e as Error).message}`); return false; }
   };
@@ -20,7 +22,7 @@ export async function runDailySteps(engine: Engine, db: DB, client: BlizzardClie
     await step('vendor prices', async () => { const c = await engine.refreshCatalog(); return `${c.length} sell price changes`; }),
     // After the price refresh, so a server hotfix to binding or sell price shows against ItemSparse the same day.
     await step('item check', async () => checkItemsAfterRefresh(db, dataDir, log, client)),
-    await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, dataDir))),
+    await step('maintenance', async () => JSON.stringify(dailyMaintenance(db, dataDir, Date.now(), keep))),
   ];
   return results.every(Boolean);
 }
