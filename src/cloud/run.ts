@@ -40,6 +40,8 @@ export interface CloudRunOptions {
   fetchFn?: typeof fetch;
   /** The daily dataset refresh; tests swap it. Default runDailySteps. Returns true when every step worked. */
   daily?: (engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void) => Promise<boolean>;
+  /** The start up fills for datasets an update added (trainers, game tables); tests swap it. Default startupFills. */
+  fills?: (engine: Engine, db: DB, client: BlizzardClient, dataDir: string, log: (m: string) => void) => Promise<void>;
   /** Keep the work folder (for measuring); default removes it. */
   keepWorkDir?: boolean;
 }
@@ -269,7 +271,7 @@ export async function cloudRun(opts: CloudRunOptions): Promise<CloudRunResult> {
     const need = startupFillsNeeded(engine, db);
     if (engine.dailyDue() || need.trainers || need.gamedata) {
       const before = await pullDatasets(store, workDir);
-      await startupFills(engine, db, opts.client, workDir, log);
+      await (opts.fills ?? startupFills)(engine, db, opts.client, workDir, log);
       if (engine.dailyDue()) {
         const ok = await (opts.daily ?? runDailySteps)(engine, db, opts.client, workDir, log);
         result.daily = ok ? 'ok' : 'failed';
