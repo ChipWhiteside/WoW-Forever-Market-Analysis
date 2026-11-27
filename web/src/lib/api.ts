@@ -31,4 +31,6 @@ export interface PendingAction {
   key: string; at: number; username: string; action: 'did' | 'sold' | 'other';
   flipKey: string | null; didId: number | null; units: number | null; received: number | null; name: string | null; what: string;
 }
-export interface Ledger { me: string; people: LedgerPerson[]; mine: LedgerAction[]; history: LedgerAction[]; pending?: PendingAction[] }
+/** Online only: a saved write the hourly update could not apply, and why (src/cloud/inbox.ts RefusedAction). */
+export interface RefusedAction extends PendingAction { reason: string }
+export interface Ledger { me: string; people: LedgerPerson[]; mine: LedgerAction[]; history: LedgerAction[]; pending?: PendingAction[]; refused?: RefusedAction[] }

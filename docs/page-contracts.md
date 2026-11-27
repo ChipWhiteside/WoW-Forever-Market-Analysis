@@ -40,6 +40,10 @@ Refresh running on GitHub (phase 2 on GitHub storage, November 27): online, Refr
 
 Discord line (November 27): a short line in the run status card, after the Refresh button and before the filters: "Discord gets Good (10g or more) and Amazing (20g or more) flips that are low or medium risk with solid evidence". The gold numbers are the live Good and Amazing flip alert settings from /api/settings. Nothing else moved.
 
+Health banner (phase 2, round 1, November 27): online only, last in the run status card after the Discord line, a plain red line when the newest results are over 2 hours old: "Hourly updates have not run since <time>. Check the Actions tab on GitHub." It shows nothing otherwise. Nothing else moved.
+
+Refresh wording (phase 2, round 1): while a run is going the line also says "up to about 15 when it waits for Blizzard to publish", because a Refresh can join the hourly run while it waits for Blizzard. The page follows the run for up to 20 minutes. "Running on GitHub, usually 1 to 2 minutes" stays.
+
 Buy lists only what is bought (auction or vendor); craft steps go on Make ("Make first ..."); the product is never its own input (clarified November 26, nothing removed).
 
 Make first steps sit before the Make line. When a card has more than 3 Buy lines or more than 3 Make first lines, the first 3 show and a "show N more" toggle opens the rest; nothing is removed (system review round 2, November 26). On phones the card lines use the full card width.
@@ -57,6 +61,8 @@ Every existing field stays in place. Below them: Good flip alert in gold (defaul
 In the menu under Mine, after Watchlist. Per person table: Person, Flips done, Gold spent, Gold received, Realised minus spent, Expected, Realised against expected. Then History: every "I did this" and "Sold", newest first, with who and when.
 
 Saved, counts at the next update (phase 2 on GitHub storage, November 27): online, below History, a list of the writes saved since the last hourly update (I did this, Sold, settings, house pins), with who and when, each marked "saved, counts at the next update". The totals above count only what the hourly update applied. Nothing above it moved.
+
+Saved but not applied (phase 2, round 1, November 27): online, below the saved list, the saved writes the hourly update could not apply (for example a Sold for more units than were left), newest first, with who and when, each marked "not applied: <reason>". Nothing above it moved.
 
 ## Login (`web/src/pages/login.tsx`), phase 2, November 27
 Only when SITE_PASSWORD is set. Your name, Password, Sign in; remembered for 90 days. The menu says who is signed in, below the existing items, with Sign out.

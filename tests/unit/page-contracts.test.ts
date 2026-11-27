@@ -97,6 +97,16 @@ describe('page contracts', () => {
     inOrder(actions, ['>I did this<', '<SoldLine', 'pending.map', 'saved, counts at the next update.']);
     inOrder(src('pages/ledger.tsx'), ['>Person<', '>Realised against expected<', '>History<', 'data.history.map', 'Saved, counts at the next update', 'data.pending.map', 'saved, counts at the next update']);
   });
+  it('flips page shows the health banner last in the run status card, online, when results are over 2 hours old (phase 2, round 1)', () => {
+    const page = section(src('pages/flips.tsx'), 'export function FlipsPage', '\nfunction ');
+    inOrder(page, ['Data from', '<RefreshButton />', '<DiscordLine />', '<StaleBanner online={!!data?.online}', '</Card>', '>Crafting (']);
+    const banner = section(src('pages/flips.tsx'), 'export function StaleBanner', '\n}\n');
+    inOrder(banner, ['!online', '2 * 3600_000', 'Hourly updates have not run since {when}. Check the Actions tab on GitHub.']);
+    expect(section(src('pages/flips.tsx'), 'function RefreshButton', '\nfunction ')).toContain('usually 1 to 2 minutes, up to about 15 when it waits for Blizzard to publish.');
+  });
+  it('ledger lists saved writes that were not applied, with the reason, below the saved list (phase 2, round 1)', () => {
+    inOrder(src('pages/ledger.tsx'), ['>History<', 'data.pending.map', 'Saved but not applied', 'data.refused', 'not applied: {p.reason}']);
+  });
   it('login page asks for a name and the password, and the menu keeps its items above Signed in as (phase 2, November 27)', () => {
     inOrder(src('pages/login.tsx'), ["'/api/login'", 'Your name', 'Password', "'Sign in'"]);
     inOrder(src('App.tsx'), ['Search anywhere: Ctrl K', "'Dark'} mode", 'Signed in as', 'Sign out']);

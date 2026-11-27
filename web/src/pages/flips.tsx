@@ -17,7 +17,7 @@ interface FlipDetail {
   setup?: { skill: string; rank: number | null; cost: number | null; where: string | null; places: Place[]; unknown?: boolean } | null; shares: string[]; afterShared?: { units: number; expectedProfit: number }; notes: string[]; dataAt: number;
 }
 interface Row { key: string; kind: 'craft' | 'flip'; family: string; house_id: number | null; item_id: number; state: string; rank: number | null; expected_profit: number; risk: string; detail: FlipDetail; icon_url: string | null; quality: string | null; house_name: string | null; faction: string | null; data_at: number }
-interface Resp { flips: Row[]; run: { at: number; data_at: number; ms: number; complete: boolean; report: { items: number; recipesTried: number; flips: number; incompleteReason?: string; heldBackByReason: Record<string, number>; suspects: string[] } } | null; heldBack: Array<{ key: string; family: string; itemId: number; name: string; perItem: number | null; reason: string }> }
+interface Resp { online?: boolean; flips: Row[]; run: { at: number; data_at: number; ms: number; complete: boolean; report: { items: number; recipesTried: number; flips: number; incompleteReason?: string; heldBackByReason: Record<string, number>; suspects: string[] } } | null; heldBack: Array<{ key: string; family: string; itemId: number; name: string; perItem: number | null; reason: string }> }
 
 export const FAMILY_LABEL: Record<string, string> = {
   craft_auction: 'Craft, sell on the auction house', craft_vendor: 'Craft, sell to a vendor', conversion: 'Convert, sell', disenchant: 'Disenchant, sell',
@@ -58,6 +58,8 @@ export function FlipsPage() {
         {/* Refresh (Chip, November 26), added beside the run status; nothing above is moved. */}
         <RefreshButton />
         <DiscordLine />
+        {/* Health banner (phase 2, round 1): online only, when the newest results are over 2 hours old. Last in the card; nothing above moved. */}
+        <StaleBanner online={!!data?.online} at={run?.at ?? null} />
       </Card>
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
@@ -101,6 +103,16 @@ export function FlipsPage() {
   );
 }
 
+/**
+ * Online, the hourly job runs on GitHub, and GitHub turns off a public repository's schedule after 60 days with no
+ * repository activity. So when the newest results are over 2 hours old the page says so plainly.
+ */
+export function StaleBanner({ online, at, now = Date.now() }: { online: boolean; at: number | null; now?: number }) {
+  if (!online || at == null || now - at <= 2 * 3600_000) return null;
+  const when = new Date(at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return <span role="alert" className="basis-full rounded-md bg-bad/10 px-2 py-1 text-sm font-semibold text-bad">Hourly updates have not run since {when}. Check the Actions tab on GitHub.</span>;
+}
+
 /** "Data from 12 min ago; Blizzard publishes about 25 past each hour, next one about 13:25". */
 export function dataTimeLine(dataAt: number, now = Date.now()): string {
   const minute = new Date(dataAt).getMinutes();
@@ -136,16 +148,16 @@ function RefreshButton() {
       setState({ busy: false, text: `Refresh failed: ${(e as Error).message}`, bad: true });
     }
   };
-  /** Poll the GitHub run every 5 seconds until it completes, for up to 15 minutes. */
+  /** Poll the GitHub run every 5 seconds until it completes, for up to 20 minutes (a joined hourly run waits up to 15 for Blizzard). */
   const followRun = async (b: { message?: string; runId?: number | null; since?: number }) => {
     setState({ busy: true, github: true, text: b.message ?? 'Running on GitHub, usually 1 to 2 minutes.', bad: false });
     let run = b.runId ?? null;
-    for (const until = Date.now() + 15 * 60_000; Date.now() < until;) {
+    for (const until = Date.now() + 20 * 60_000; Date.now() < until;) {
       await new Promise(r => setTimeout(r, 5000));
       const s = await fetch(`/api/flips/refresh/status?${run ? `run=${run}` : `since=${b.since ?? 0}`}`).then(r => r.ok ? r.json() : null).catch(() => null) as { runId: number | null; state: string; conclusion: string | null } | null;
       if (!s) continue;
       run = s.runId ?? run;
-      if (s.state !== 'completed') { setState({ busy: true, github: true, text: `Running on GitHub (${s.state === 'in_progress' ? 'running' : 'waiting to start'}), usually 1 to 2 minutes.`, bad: false }); continue; }
+      if (s.state !== 'completed') { setState({ busy: true, github: true, text: `Running on GitHub (${s.state === 'in_progress' ? 'running' : 'waiting to start'}), usually 1 to 2 minutes, up to about 15 when it waits for Blizzard to publish.`, bad: false }); continue; }
       await qc.invalidateQueries({ queryKey: ['flips'] });
       await qc.invalidateQueries({ queryKey: ['ledger'] });
       const fresh = qc.getQueryData<Resp>(['flips']);
@@ -153,7 +165,7 @@ function RefreshButton() {
       setState({ busy: false, bad: !ok, text: ok ? `Updated on GitHub.${fresh?.run ? ` ${dataTimeLine(fresh.run.data_at)}.` : ''}` : `The update on GitHub ended: ${s.conclusion ?? 'unknown'}. The list is from the last good data.` });
       return;
     }
-    setState({ busy: false, bad: true, text: 'Still running on GitHub after 15 minutes. The list updates on its own when it is done.' });
+    setState({ busy: false, bad: true, text: 'Still running on GitHub after 20 minutes. The list updates on its own when it is done.' });
   };
   return (
     <span className="flex basis-full flex-wrap items-center gap-2 sm:ml-auto sm:basis-auto">
